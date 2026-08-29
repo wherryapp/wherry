@@ -8,12 +8,32 @@
 }
 
 html,
-body,
-#root {
+body {
   height: 100%;
-  /* dvh follows the *visible* viewport as mobile browsers show and hide their
-     chrome, which is what keeps the composer on screen above the keyboard
-     rather than below the fold. Declared second so a browser without dvh
-     keeps the 100% above rather than losing the rule entirely. */
+}
+
+body {
+  /* Nothing outside the app shell scrolls. Without this, focusing the composer
+     lets iOS scroll the whole document to bring it into view, which is the
+     thing that drags the header off the top of the screen. */
+  overflow: hidden;
+}
+
+#root {
+  /* Fixed, and sized to the visual viewport rather than the layout viewport.
+     `--app-height` and `--app-offset` are published by ui/viewport.ts, which
+     explains why; the short version is that the keyboard changes what is
+     *visible* without changing the page, so only the visual viewport knows the
+     real number.
+
+     The fallbacks are what a desktop browser and anything without
+     `visualViewport` get: dvh first for mobile chrome, then plain vh. Ordered
+     so a browser that does not understand one keeps the line above it. */
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-offset, 0px);
+  height: 100vh;
   height: 100dvh;
+  height: var(--app-height, 100dvh);
 }

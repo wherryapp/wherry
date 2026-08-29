@@ -373,6 +373,23 @@ function Timeline({
     bottom.current?.scrollIntoView({ block: "end" });
   }, [count, conversationId]);
 
+  // The keyboard opening makes this pane shorter without moving what is
+  // scrolled, so the newest message ends up hidden behind the composer at the
+  // exact moment somebody is about to reply to it. Re-pin on every visual
+  // viewport resize, which is the keyboard appearing, disappearing, or the
+  // device being rotated.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const pin = (): void => {
+      bottom.current?.scrollIntoView({ block: "end" });
+    };
+
+    viewport.addEventListener("resize", pin);
+    return () => viewport.removeEventListener("resize", pin);
+  }, []);
+
   return (
     <div className="flex-1 space-y-2 overflow-y-auto p-4">
       {hasMore && (
