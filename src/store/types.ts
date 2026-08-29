@@ -55,7 +55,14 @@ export type StoredConversation = {
   id: string;
   kind: "direct" | "group";
   createdAt: string;
-  members: { userId: string; username: string; displayName: string }[];
+  members: {
+    userId: string;
+    username: string;
+    displayName: string;
+    /** See the wire type in api/types.ts. Null until they have read anything. */
+    lastReadMessageId: string | null;
+    lastReadAt: string | null;
+  }[];
 };
 
 /**
@@ -127,6 +134,42 @@ export interface MessageStore {
   countMessages(conversationId?: string): Promise<number>;
 
   putConversations(conversations: readonly StoredConversation[]): Promise<void>;
+
+  /**
+   * Moves a member's read marker in the locally stored conversation.
+   *
+   * So the unread badge clears the instant somebody opens a conversation,
+   * rather than on the next conversation refresh up to 30 seconds later. The
+   * server is the authority and its copy arrives shortly after; this exists
+   * because a badge that lingers after you have plainly read the thing reads
+   * as broken.
+   *
+   * Forward only, mirroring the server, so an out-of-order refresh cannot
+   * resurrect a cleared badge.
+   */
+  mergeReadMarker(
+    conversationId: string,
+    userId: string,
+    messageId: string,
+    at: string,
+  ): Promise<void>;
+
+  /**
+   * How many messages in this conversation arrived after `afterMessageId` and
+   * were not sent by `excludeSenderUserId`.
+   *
+   * Counted rather than derived from a flag because there is no per-message
+   * read state to derive it from -- a marker plus an ordered index is the
+   * whole mechanism. Bounded by `cap`: a badge showing "99+" and one showing
+   * 4,312 say the same thing to a person, and only one of them walks four
+   * thousand records to say it.
+   */
+  countUnread(
+    conversationId: string,
+    afterMessageId: string | null,
+    excludeSenderUserId: string,
+    cap?: number,
+  ): Promise<number>;
   listConversations(): Promise<StoredConversation[]>;
   getConversation(id: string): Promise<StoredConversation | undefined>;
 

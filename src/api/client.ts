@@ -386,3 +386,21 @@ export function unsubscribeFromPush(endpoint: string): Promise<void> {
     body: { endpoint },
   });
 }
+
+/**
+ * Moves this user's read marker in a conversation.
+ *
+ * The server only ever moves it forward, so calling this with an older message
+ * than the marker already holds is harmless -- which is what makes it safe to
+ * fire whenever a conversation is on screen rather than tracking whether it
+ * would be a no-op.
+ */
+export function markConversationRead(
+  conversationId: string,
+  messageId: string,
+): Promise<void> {
+  return request<void>(`${API}/conversations/${conversationId}/read`, {
+    method: "POST",
+    body: { messageId },
+  });
+}

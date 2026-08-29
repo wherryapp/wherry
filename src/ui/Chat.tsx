@@ -1,12 +1,19 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type FormEvent,
 } from "react";
 import { bytesToText, textToBytes } from "../api/base64";
-import { ApiError, createConversation, lookupUser } from "../api/client";
+import {
+  ApiError,
+  createConversation,
+  lookupUser,
+  markConversationRead,
+} from "../api/client";
+import { store } from "../store";
 import type { StoredSession } from "../api/session";
 import { PROTOCOL_PLAINTEXT } from "../api/types";
 import type { StoredConversation, StoredMessage } from "../store/types";
@@ -16,6 +23,7 @@ import {
   useLatestMessages,
   useSyncStatus,
   useTimeline,
+  useUnread,
   type TimelineItem,
 } from "./hooks";
 import {
@@ -55,6 +63,12 @@ function conversationTitle(
   const others = conversation.members.filter((m) => m.userId !== selfUserId);
   if (others.length === 0) return "You";
   return others.map((m) => m.displayName || m.username).join(", ");
+}
+
+/** A member's display name, for attribution in groups. */
+function memberName(conversation: StoredConversation, userId: string): string {
+  const member = conversation.members.find((m) => m.userId === userId);
+  return member ? member.displayName || member.username : "Someone";
 }
 
 function time(iso: string): string {
@@ -141,18 +155,34 @@ function NewConversation({
     setError(null);
 
     try {
-      const user = await lookupUser(username.trim());
+      // Comma or space separated, so a group is typed the same way a single
+      // name is rather than behind a mode switch.
+      const names = [
+        ...new Set(
+          username
+            .split(/[\s,]+/)
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0),
+        ),
+      ];
 
-      if (user.id === session.user.id) {
-        setError("You cannot start a conversation with yourself.");
+      if (names.length === 0) return;
+
+      const found = await Promise.all(names.map((name) => lookupUser(name)));
+
+      if (found.some((user) => user.id === session.user.id)) {
+        setError("You are in every conversation you start; leave yourself out.");
         return;
       }
 
-      // Find-or-create: if this pair already has a conversation this returns
-      // it rather than splitting the history in two.
+      // Two people is a direct conversation and is find-or-create, so naming
+      // somebody you already talk to reopens that thread rather than splitting
+      // the history in two. Three or more is a group, and groups always
+      // create: two groups with the same people are legitimately different
+      // groups, which is why the server does not deduplicate them.
       const conversation = await createConversation({
-        kind: "direct",
-        memberUserIds: [user.id],
+        kind: found.length === 1 ? "direct" : "group",
+        memberUserIds: found.map((user) => user.id),
       });
 
       // The list is refreshed on a timer, so nudge it rather than waiting.
@@ -164,7 +194,7 @@ function NewConversation({
     } catch (caught) {
       setError(
         caught instanceof ApiError && caught.code === "UNKNOWN_USER"
-          ? "No account with that username."
+          ? "No account with one of those usernames."
           : caught instanceof ApiError
             ? caught.message
             : "Cannot reach the server.",
@@ -191,7 +221,7 @@ function NewConversation({
         autoFocus
         value={username}
         onChange={(e) => setUsername(e.target.value)}
-        placeholder="username"
+        placeholder="username, or several for a group"
         className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
       />
       {error && (
@@ -300,6 +330,72 @@ function NotificationSetting() {
   );
 }
 
+/**
+ * Marks a conversation read while it is on screen.
+ *
+ * Two conditions, both necessary. The conversation has to be open, and the
+ * page has to be *visible* -- a thread left open on a backgrounded tab is not
+ * being read, and marking it would clear a badge for messages nobody saw, on
+ * every device at once.
+ *
+ * Fires on the newest message this device holds, whenever that changes. The
+ * server only moves the marker forward, so re-sending the same id is a no-op
+ * and there is no need to track whether this call would be one.
+ */
+function useMarkRead(conversationId: string | null, selfUserId: string): void {
+  const { items } = useTimeline(conversationId);
+
+  // The newest *stored* message. Outbox entries are excluded: they have no
+  // server id yet, and marking your own unsent message read means nothing.
+  let newest: string | null = null;
+  for (const item of items) {
+    if (item.kind === "sent") newest = item.message.messageId;
+  }
+
+  useEffect(() => {
+    if (!conversationId || !newest) return;
+
+    let cancelled = false;
+
+    const mark = (): void => {
+      // A thread open on a backgrounded tab is not being read, and marking it
+      // would clear the badge on every device for messages nobody saw.
+      if (cancelled || document.visibilityState !== "visible") return;
+
+      void markConversationRead(conversationId, newest)
+        .then(async () => {
+          if (cancelled) return;
+          // Locally too, so the badge clears now rather than whenever the next
+          // conversation refresh brings the marker back.
+          await store.mergeReadMarker(
+            conversationId,
+            selfUserId,
+            newest,
+            new Date().toISOString(),
+          );
+          sync.invalidateConversations();
+        })
+        .catch(() => {
+          // Not worth surfacing. The marker is a convenience, the messages
+          // are already delivered, and opening this again will retry.
+        });
+    };
+
+    mark();
+
+    // Coming back to a tab that already had the conversation open has to mark
+    // it too. Without this the effect's dependencies have not changed, so
+    // nothing would run again until the next message arrived -- leaving a
+    // badge on a conversation being looked at.
+    document.addEventListener("visibilitychange", mark);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", mark);
+    };
+  }, [conversationId, newest, selfUserId]);
+}
+
 // ---------------------------------------------------------------------------
 // Viewport
 // ---------------------------------------------------------------------------
@@ -355,6 +451,7 @@ function ConversationList({
 }) {
   const { conversations } = useConversations();
   const latest = useLatestMessages(conversations);
+  const unread = useUnread(conversations, session.user.id);
 
   return (
     <aside className="flex w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800">
@@ -372,6 +469,16 @@ function ConversationList({
         {conversations.map((conversation) => {
           const preview = latest.get(conversation.id);
           const text = preview ? messageText(preview) : null;
+          const count = unread.get(conversation.id) ?? 0;
+          const isGroup = conversation.members.length > 2;
+
+          // In a group the preview is ambiguous without a name -- "see you at
+          // 6" from one of four people is half a message.
+          const prefix =
+            isGroup && preview && preview.senderUserId !== session.user.id
+              ? `${memberName(conversation, preview.senderUserId)}: `
+              : "";
+
           return (
             <button
               key={conversation.id}
@@ -382,12 +489,32 @@ function ConversationList({
                   : "hover:bg-neutral-50 dark:hover:bg-neutral-850"
               }`}
             >
-              <span className="block truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                {conversationTitle(conversation, session.user.id)}
+              <span className="flex items-center gap-2">
+                <span
+                  className={`block flex-1 truncate text-sm text-neutral-900 dark:text-neutral-100 ${
+                    count > 0 ? "font-semibold" : "font-medium"
+                  }`}
+                >
+                  {conversationTitle(conversation, session.user.id)}
+                </span>
+                {count > 0 && (
+                  <span
+                    aria-label={`${count} unread`}
+                    className="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white"
+                  >
+                    {count > 98 ? "99+" : count}
+                  </span>
+                )}
               </span>
-              <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">
+              <span
+                className={`block truncate text-xs ${
+                  count > 0
+                    ? "text-neutral-700 dark:text-neutral-300"
+                    : "text-neutral-500 dark:text-neutral-400"
+                }`}
+              >
                 {preview
-                  ? (text ?? "Encrypted message")
+                  ? `${prefix}${text ?? "Encrypted message"}`
                   : "No messages yet"}
               </span>
             </button>
@@ -418,11 +545,21 @@ function Bubble({
   text,
   meta,
   muted,
+  sender,
 }: {
   mine: boolean;
   text: string | null;
   meta: string;
   muted?: boolean;
+  /**
+   * Who sent it, on incoming messages in a group.
+   *
+   * Omitted in a 1:1, where left-versus-right already says it, and omitted on
+   * your own messages for the same reason. In a group the sides carry no
+   * information -- everybody else is on the left -- so without this a
+   * three-way conversation is unreadable.
+   */
+  sender?: string | undefined;
 }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -433,6 +570,11 @@ function Bubble({
             : "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
         } ${muted ? "opacity-60" : ""}`}
       >
+        {sender && (
+          <span className="mb-0.5 block text-[11px] font-medium opacity-70">
+            {sender}
+          </span>
+        )}
         {text === null ? (
           <span className="text-sm italic opacity-70">
             Encrypted message — this version cannot display it
@@ -449,11 +591,25 @@ function Bubble({
 function Timeline({
   conversationId,
   session,
+  conversation,
 }: {
   conversationId: string;
   session: StoredSession;
+  /** Undefined until the conversation list catches up; only names depend on it. */
+  conversation: StoredConversation | undefined;
 }) {
   const { items, hasMore, loadOlder } = useTimeline(conversationId);
+
+  // Names by user id, so attribution is a lookup rather than a scan per
+  // message. Only built for groups, since a 1:1 never shows them.
+  const isGroup = (conversation?.members.length ?? 0) > 2;
+  const names = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const member of conversation?.members ?? []) {
+      map.set(member.userId, member.displayName || member.username);
+    }
+    return map;
+  }, [conversation]);
   const bottom = useRef<HTMLDivElement>(null);
   const count = items.length;
 
@@ -496,6 +652,11 @@ function Timeline({
             mine={item.message.senderUserId === session.user.id}
             text={messageText(item.message)}
             meta={time(item.message.sentAt)}
+            sender={
+              isGroup && item.message.senderUserId !== session.user.id
+                ? (names.get(item.message.senderUserId) ?? "Someone")
+                : undefined
+            }
           />
         ) : (
           <Bubble
@@ -572,6 +733,10 @@ export function Chat({
   const [selected, setSelected] = useState<string | null>(null);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
+
+  // Only when a thread is actually on screen. On a phone that is the same
+  // thing as being selected; on desktop both panes are visible at once.
+  useMarkRead(selected, session.user.id);
 
   // Open the newest conversation on first load, so the app does not start on
   // an empty panel when there is something to show.
@@ -651,7 +816,11 @@ export function Chat({
                       : "Conversation"}
                   </span>
                 </div>
-                <Timeline conversationId={selected} session={session} />
+                <Timeline
+                  conversationId={selected}
+                  session={session}
+                  conversation={current}
+                />
                 <Composer conversationId={selected} />
               </>
             ) : (

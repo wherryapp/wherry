@@ -142,6 +142,61 @@ export function useTimeline(conversationId: string | null): {
   return { items, hasMore, loadOlder };
 }
 
+/**
+ * Unread counts per conversation, for this user.
+ *
+ * Recomputed on the same events as everything else: new messages arriving, and
+ * the conversation refresh that carries read markers back from the server. The
+ * marker is per *user*, so reading on a phone clears the badge on a laptop --
+ * which a device-local flag could never do, and is the reason the marker lives
+ * on the server at all.
+ */
+export function useUnread(
+  conversations: readonly StoredConversation[],
+  selfUserId: string,
+): Map<string, number> {
+  const [unread, setUnread] = useState<Map<string, number>>(new Map());
+
+  // Depends on the markers as well as the ids, so that a marker arriving from
+  // the server recomputes without waiting for the next message.
+  const signature = conversations
+    .map(
+      (conversation) =>
+        `${conversation.id}:${
+          conversation.members.find((m) => m.userId === selfUserId)
+            ?.lastReadMessageId ?? ""
+        }`,
+    )
+    .join(",");
+
+  const reload = useCallback(() => {
+    const entries = signature ? signature.split(",") : [];
+
+    void Promise.all(
+      entries.map(async (entry) => {
+        const [id, marker] = entry.split(":");
+        const count = await store.countUnread(
+          id as string,
+          marker ? marker : null,
+          selfUserId,
+        );
+        return [id as string, count] as const;
+      }),
+    ).then((pairs) => {
+      const next = new Map<string, number>();
+      for (const [id, count] of pairs) if (count > 0) next.set(id, count);
+      setUnread(next);
+    });
+  }, [signature, selfUserId]);
+
+  useEffect(reload, [reload]);
+  useSyncEvents((event) => {
+    if (event.type === "messages") reload();
+  });
+
+  return unread;
+}
+
 /** The most recent message per conversation, for the list's preview line. */
 export function useLatestMessages(
   conversations: readonly StoredConversation[],

@@ -180,6 +180,70 @@ export class IndexedDbMessageStore implements MessageStore {
     );
   }
 
+  async countUnread(
+    conversationId: string,
+    afterMessageId: string | null,
+    excludeSenderUserId: string,
+    cap = 99,
+  ): Promise<number> {
+    const db = await this.#open();
+
+    // Exclusive lower bound when there is a marker: the marked message has
+    // been read, everything strictly after it has not. With no marker at all,
+    // nothing has been read, so the walk starts at the beginning.
+    const range = IDBKeyRange.bound(
+      [conversationId, afterMessageId ?? ID_MIN],
+      [conversationId, ID_MAX],
+      afterMessageId !== null,
+      false,
+    );
+
+    // A cursor rather than `count`, because your own messages do not count as
+    // unread and a count cannot filter. Walking newest-first means the cap is
+    // reached early in exactly the case that would otherwise be slowest.
+    let cursor = await db
+      .transaction(MESSAGES)
+      .store.index(BY_CONVERSATION)
+      .openCursor(range, "prev");
+
+    let unread = 0;
+    while (cursor && unread < cap) {
+      if (cursor.value.senderUserId !== excludeSenderUserId) unread += 1;
+      cursor = await cursor.continue();
+    }
+
+    return unread;
+  }
+
+  async mergeReadMarker(
+    conversationId: string,
+    userId: string,
+    messageId: string,
+    at: string,
+  ): Promise<void> {
+    const db = await this.#open();
+    const tx = db.transaction(CONVERSATIONS, "readwrite");
+    const conversation = await tx.store.get(conversationId);
+
+    if (conversation) {
+      let changed = false;
+      const members = conversation.members.map((member) => {
+        if (member.userId !== userId) return member;
+        // Forward only, same rule the server enforces. Ids are uuidv7, so a
+        // string comparison is a comparison of send order.
+        if (member.lastReadMessageId !== null && member.lastReadMessageId >= messageId) {
+          return member;
+        }
+        changed = true;
+        return { ...member, lastReadMessageId: messageId, lastReadAt: at };
+      });
+
+      if (changed) await tx.store.put({ ...conversation, members });
+    }
+
+    await tx.done;
+  }
+
   async putConversations(
     conversations: readonly StoredConversation[],
   ): Promise<void> {

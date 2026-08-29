@@ -47,6 +47,15 @@ export type ConversationMember = {
   userId: string;
   username: string;
   displayName: string;
+  /**
+   * How far this member has read. Null if they never have.
+   *
+   * Your own row is what unread is counted against; everybody else's is a read
+   * receipt. One field serves both because reading is monotonic -- see the
+   * server's 0004_read_markers.sql.
+   */
+  lastReadMessageId: string | null;
+  lastReadAt: string | null;
 };
 
 export type Conversation = {
