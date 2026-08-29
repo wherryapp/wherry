@@ -404,3 +404,132 @@ export function markConversationRead(
     body: { messageId },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+export type UploadedAttachment = {
+  id: string;
+  byteSize: number;
+  expiresAt: string;
+};
+
+export type AttachmentUsage = {
+  usedBytes: number;
+  quotaBytes: number;
+  maxBytes: number;
+  retentionDays: number;
+};
+
+/**
+ * Uploads bytes and returns the id to put in a message payload.
+ *
+ * Raw octet-stream rather than JSON: base64 costs a third more on the wire and
+ * pushes a whole photo through a string, for no benefit when the payload is
+ * opaque either way. Written against fetch directly because `request` assumes
+ * a JSON body and a JSON response.
+ */
+export async function uploadAttachment(
+  conversationId: string,
+  bytes: Uint8Array,
+  options: { signal?: AbortSignal } = {},
+): Promise<UploadedAttachment> {
+  const token = currentToken();
+  const headers: Record<string, string> = {
+    "content-type": "application/octet-stream",
+  };
+  if (token) headers["authorization"] = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API}/attachments?conversationId=${encodeURIComponent(conversationId)}`,
+      {
+        method: "POST",
+        headers,
+        // Copied, because a Uint8Array that is a view onto a larger buffer
+        // would otherwise upload the whole buffer.
+        body: new Blob([bytes.slice()]),
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+    );
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+    throw new NetworkError(cause);
+  }
+
+  const raw = await response.text();
+  const parsed: unknown = raw.length > 0 ? safeParse(raw) : null;
+
+  if (!response.ok) {
+    const shape = parsed as { error?: string; message?: string } | null;
+    throw new ApiError(
+      response.status,
+      shape?.error ?? "REQUEST_FAILED",
+      shape?.message ?? `Upload failed with ${response.status}`,
+      null,
+    );
+  }
+
+  return parsed as UploadedAttachment;
+}
+
+/** Whether an attachment is still on the server, and its bytes if so. */
+export type AttachmentFetch =
+  | { state: "ok"; bytes: Uint8Array }
+  /**
+   * 410. It existed, this account was entitled to it, and retention removed
+   * it. Terminal, and worth recording so it is never asked for again.
+   */
+  | { state: "expired" }
+  /** 404. No such attachment, or not in that conversation. Also terminal. */
+  | { state: "unknown" };
+
+export async function downloadAttachment(
+  attachmentId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<AttachmentFetch> {
+  const token = currentToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["authorization"] = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(`${API}/attachments/${attachmentId}`, {
+      headers,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+    throw new NetworkError(cause);
+  }
+
+  if (response.status === 410) return { state: "expired" };
+  if (response.status === 404) return { state: "unknown" };
+
+  if (!response.ok) {
+    // A 401 or a 502 is worth trying again later, so it throws rather than
+    // being recorded as a state that stops anyone ever asking again.
+    throw new ApiError(
+      response.status,
+      "REQUEST_FAILED",
+      `Download failed with ${response.status}`,
+      null,
+    );
+  }
+
+  return { state: "ok", bytes: new Uint8Array(await response.arrayBuffer()) };
+}
+
+export function fetchAttachmentUsage(): Promise<AttachmentUsage> {
+  return request<AttachmentUsage>(`${API}/attachments/usage`);
+}
+
+function safeParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}

@@ -51,6 +51,21 @@ export type StoredMessage = {
   sentAt: string;
 };
 
+/**
+ * A downloaded attachment, or the reason there will never be one.
+ *
+ * The terminal states are stored rather than inferred, and that is the point:
+ * without them a device that has never had the bytes asks for them on every
+ * render of a message that will never have any, forever. `expired` in
+ * particular is the normal end state of every attachment, not an error --
+ * retention removing bytes a device already holds changes nothing, and
+ * retention removing bytes it does not is exactly this.
+ */
+export type StoredBlob =
+  | { state: "ok"; mediaType: string; bytes: Uint8Array }
+  | { state: "expired" }
+  | { state: "unknown" };
+
 export type StoredConversation = {
   id: string;
   kind: "direct" | "group";
@@ -164,6 +179,18 @@ export interface MessageStore {
    * 4,312 say the same thing to a person, and only one of them walks four
    * thousand records to say it.
    */
+  /** A downloaded attachment, or a recorded terminal state, or undefined. */
+  getBlob(attachmentId: string): Promise<StoredBlob | undefined>;
+
+  /**
+   * Records bytes, or the fact that there will never be any.
+   *
+   * Written once and never revisited: an attachment's bytes are immutable and
+   * its terminal states are terminal, so there is no invalidation to think
+   * about.
+   */
+  putBlob(attachmentId: string, blob: StoredBlob): Promise<void>;
+
   countUnread(
     conversationId: string,
     afterMessageId: string | null,

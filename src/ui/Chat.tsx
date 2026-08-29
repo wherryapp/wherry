@@ -6,12 +6,21 @@ import {
   useSyncExternalStore,
   type FormEvent,
 } from "react";
-import { bytesToText, textToBytes } from "../api/base64";
+import { Attachment } from "./Attachment";
+import {
+  decodeContent,
+  encodeContent,
+  type AttachmentRef,
+  type MessageContent,
+} from "../api/payload";
+import { prepareForUpload } from "./media";
 import {
   ApiError,
   createConversation,
+  fetchAttachmentUsage,
   lookupUser,
   markConversationRead,
+  uploadAttachment,
 } from "../api/client";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
@@ -47,13 +56,17 @@ import {
  * by side in storage forever, so the check is per message rather than a
  * per-account flag.
  */
-function messageText(message: StoredMessage): string | null {
+/**
+ * What to render for a message, or null when it cannot be rendered at all.
+ *
+ * Null is kept distinct from empty content on purpose: a version 2 payload is
+ * ciphertext this build has no key for, which is a different thing to say than
+ * a message with no text, and the two look identical if they share a return
+ * value.
+ */
+function messageContent(message: StoredMessage): MessageContent | null {
   if (message.protocolVersion !== PROTOCOL_PLAINTEXT) return null;
-  try {
-    return bytesToText(message.payload);
-  } catch {
-    return null;
-  }
+  return decodeContent(message.payload);
 }
 
 function conversationTitle(
@@ -468,7 +481,12 @@ function ConversationList({
 
         {conversations.map((conversation) => {
           const preview = latest.get(conversation.id);
-          const text = preview ? messageText(preview) : null;
+          const previewContent = preview ? messageContent(preview) : null;
+          // A photo with no caption still has to say something in the list.
+          const text = previewContent
+            ? previewContent.text ||
+              (previewContent.attachments.length > 0 ? "Photo" : "")
+            : null;
           const count = unread.get(conversation.id) ?? 0;
           const isGroup = conversation.members.length > 2;
 
@@ -542,13 +560,14 @@ function ConversationList({
 
 function Bubble({
   mine,
-  text,
+  content,
   meta,
   muted,
   sender,
 }: {
   mine: boolean;
-  text: string | null;
+  /** Null when this build cannot display the payload at all. */
+  content: MessageContent | null;
   meta: string;
   muted?: boolean;
   /**
@@ -575,12 +594,25 @@ function Bubble({
             {sender}
           </span>
         )}
-        {text === null ? (
+        {content === null ? (
           <span className="text-sm italic opacity-70">
             Encrypted message — this version cannot display it
           </span>
         ) : (
-          <span className="whitespace-pre-wrap break-words text-sm">{text}</span>
+          <>
+            {content.attachments.length > 0 && (
+              <span className="mb-1 block space-y-1">
+                {content.attachments.map((attachment) => (
+                  <Attachment key={attachment.id} attachment={attachment} />
+                ))}
+              </span>
+            )}
+            {content.text.length > 0 && (
+              <span className="whitespace-pre-wrap break-words text-sm">
+                {content.text}
+              </span>
+            )}
+          </>
         )}
         <span className="mt-1 block text-[10px] opacity-60">{meta}</span>
       </div>
@@ -650,7 +682,7 @@ function Timeline({
           <Bubble
             key={item.message.messageId}
             mine={item.message.senderUserId === session.user.id}
-            text={messageText(item.message)}
+            content={messageContent(item.message)}
             meta={time(item.message.sentAt)}
             sender={
               isGroup && item.message.senderUserId !== session.user.id
@@ -663,7 +695,7 @@ function Timeline({
             key={item.entry.clientMessageId}
             mine
             muted
-            text={bytesToText(item.entry.payload)}
+            content={decodeContent(item.entry.payload)}
             meta={
               item.entry.failedPermanently
                 ? `Failed — ${item.entry.lastError ?? "not sent"}`
@@ -682,39 +714,174 @@ function Timeline({
 // Composer
 // ---------------------------------------------------------------------------
 
+type Pending = {
+  file: File;
+  /** A local preview, so a photo appears the moment it is chosen. */
+  url: string;
+};
+
 function Composer({ conversationId }: { conversationId: string }) {
   const [text, setText] = useState("");
+  const [pending, setPending] = useState<Pending[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  // Revoke preview URLs when they stop being used, or every photo somebody
+  // picks and reconsiders is held in memory until the page is reloaded.
+  useEffect(() => {
+    return () => {
+      for (const item of pending) URL.revokeObjectURL(item.url);
+    };
+  }, [pending]);
+
+  function choose(event: FormEvent<HTMLInputElement>): void {
+    const input = event.currentTarget;
+    const files = [...(input.files ?? [])];
+
+    setPending((current) => [
+      ...current,
+      ...files.map((file) => ({ file, url: URL.createObjectURL(file) })),
+    ]);
+    setError(null);
+
+    // Cleared so picking the same file twice in a row still fires a change.
+    input.value = "";
+  }
+
+  function remove(index: number): void {
+    setPending((current) => {
+      const item = current[index];
+      if (item) URL.revokeObjectURL(item.url);
+      return current.filter((_, i) => i !== index);
+    });
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const trimmed = text.trim();
-    if (trimmed.length === 0) return;
 
-    // Cleared before the await, so typing the next message is never blocked on
-    // the network. The message is already durable in the outbox by the time
-    // this resolves, and the engine owns getting it delivered.
-    setText("");
-    await sync.enqueue(conversationId, textToBytes(trimmed));
+    const trimmed = text.trim();
+    if (trimmed.length === 0 && pending.length === 0) return;
+    if (busy) return;
+
+    setBusy(true);
+    setError(null);
+
+    try {
+      // Uploaded before the message is queued, because the payload has to
+      // carry the ids. That makes an attachment send fail *before* anything is
+      // in the outbox, which is the right way round: a queued message
+      // referring to an upload that never happened would retry forever and
+      // never work.
+      const limits = await fetchAttachmentUsage();
+      const attachments: AttachmentRef[] = [];
+
+      for (const item of pending) {
+        const prepared = await prepareForUpload(item.file, limits.maxBytes);
+
+        if ("kind" in prepared) {
+          setError(prepared.message);
+          return;
+        }
+
+        const uploaded = await uploadAttachment(conversationId, prepared.bytes);
+
+        attachments.push({
+          id: uploaded.id,
+          mediaType: prepared.mediaType,
+          byteSize: uploaded.byteSize,
+          ...(prepared.width ? { width: prepared.width } : {}),
+          ...(prepared.height ? { height: prepared.height } : {}),
+        });
+      }
+
+      // Cleared before the await, so typing the next message is never blocked
+      // on the network. The message is durable in the outbox by the time this
+      // resolves, and the engine owns delivering it.
+      setText("");
+      for (const item of pending) URL.revokeObjectURL(item.url);
+      setPending([]);
+
+      await sync.enqueue(
+        conversationId,
+        encodeContent({ text: trimmed, attachments }),
+      );
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Could not send that. Check your connection.",
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <form
       onSubmit={submit}
-      className="flex gap-2 border-t border-neutral-200 p-3 dark:border-neutral-800"
+      className="border-t border-neutral-200 p-3 dark:border-neutral-800"
     >
-      <input
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Message"
-        className="flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
-      />
-      <button
-        type="submit"
-        disabled={text.trim().length === 0}
-        className="rounded-full bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
-      >
-        Send
-      </button>
+      {pending.length > 0 && (
+        <div className="mb-2 flex gap-2 overflow-x-auto">
+          {pending.map((item, index) => (
+            <div key={item.url} className="relative shrink-0">
+              <img
+                src={item.url}
+                alt=""
+                className="h-16 w-16 rounded-md object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => remove(index)}
+                aria-label="Remove attachment"
+                className="absolute -right-1 -top-1 rounded-full bg-neutral-900 px-1.5 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <p className="mb-2 text-xs text-red-600 dark:text-red-400">{error}</p>
+      )}
+
+      <div className="flex gap-2">
+        {/* accept without capture. `capture` forces the camera and removes the
+            photo library, which on a phone is where the photo somebody wants
+            to send almost always already is. */}
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/*"
+          multiple
+          onInput={choose}
+          className="hidden"
+        />
+        <button
+          type="button"
+          onClick={() => fileInput.current?.click()}
+          aria-label="Attach a photo"
+          className="rounded-full px-2 text-xl leading-none text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+        >
+          +
+        </button>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Message"
+          className="flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+        />
+        <button
+          type="submit"
+          disabled={busy || (text.trim().length === 0 && pending.length === 0)}
+          className="rounded-full bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
+        >
+          {busy ? "…" : "Send"}
+        </button>
+      </div>
     </form>
   );
 }

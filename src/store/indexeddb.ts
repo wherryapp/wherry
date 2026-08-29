@@ -12,17 +12,19 @@ import type {
   ConversationPageOptions,
   MessageStore,
   OutboxEntry,
+  StoredBlob,
   StoredConversation,
   StoredMessage,
 } from "./types";
 
 const DB_NAME = "messenger";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const MESSAGES = "messages";
 const CONVERSATIONS = "conversations";
 const OUTBOX = "outbox";
 const META = "meta";
+const BLOBS = "blobs";
 
 /** The index that makes a timeline query one seek instead of a scan. */
 const BY_CONVERSATION = "byConversation";
@@ -50,6 +52,7 @@ interface Schema extends DBSchema {
     indexes: { byConversation: string };
   };
   meta: { key: string; value: unknown };
+  blobs: { key: string; value: StoredBlob };
 }
 
 const DEFAULT_PAGE = 50;
@@ -70,20 +73,42 @@ export class IndexedDbMessageStore implements MessageStore {
 
   #open(): Promise<IDBPDatabase<Schema>> {
     this.#db ??= openDB<Schema>(DB_NAME, DB_VERSION, {
+      // Every store is created only if absent, and nothing here assumes it is
+      // running against an empty database.
+      //
+      // This used to create all four unconditionally, which worked only
+      // because the version had never changed: `upgrade` runs on the way from
+      // *any* older version, so the first bump would have thrown "object store
+      // already exists" for every person who had ever opened the app -- while
+      // being perfectly fine for whoever tested it in a fresh browser.
       upgrade(db) {
-        const messages = db.createObjectStore(MESSAGES, {
-          keyPath: "messageId",
-        });
-        messages.createIndex(BY_CONVERSATION, ["conversationId", "messageId"]);
+        if (!db.objectStoreNames.contains(MESSAGES)) {
+          const messages = db.createObjectStore(MESSAGES, {
+            keyPath: "messageId",
+          });
+          messages.createIndex(BY_CONVERSATION, ["conversationId", "messageId"]);
+        }
 
-        db.createObjectStore(CONVERSATIONS, { keyPath: "id" });
+        if (!db.objectStoreNames.contains(CONVERSATIONS)) {
+          db.createObjectStore(CONVERSATIONS, { keyPath: "id" });
+        }
 
-        const outbox = db.createObjectStore(OUTBOX, {
-          keyPath: "clientMessageId",
-        });
-        outbox.createIndex("byConversation", "conversationId");
+        if (!db.objectStoreNames.contains(OUTBOX)) {
+          const outbox = db.createObjectStore(OUTBOX, {
+            keyPath: "clientMessageId",
+          });
+          outbox.createIndex("byConversation", "conversationId");
+        }
 
-        db.createObjectStore(META);
+        if (!db.objectStoreNames.contains(META)) {
+          db.createObjectStore(META);
+        }
+
+        // Downloaded attachment bytes, and the terminal states that mean there
+        // will never be any. Keyed by attachment id.
+        if (!db.objectStoreNames.contains(BLOBS)) {
+          db.createObjectStore(BLOBS);
+        }
       },
 
       // An arrow function so `this` is the store instance. Another tab is
@@ -178,6 +203,16 @@ export class IndexedDbMessageStore implements MessageStore {
       BY_CONVERSATION,
       IDBKeyRange.bound([conversationId, ID_MIN], [conversationId, ID_MAX]),
     );
+  }
+
+  async getBlob(attachmentId: string): Promise<StoredBlob | undefined> {
+    const db = await this.#open();
+    return db.get(BLOBS, attachmentId);
+  }
+
+  async putBlob(attachmentId: string, blob: StoredBlob): Promise<void> {
+    const db = await this.#open();
+    await db.put(BLOBS, blob, attachmentId);
   }
 
   async countUnread(
