@@ -18,6 +18,13 @@ import {
   useTimeline,
   type TimelineItem,
 } from "./hooks";
+import {
+  availability as pushAvailability,
+  disable as disablePush,
+  enable as enablePush,
+  isSubscribed,
+  type PushState,
+} from "../sync/push";
 
 // ---------------------------------------------------------------------------
 // Rendering content
@@ -214,6 +221,86 @@ function NewConversation({
 }
 
 // ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * The notification toggle, and an explanation when it cannot be one.
+ *
+ * Never asks on load. A permission prompt that arrives before somebody knows
+ * what the app is gets refused, and a refusal on iOS is permanent from the
+ * page's side -- only the browser's own settings can undo it. So this is a
+ * button, and the prompt happens when it is pressed.
+ */
+function NotificationSetting() {
+  const [state, setState] = useState<PushState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const available = pushAvailability();
+      if (available.state !== "ready") {
+        if (!cancelled) setState(available.state);
+        return;
+      }
+      const on = await isSubscribed();
+      if (!cancelled) setState(on ? "on" : "ready");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Nothing to say on a browser that could never do this.
+  if (state === null || state === "unsupported") return null;
+
+  if (state === "needs-install") {
+    return (
+      <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+        Add this to your home screen to get notifications.
+      </p>
+    );
+  }
+
+  if (state === "blocked") {
+    return (
+      <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+        Notifications are blocked in your browser settings.
+      </p>
+    );
+  }
+
+  if (state === "server-disabled") {
+    return (
+      <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+        Notifications are not set up on this server.
+      </p>
+    );
+  }
+
+  const on = state === "on";
+
+  return (
+    <button
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void (on ? disablePush() : enablePush())
+          .then(setState)
+          .catch(() => setState(on ? "on" : "ready"))
+          .finally(() => setBusy(false));
+      }}
+      className="mt-2 text-xs text-neutral-500 underline-offset-2 hover:underline disabled:opacity-50 dark:text-neutral-400"
+    >
+      {busy ? "…" : on ? "Notifications on" : "Turn on notifications"}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Viewport
 // ---------------------------------------------------------------------------
 
@@ -316,6 +403,7 @@ function ConversationList({
           </span>
         </div>
         <div className="truncate">{session.device.displayName}</div>
+        <NotificationSetting />
       </div>
     </aside>
   );

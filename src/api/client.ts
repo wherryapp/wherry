@@ -351,3 +351,38 @@ export function fetchArchive(
     options.signal ? { signal: options.signal } : {},
   );
 }
+
+// ---------------------------------------------------------------------------
+// Push notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * The application server's public key, which a browser subscribes against.
+ *
+ * 503 with `PUSH_DISABLED` is a real answer rather than an outage: a server
+ * can be deployed before its VAPID keys are installed, and the difference
+ * between "not configured here" and "you declined" is something the UI has to
+ * be able to say.
+ */
+export function fetchPushKey(): Promise<{ publicKey: string }> {
+  return request<{ publicKey: string }>(`${API}/push/key`);
+}
+
+/** Registers this browser's subscription against the current device. */
+export function subscribeToPush(subscription: {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}): Promise<void> {
+  return request<void>(`${API}/push/subscribe`, {
+    method: "POST",
+    body: subscription,
+  });
+}
+
+/** Forgets this browser's subscription. */
+export function unsubscribeFromPush(endpoint: string): Promise<void> {
+  return request<void>(`${API}/push/unsubscribe`, {
+    method: "POST",
+    body: { endpoint },
+  });
+}
