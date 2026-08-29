@@ -56,11 +56,18 @@ export function availability(): PushAvailability {
 }
 
 function isIos(): boolean {
-  // iPadOS reports itself as a Mac, so the touch check is what separates a
-  // tablet from a desktop. Neither half is sufficient alone.
-  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const iPadOS =
-    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  const ua = navigator.userAgent;
+  const ios = /iPad|iPhone|iPod/.test(ua);
+
+  // iPadOS reports itself as a Mac, so the touch count is what separates a
+  // tablet from a desktop. Both halves read the *user agent* rather than
+  // `navigator.platform`: platform is deprecated, and it is not overridden
+  // where the user agent is, so the two can disagree -- an Android user agent
+  // on a Mac reported MacIntel with touch points and was told to install the
+  // app, which on Android is both wrong and a dead end, since the button it
+  // replaces would have worked.
+  const iPadOS = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
+
   return ios || iPadOS;
 }
 
