@@ -9,13 +9,18 @@
 
 html,
 body {
-  height: 100%;
-}
+  /* The document is exactly as tall as what can be seen, keyboard subtracted.
+     That is the whole trick for keeping the header still.
 
-body {
-  /* Nothing outside the app shell scrolls. Without this, focusing the composer
-     lets iOS scroll the whole document to bring it into view, which is the
-     thing that drags the header off the top of the screen. */
+     Undoing the scroll after the fact -- which ui/viewport.ts also does -- is
+     always a frame behind, and that round trip is visible as the top of the UI
+     bouncing and settling back where it started. A document with no scrollable
+     overflow cannot be scrolled at all, so there is nothing to undo: Safari
+     wants to scroll the focused composer into view, and finds it already
+     there. A full-height document under a half-height viewport is what gave it
+     the room in the first place. */
+  height: 100%;
+  height: var(--app-height, 100dvh);
   overflow: hidden;
 }
 
