@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
 import { bytesToText, textToBytes } from "../api/base64";
 import { ApiError, createConversation, lookupUser } from "../api/client";
 import type { StoredSession } from "../api/session";
@@ -179,7 +185,7 @@ function NewConversation({
         value={username}
         onChange={(e) => setUsername(e.target.value)}
         placeholder="username"
-        className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+        className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
       />
       {error && (
         <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
@@ -208,6 +214,46 @@ function NewConversation({
 }
 
 // ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+// Tailwind's `md` breakpoint, expressed in JS because two things depend on the
+// answer that CSS cannot express: which pane is *rendered*, and whether a
+// conversation is auto-selected on load. Auto-selecting on a phone would drop
+// somebody into a thread when they were expecting the list they last saw.
+//
+// Keep this number in step with the `md:` classes below. Tailwind's default
+// md is 768px; there is no config file to read it from, by choice.
+const DESKTOP_QUERY = "(min-width: 768px)";
+
+function subscribeToViewport(onChange: () => void): () => void {
+  const query = window.matchMedia(DESKTOP_QUERY);
+  query.addEventListener("change", onChange);
+
+  // Resize as well as the media query, which looks redundant and is not. The
+  // change event does not fire in every environment that can alter a viewport
+  // -- an emulated one caught this during testing, where the query read as
+  // matching while the layout was still in its phone shape. Re-reading on
+  // resize means the value cannot disagree with what `matchMedia` says now.
+  window.addEventListener("resize", onChange);
+
+  return () => {
+    query.removeEventListener("change", onChange);
+    window.removeEventListener("resize", onChange);
+  };
+}
+
+function useIsDesktop(): boolean {
+  // useSyncExternalStore rather than state-plus-effect: the value is read
+  // fresh on every notification, so there is no copy to fall out of step, and
+  // no first render that shows the wrong layout before an effect corrects it.
+  return useSyncExternalStore(
+    subscribeToViewport,
+    () => window.matchMedia(DESKTOP_QUERY).matches,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Conversation list
 // ---------------------------------------------------------------------------
 
@@ -224,7 +270,7 @@ function ConversationList({
   const latest = useLatestMessages(conversations);
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+    <aside className="flex w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800">
       <div className="border-b border-neutral-200 p-3 dark:border-neutral-800">
         <NewConversation session={session} onOpened={onSelect} />
       </div>
@@ -293,7 +339,7 @@ function Bubble({
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[70%] rounded-2xl px-3 py-2 ${
+        className={`max-w-[85%] rounded-2xl px-3 py-2 md:max-w-[70%] ${
           mine
             ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
             : "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
@@ -394,7 +440,7 @@ function Composer({ conversationId }: { conversationId: string }) {
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Message"
-        className="flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-sm outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+        className="flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
       />
       <button
         type="submit"
@@ -420,14 +466,35 @@ export function Chat({
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const { conversations } = useConversations();
+  const isDesktop = useIsDesktop();
 
   // Open the newest conversation on first load, so the app does not start on
   // an empty panel when there is something to show.
+  //
+  // Desktop only. On a phone the two panes are two screens, and pre-selecting
+  // means opening the app *inside* a thread with a back button as the only
+  // clue that a list exists.
   useEffect(() => {
+    if (!isDesktop) return;
     if (selected === null && conversations[0]) setSelected(conversations[0].id);
-  }, [conversations, selected]);
+  }, [conversations, selected, isDesktop]);
 
   const current = conversations.find((c) => c.id === selected);
+
+  // A selection that no longer resolves would strand a phone on an empty pane
+  // whose only exit is the back button in a header that is not rendered.
+  // Guarded on a non-empty list so the async first load does not clear it.
+  useEffect(() => {
+    if (selected !== null && conversations.length > 0 && !current) {
+      setSelected(null);
+    }
+  }, [selected, conversations, current]);
+
+  // One pane at a time below md, both above it. Rendered rather than hidden:
+  // the list and the thread each hold a subscription per conversation, and
+  // there is no reason to run the one nobody can see.
+  const showList = isDesktop || selected === null;
+  const showThread = isDesktop || selected !== null;
 
   return (
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
@@ -446,27 +513,42 @@ export function Chat({
       <StatusLine />
 
       <div className="flex min-h-0 flex-1">
-        <ConversationList
-          session={session}
-          selected={selected}
-          onSelect={setSelected}
-        />
+        {showList && (
+          <ConversationList
+            session={session}
+            selected={selected}
+            onSelect={setSelected}
+          />
+        )}
 
-        <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-neutral-900">
-          {current ? (
-            <>
-              <div className="border-b border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-900 dark:border-neutral-800 dark:text-neutral-100">
-                {conversationTitle(current, session.user.id)}
+        {showThread && (
+          <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-neutral-900">
+            {current ? (
+              <>
+                <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
+                  {!isDesktop && (
+                    <button
+                      onClick={() => setSelected(null)}
+                      aria-label="Back to conversations"
+                      className="-ml-2 rounded px-2 py-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+                    >
+                      ←
+                    </button>
+                  )}
+                  <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                    {conversationTitle(current, session.user.id)}
+                  </span>
+                </div>
+                <Timeline conversationId={current.id} session={session} />
+                <Composer conversationId={current.id} />
+              </>
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">
+                Pick a conversation, or start a new one.
               </div>
-              <Timeline conversationId={current.id} session={session} />
-              <Composer conversationId={current.id} />
-            </>
-          ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">
-              Pick a conversation, or start a new one.
-            </div>
-          )}
-        </main>
+            )}
+          </main>
+        )}
       </div>
     </div>
   );

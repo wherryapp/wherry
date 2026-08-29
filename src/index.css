@@ -11,4 +11,9 @@ html,
 body,
 #root {
   height: 100%;
+  /* dvh follows the *visible* viewport as mobile browsers show and hide their
+     chrome, which is what keeps the composer on screen above the keyboard
+     rather than below the fold. Declared second so a browser without dvh
+     keeps the 100% above rather than losing the rule entirely. */
+  height: 100dvh;
 }

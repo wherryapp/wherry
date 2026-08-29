@@ -86,7 +86,7 @@ export function Login({
             required
             pattern="[a-zA-Z0-9._\-]{3,32}"
             title="3–32 characters: letters, numbers, dot, underscore or hyphen"
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
           />
         </label>
 
@@ -100,7 +100,7 @@ export function Login({
               onChange={(e) => setDisplayName(e.target.value)}
               required
               maxLength={100}
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
           </label>
         )}
@@ -116,7 +116,7 @@ export function Login({
             autoComplete={mode === "login" ? "current-password" : "new-password"}
             required
             minLength={12}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
           />
           <span className="text-xs text-neutral-500 dark:text-neutral-400">
             At least 12 characters.
