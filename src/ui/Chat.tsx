@@ -20,9 +20,11 @@ import {
   ApiError,
   createConversation,
   fetchAttachmentUsage,
+  fetchFriends,
   lookupUser,
   markConversationRead,
   uploadAttachment,
+  type Friend,
 } from "../api/client";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
@@ -203,8 +205,36 @@ function NewConversation({
 }) {
   const [open, setOpen] = useState(false);
   const [username, setUsername] = useState("");
+  const [contacts, setContacts] = useState<Friend[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Loaded when the form opens rather than with the app. It is a handful of
+  // rows, it is only needed here, and fetching it on every startup would be a
+  // request per launch for a list most launches never look at.
+  useEffect(() => {
+    if (!open || contacts !== null) return;
+    void fetchFriends()
+      .then((lists) => setContacts(lists.friends))
+      .catch(() => setContacts([]));
+  }, [open, contacts]);
+
+  function toggle(userId: string): void {
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  }
+
+  function reset(): void {
+    setUsername("");
+    setPicked(new Set());
+    setError(null);
+    setOpen(false);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -213,7 +243,9 @@ function NewConversation({
 
     try {
       // Comma or space separated, so a group is typed the same way a single
-      // name is rather than behind a mode switch.
+      // name is rather than behind a mode switch. Typing is still here
+      // alongside the picker, because somebody who is not a contact yet has to
+      // be reachable without being added first.
       const names = [
         ...new Set(
           username
@@ -223,14 +255,20 @@ function NewConversation({
         ),
       ];
 
-      if (names.length === 0) return;
+      const typed = await Promise.all(names.map((name) => lookupUser(name)));
 
-      const found = await Promise.all(names.map((name) => lookupUser(name)));
-
-      if (found.some((user) => user.id === session.user.id)) {
+      if (typed.some((user) => user.id === session.user.id)) {
         setError("You are in every conversation you start; leave yourself out.");
         return;
       }
+
+      // A Set, because picking somebody *and* typing their name is an easy
+      // thing to do and should not send the server a duplicate member.
+      const memberUserIds = [
+        ...new Set([...picked, ...typed.map((user) => user.id)]),
+      ];
+
+      if (memberUserIds.length === 0) return;
 
       // Two people is a direct conversation and is find-or-create, so naming
       // somebody you already talk to reopens that thread rather than splitting
@@ -238,16 +276,14 @@ function NewConversation({
       // create: two groups with the same people are legitimately different
       // groups, which is why the server does not deduplicate them.
       const conversation = await createConversation({
-        kind: found.length === 1 ? "direct" : "group",
-        memberUserIds: found.map((user) => user.id),
+        kind: memberUserIds.length === 1 ? "direct" : "group",
+        memberUserIds,
       });
 
       // The list is refreshed on a timer, so nudge it rather than waiting.
       sync.invalidateConversations();
       onOpened(conversation.id);
-
-      setUsername("");
-      setOpen(false);
+      reset();
     } catch (caught) {
       setError(
         caught instanceof ApiError && caught.code === "UNKNOWN_USER"
@@ -272,32 +308,67 @@ function NewConversation({
     );
   }
 
+  const canSend = picked.size > 0 || username.trim().length > 0;
+
   return (
     <form onSubmit={submit} className="space-y-2">
+      {contacts !== null && contacts.length > 0 && (
+        <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
+          {contacts.map((contact) => (
+            <label
+              key={contact.userId}
+              className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm text-neutral-800 hover:bg-neutral-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
+            >
+              <input
+                type="checkbox"
+                checked={picked.has(contact.userId)}
+                onChange={() => toggle(contact.userId)}
+                className="h-4 w-4 shrink-0"
+              />
+              <span className="min-w-0 truncate">
+                {contact.displayName}
+                <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  @{contact.username}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+
       <input
         autoFocus
         value={username}
         onChange={(e) => setUsername(e.target.value)}
-        placeholder="username, or several for a group"
+        placeholder={
+          contacts !== null && contacts.length > 0
+            ? "Or add by username"
+            : "username, or several for a group"
+        }
         className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
       />
+
+      {picked.size > 1 && (
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          {picked.size} people — this will start a group.
+        </p>
+      )}
+
       {error && (
         <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
       )}
+
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={busy || username.trim().length === 0}
+          disabled={busy || !canSend}
           className="flex-1 rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
         >
           {busy ? "…" : "Start"}
         </button>
         <button
           type="button"
-          onClick={() => {
-            setOpen(false);
-            setError(null);
-          }}
+          onClick={reset}
           className="rounded-md px-3 py-1.5 text-sm text-neutral-500"
         >
           Cancel
