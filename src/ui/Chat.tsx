@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Attachment } from "./Attachment";
 import { Settings } from "./Settings";
+import { Friends } from "./Friends";
 import {
   decodeContent,
   encodeContent,
@@ -967,6 +968,7 @@ export function Chat({
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [friendsOpen, setFriendsOpen] = useState(false);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
 
@@ -1007,6 +1009,18 @@ export function Chat({
   const showList = isDesktop || selected === null;
   const showThread = isDesktop || selected !== null;
 
+  if (friendsOpen) {
+    return (
+      <Friends
+        onClose={() => setFriendsOpen(false)}
+        onOpenConversation={(id) => {
+          setSelected(id);
+          setFriendsOpen(false);
+        }}
+      />
+    );
+  }
+
   if (settingsOpen) {
     return (
       <Settings
@@ -1026,6 +1040,12 @@ export function Chat({
           messenger
         </span>
         <span className="flex items-center gap-3">
+          <button
+            onClick={() => setFriendsOpen(true)}
+            className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+          >
+            Contacts
+          </button>
           <button
             onClick={() => setSettingsOpen(true)}
             className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"

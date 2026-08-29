@@ -594,3 +594,51 @@ export function setReadReceipts(enabled: boolean): Promise<void> {
     body: { enabled },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Contacts
+// ---------------------------------------------------------------------------
+
+export type Friend = {
+  userId: string;
+  username: string;
+  displayName: string;
+  since: string | null;
+};
+
+export type FriendRequest = Friend & { requestedAt: string };
+
+export type FriendLists = {
+  friends: Friend[];
+  incoming: FriendRequest[];
+  outgoing: FriendRequest[];
+  blocked: Friend[];
+};
+
+export function fetchFriends(): Promise<FriendLists> {
+  return request<FriendLists>(`${API}/friends`);
+}
+
+/** `mutual` is true when this met a request coming the other way. */
+export function requestFriend(
+  userId: string,
+): Promise<{ status: string; mutual: boolean }> {
+  return request(`${API}/friends/request`, { method: "POST", body: { userId } });
+}
+
+export function acceptFriend(userId: string): Promise<void> {
+  return request<void>(`${API}/friends/accept`, { method: "POST", body: { userId } });
+}
+
+/** Declines a request or removes a contact -- the same operation either way. */
+export function removeFriend(userId: string): Promise<void> {
+  return request<void>(`${API}/friends/remove`, { method: "POST", body: { userId } });
+}
+
+export function blockUser(userId: string): Promise<void> {
+  return request<void>(`${API}/friends/block`, { method: "POST", body: { userId } });
+}
+
+export function unblockUser(userId: string): Promise<void> {
+  return request<void>(`${API}/friends/unblock`, { method: "POST", body: { userId } });
+}
