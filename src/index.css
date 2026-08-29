@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Tailwind v4 is configured in CSS rather than a tailwind.config.js -- there
+   is no config file to create unless a theme needs extending. */
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
