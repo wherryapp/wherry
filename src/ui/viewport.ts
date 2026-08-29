@@ -42,6 +42,22 @@ export function trackVisualViewport(): void {
     // value (or the CSS fallback) in place and wait for a real measurement.
     if (viewport.height <= 0) return;
 
+    // Undo the document scroll, which is the actual displacement.
+    //
+    // iOS reveals a focused input by scrolling the *document*, and it does
+    // this even here, where the body cannot scroll and the shell is fixed --
+    // the fixed layer is dragged up with the page, taking the header off the
+    // top of the screen and leaving the composer stranded in the middle with
+    // blank space beneath it.
+    //
+    // `offsetTop` does not describe that. It is the visual viewport's offset
+    // within the *layout* viewport, and it stays 0 throughout, which is why
+    // compensating against it changed nothing. The displacement is
+    // `window.scrollY` on a document that is not supposed to scroll at all,
+    // so the cure is to put it back -- every frame, until the keyboard has
+    // finished animating and Safari stops trying.
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
+
     root.style.setProperty("--app-height", `${viewport.height}px`);
     root.style.setProperty("--app-offset", `${viewport.offsetTop}px`);
   };

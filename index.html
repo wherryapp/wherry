@@ -3,7 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- interactive-widget tells the browser to shrink the layout viewport when
+         the on-screen keyboard appears, rather than leaving the page full height
+         and scrolling it out of the way. Where it is honoured the app compacts on
+         its own and src/ui/viewport.ts has nothing left to correct; where it is
+         not, it is ignored and that file is the fallback. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
+    />
     <title>messenger</title>
   </head>
   <body>
