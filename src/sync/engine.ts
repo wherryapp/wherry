@@ -29,10 +29,12 @@ import {
   isUnreachable,
   listConversations,
   sendMessage,
+  downloadAttachment,
 } from "../api/client";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { loadSession } from "../api/session";
 import { PROTOCOL_PLAINTEXT } from "../api/types";
+import { decodeContent } from "../api/payload";
 import type { ArchiveEntry, InboxEnvelope } from "../api/types";
 import { store } from "../store";
 import {
@@ -472,6 +474,12 @@ export class SyncEngine {
       // `conversations` and there is no row to hang the thread on.
       await this.#refreshUnknownConversations(conversationIds, signal);
 
+      // Attachments are fetched now rather than when somebody looks at them.
+      // Deliberately after the ack: the messages are already durable, so a
+      // failure here costs a photo that can be fetched later rather than a
+      // message that has to be delivered again.
+      await this.#fetchAttachments(messages, signal);
+
       if (envelopes.length < INBOX_PAGE) return;
     }
   }
@@ -561,6 +569,68 @@ export class SyncEngine {
     await store.putConversations(conversations);
     this.#emit({ type: "conversations" });
     broadcast({ type: "conversations" });
+  }
+
+  /**
+   * Downloads the attachments of messages that have just arrived.
+   *
+   * The point is retention. The server deletes attachment bytes after a
+   * window; a device that only fetches when somebody scrolls to a photo will
+   * find it gone if nobody scrolled for a month. Fetching on receipt is what
+   * makes "you keep what was sent to you" true rather than aspirational, and
+   * it is the same reason a mail client downloads a message rather than a
+   * pointer to one.
+   *
+   * Never throws, and is not part of the delivery contract. Envelopes are
+   * already acked by this point, so a photo that fails here is retried the
+   * next time it is looked at -- which is exactly the on-demand path that
+   * existed before this method, still there as the fallback.
+   *
+   * Deliberately only for messages arriving through the inbox, not for the
+   * archive walk a new device does on first run. Those messages are already
+   * old by definition and a good share of their attachments have expired
+   * anyway, so prefetching them means a large burst of downloads to win back
+   * whatever fraction is still inside the retention window. New messages are
+   * where the whole window is still ahead, which is where prefetching earns
+   * its bandwidth.
+   */
+  async #fetchAttachments(
+    messages: readonly StoredMessage[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    // Somebody on a metered connection did not agree to download every photo
+    // in a group chat the moment it arrives. The on-demand path still works
+    // for them; they just pay for what they choose to look at.
+    const connection = (
+      navigator as { connection?: { saveData?: boolean } }
+    ).connection;
+    if (connection?.saveData) return;
+
+    const refs = messages
+      .filter((message) => message.protocolVersion === PROTOCOL_PLAINTEXT)
+      .flatMap((message) => decodeContent(message.payload).attachments);
+
+    // One at a time. A burst of parallel photo downloads competes with the
+    // poll loop for the same connection, and nothing here is urgent -- the
+    // messages are already delivered and rendered.
+    for (const ref of refs) {
+      if (signal.aborted) return;
+      if (await store.getBlob(ref.id)) continue;
+
+      try {
+        const fetched = await downloadAttachment(ref.id, { signal });
+        await store.putBlob(
+          ref.id,
+          fetched.state === "ok"
+            ? { state: "ok", mediaType: ref.mediaType, bytes: fetched.bytes }
+            : { state: fetched.state },
+        );
+      } catch {
+        // Left unrecorded so it is tried again, unlike the terminal states
+        // above. A network failure is not a verdict about the attachment.
+        return;
+      }
+    }
   }
 
   /**

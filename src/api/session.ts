@@ -166,10 +166,36 @@ export function deviceDescriptor(displayName: string): {
   return {
     ...(id ? { id } : {}),
     displayName,
-    // Always "desktop" for now. Phase 5 wraps this same app in Tauri, where it
-    // stays desktop; ios and android arrive with real native builds.
-    platform: "desktop",
+    platform: detectPlatform(),
   };
+}
+
+/**
+ * What kind of device this is.
+ *
+ * This used to be hard-coded to "desktop", reasoning that Phase 5 wraps the
+ * same app in Tauri where it stays desktop, and that ios and android would
+ * arrive with native builds. That was written before the app was installable,
+ * and it stopped being true the day somebody added it to an iPhone home
+ * screen: the column now claims every phone is a computer, in a device list
+ * people read to decide which device to revoke.
+ *
+ * A native build later reporting the same value as the web app on the same
+ * platform is correct, not a collision -- the column describes the device, not
+ * the packaging.
+ */
+function detectPlatform(): Platform {
+  const ua = navigator.userAgent;
+
+  // Before the Mac check, because an iPhone's user agent contains "Mac OS X"
+  // and an iPad in desktop mode claims to be a Macintosh outright -- only the
+  // touch count gives that one away. Same ordering trap as defaultDeviceName
+  // below, and as sync/push.ts.
+  if (/iPad|iPhone|iPod/.test(ua)) return "ios";
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return "ios";
+  if (/Android/.test(ua)) return "android";
+
+  return "desktop";
 }
 
 /**

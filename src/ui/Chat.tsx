@@ -79,6 +79,48 @@ function conversationTitle(
   return others.map((m) => m.displayName || m.username).join(", ");
 }
 
+/**
+ * How many other members have read up to this message.
+ *
+ * Their markers are already in the conversation payload -- this is a
+ * comparison, not a request. Ids are uuidv7, so comparing them compares send
+ * order, which is the same property the server relies on to move a marker
+ * forward and never back.
+ *
+ * Members who turned read receipts off arrive with a null marker and are
+ * counted as not having read, which is exactly what they asked for: their
+ * absence is indistinguishable from not having got to it yet.
+ */
+function readCount(
+  conversation: StoredConversation | undefined,
+  selfUserId: string,
+  messageId: string,
+): number {
+  if (!conversation) return 0;
+
+  return conversation.members.filter(
+    (member) =>
+      member.userId !== selfUserId &&
+      member.lastReadMessageId !== null &&
+      member.lastReadMessageId >= messageId,
+  ).length;
+}
+
+/**
+ * The words for a read count.
+ *
+ * Nothing at all when nobody has read it, rather than "Read by 0" -- an
+ * unread message showing a receipt reads as a delivery failure. In a 1:1
+ * there is only one possible reader, so the count is noise and it is just
+ * "Read".
+ */
+function readLabel(count: number, others: number): string | undefined {
+  if (count === 0) return undefined;
+  if (others <= 1) return "Read";
+  if (count >= others) return "Read by everyone";
+  return `Read by ${count}`;
+}
+
 /** A member's display name, for attribution in groups. */
 function memberName(conversation: StoredConversation, userId: string): string {
   const member = conversation.members.find((m) => m.userId === userId);
@@ -565,12 +607,19 @@ function Bubble({
   meta,
   muted,
   sender,
+  receipt,
 }: {
   mine: boolean;
   /** Null when this build cannot display the payload at all. */
   content: MessageContent | null;
   meta: string;
   muted?: boolean;
+  /**
+   * "Read", or "Read by 2", under your own messages. Never under anybody
+   * else's -- telling you that you have read something you are looking at is
+   * not information.
+   */
+  receipt?: string | undefined;
   /**
    * Who sent it, on incoming messages in a group.
    *
@@ -615,7 +664,10 @@ function Bubble({
             )}
           </>
         )}
-        <span className="mt-1 block text-[10px] opacity-60">{meta}</span>
+        <span className="mt-1 block text-[10px] opacity-60">
+          {meta}
+          {receipt && ` · ${receipt}`}
+        </span>
       </div>
     </div>
   );
@@ -636,6 +688,9 @@ function Timeline({
   // Names by user id, so attribution is a lookup rather than a scan per
   // message. Only built for groups, since a 1:1 never shows them.
   const isGroup = (conversation?.members.length ?? 0) > 2;
+  // Everybody but you. Used to decide whether "Read" means everyone.
+  const others = Math.max(0, (conversation?.members.length ?? 1) - 1);
+
   const names = useMemo(() => {
     const map = new Map<string, string>();
     for (const member of conversation?.members ?? []) {
@@ -688,6 +743,18 @@ function Timeline({
             sender={
               isGroup && item.message.senderUserId !== session.user.id
                 ? (names.get(item.message.senderUserId) ?? "Someone")
+                : undefined
+            }
+            receipt={
+              item.message.senderUserId === session.user.id
+                ? readLabel(
+                    readCount(
+                      conversation,
+                      session.user.id,
+                      item.message.messageId,
+                    ),
+                    others,
+                  )
                 : undefined
             }
           />
