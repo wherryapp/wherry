@@ -466,6 +466,12 @@ export class SyncEngine {
       this.#emit({ type: "messages", conversationIds });
       broadcast({ type: "messages", conversationIds });
 
+      // A message can be the first this device has heard of a conversation --
+      // somebody else created it and sent to it. Storing the message is not
+      // enough to make it visible, because the list is built from
+      // `conversations` and there is no row to hang the thread on.
+      await this.#refreshUnknownConversations(conversationIds, signal);
+
       if (envelopes.length < INBOX_PAGE) return;
     }
   }
@@ -555,6 +561,36 @@ export class SyncEngine {
     await store.putConversations(conversations);
     this.#emit({ type: "conversations" });
     broadcast({ type: "conversations" });
+  }
+
+  /**
+   * Fetches conversation metadata when a message arrives for a conversation
+   * this device does not know about.
+   *
+   * `#refreshConversations` is throttled to CONVERSATION_REFRESH_MS because
+   * metadata almost never changes. That is right for a rename and wrong for a
+   * first message: until the row exists locally the thread is not in the list
+   * at all, so a conversation someone else starts stays invisible for up to
+   * the whole refresh interval while its messages sit in storage. Reloading
+   * the page appeared to fix it, which is the tell -- startup refreshes
+   * unconditionally.
+   *
+   * Only the unknown case bypasses the throttle. A message in a conversation
+   * already on file changes no metadata and is left to the timer.
+   */
+  async #refreshUnknownConversations(
+    conversationIds: readonly string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (conversationIds.length === 0) return;
+
+    const known = new Set(
+      (await store.listConversations()).map((conversation) => conversation.id),
+    );
+    if (conversationIds.every((id) => known.has(id))) return;
+
+    this.#lastConversationRefresh = 0;
+    await this.#refreshConversations(signal);
   }
 
   /** Forces the next tick to re-read conversations. */
