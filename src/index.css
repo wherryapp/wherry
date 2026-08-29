@@ -41,4 +41,40 @@ body {
   height: 100vh;
   height: 100dvh;
   height: var(--app-height, 100dvh);
+
+  /* Keep the app out of the notch, the rounded corners and the home
+     indicator.
+
+     Installed to the home screen there is no browser chrome to sit in the way,
+     so the page runs edge to edge on hardware whose edges are not rectangles:
+     a corner clips the "Sign out" button, and the home indicator sits on top
+     of the composer. `viewport-fit=cover` in index.html is what lets the
+     background reach the edges; these insets are what keep anything you have
+     to press away from them. The pair go together -- cover without the insets
+     is the bug, insets without cover is a letterboxed app with bands the
+     wrong colour. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+
+  /* The bottom inset exists for the home indicator, which the keyboard covers
+     entirely. Left alone it would hold the composer a thumb's width above the
+     keyboard for no reason, so the keyboard's own height is subtracted from
+     it -- published as --app-keyboard by ui/viewport.ts. Clamped at zero
+     because the keyboard is far taller than the inset. */
+  padding-bottom: max(
+    0px,
+    calc(env(safe-area-inset-bottom, 0px) - var(--app-keyboard, 0px))
+  );
+
+  /* The padded strips show this, so it matches the header and the composer
+     rather than the page behind them -- otherwise the app looks like it is
+     floating on a differently coloured sheet. */
+  background: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  #root {
+    background: #171717;
+  }
 }

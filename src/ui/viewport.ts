@@ -60,6 +60,13 @@ export function trackVisualViewport(): void {
 
     root.style.setProperty("--app-height", `${viewport.height}px`);
     root.style.setProperty("--app-offset", `${viewport.offsetTop}px`);
+
+    // How much of the screen the keyboard is covering, for index.css to
+    // subtract from the bottom safe-area inset. `innerHeight` is the layout
+    // viewport and the keyboard does not change it, which is what makes the
+    // difference between the two the keyboard's own height.
+    const keyboard = Math.max(0, Math.round(window.innerHeight - viewport.height));
+    root.style.setProperty("--app-keyboard", `${keyboard}px`);
   };
 
   // Following the animation frame by frame, rather than only when told.

@@ -39,16 +39,16 @@ self.addEventListener("activate", (event) => {
 // Push
 // ---------------------------------------------------------------------------
 
-// The payload never contains the message, and cannot.
+// The payload names the sender and never contains the message.
 //
-// The server composes this notification, and the server cannot read message
-// content -- rule 1 in CLAUDE.md, and not merely a policy: once payloads are
-// ciphertext there is nothing to put in a preview even if the rule were
-// dropped. So the notification says something arrived, and the app shows what
-// it was once it is open and has decrypted it locally.
+// Who sent it is metadata the server has always held in the clear; the body is
+// content it cannot read, now or ever -- once payloads are ciphertext there is
+// nothing to preview even if rule 1 were dropped. So a notification says who,
+// and the app shows what once it is open and has decrypted it locally.
 self.addEventListener("push", (event) => {
   let title = "New message";
   let body = "Open messenger to read it.";
+  let tag = "messenger-message";
 
   // A push with no data at all is valid and is what a "wake up and check"
   // notification looks like. Anything that does arrive is untrusted input from
@@ -58,6 +58,7 @@ self.addEventListener("push", (event) => {
       const data = event.data.json();
       if (typeof data.title === "string") title = data.title;
       if (typeof data.body === "string") body = data.body;
+      if (typeof data.tag === "string") tag = data.tag;
     } catch {
       // Not JSON. The defaults above are already the right answer.
     }
@@ -68,10 +69,11 @@ self.addEventListener("push", (event) => {
       body,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
-      // One notification that replaces itself, rather than a stack of
-      // identical "new message" rows for a conversation somebody is about to
-      // open anyway.
-      tag: "messenger-message",
+      // Grouped per conversation by the server, so a second message from the
+      // same person replaces the first rather than stacking, while two
+      // different people produce two separate rows. A single fixed tag would
+      // have let one chatty conversation hide another entirely.
+      tag,
       renotify: true,
     }),
   );
