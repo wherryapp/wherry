@@ -586,14 +586,19 @@ export function Chat({
 
   const current = conversations.find((c) => c.id === selected);
 
-  // A selection that no longer resolves would strand a phone on an empty pane
-  // whose only exit is the back button in a header that is not rendered.
-  // Guarded on a non-empty list so the async first load does not clear it.
-  useEffect(() => {
-    if (selected !== null && conversations.length > 0 && !current) {
-      setSelected(null);
-    }
-  }, [selected, conversations, current]);
+  // Nothing resets the selection any more, on purpose.
+  //
+  // It used to, to rescue a phone from a thread pane with no way out. That was
+  // treating the symptom: the pane is now driven by the selected *id*, which
+  // is all the timeline and composer ever needed, so it renders -- with its
+  // back button -- whether or not the metadata has arrived. `current` is only
+  // consulted for the title.
+  //
+  // Which matters most in the case that produced the bug: starting a new
+  // conversation selects an id the list has not been refreshed with yet, and
+  // on a brand new account the list is empty, so the old guard
+  // (`conversations.length > 0`) declined to rescue exactly the person who
+  // most needed rescuing.
 
   // One pane at a time below md, both above it. Rendered rather than hidden:
   // the list and the thread each hold a subscription per conversation, and
@@ -628,7 +633,7 @@ export function Chat({
 
         {showThread && (
           <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-neutral-900">
-            {current ? (
+            {selected !== null ? (
               <>
                 <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
                   {!isDesktop && (
@@ -641,11 +646,13 @@ export function Chat({
                     </button>
                   )}
                   <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                    {conversationTitle(current, session.user.id)}
+                    {current
+                      ? conversationTitle(current, session.user.id)
+                      : "Conversation"}
                   </span>
                 </div>
-                <Timeline conversationId={current.id} session={session} />
-                <Composer conversationId={current.id} />
+                <Timeline conversationId={selected} session={session} />
+                <Composer conversationId={selected} />
               </>
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">
