@@ -189,12 +189,27 @@ export function defaultDeviceName(): string {
         : /Safari\//.test(ua)
           ? "Safari"
           : "Browser";
-  const os = /Mac OS X/.test(ua)
-    ? "Mac"
-    : /Windows/.test(ua)
-      ? "Windows"
-      : /Linux/.test(ua)
-        ? "Linux"
-        : "";
+  // Phones first, and the order is the whole point. An iPhone's user agent
+  // contains "Mac OS X" and an Android's contains "Linux", so testing desktop
+  // platforms first labels every phone as a computer -- which is how a live
+  // iPhone came to be listed as "Safari on Mac" and an Android as "Chrome on
+  // Linux". This name is what somebody reads to tell their devices apart, so
+  // being wrong about it defeats the only reason it exists.
+  const os = /iPhone/.test(ua)
+    ? "iPhone"
+    : // An iPad in desktop mode claims to be a Mac and only the touch count
+      // gives it away, same trick as sync/push.ts.
+      /iPad/.test(ua) ||
+        (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+      ? "iPad"
+      : /Android/.test(ua)
+        ? "Android"
+        : /Mac OS X/.test(ua)
+          ? "Mac"
+          : /Windows/.test(ua)
+            ? "Windows"
+            : /Linux/.test(ua)
+              ? "Linux"
+              : "";
   return os ? `${browser} on ${os}` : browser;
 }
