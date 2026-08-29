@@ -1,9 +1,14 @@
 // The HTTP surface, one function per endpoint in docs/api.md.
 //
-// Every URL is a relative path. There is no base-URL constant and no
+// Every URL is a relative path under /api. There is no host, no port and no
 // environment variable, because the app is always same-origin with the API:
-// Vite proxies these paths to :3000 in development, and Caddy serves the built
-// assets and reverse-proxies the same paths in production. See vite.config.ts.
+// Vite proxies /api to :3000 in development, and in production Caddy serves the
+// built assets and reverse-proxies /api on the same hostname. Same origin both
+// times means CORS does not exist in this system, and there is no base URL that
+// can be wrong in a build.
+//
+// The prefix is what lets one Caddy rule separate the API from the client's
+// static files. See server.ts, where it is applied.
 
 import { currentToken } from "./session";
 import type {
@@ -18,6 +23,15 @@ import type {
   PublicUser,
   SendResult,
 } from "./types";
+
+/**
+ * Every request goes under here.
+ *
+ * One constant rather than the prefix being written into each path below, so
+ * moving it is a one-line change on both sides -- this and API_PREFIX in the
+ * server's server.ts.
+ */
+const API = "/api";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -172,7 +186,7 @@ export function register(input: {
   password: string;
   device: DeviceDescriptor;
 }): Promise<AuthResult> {
-  return request<AuthResult>("/auth/register", {
+  return request<AuthResult>(`${API}/auth/register`, {
     method: "POST",
     body: input,
     anonymous: true,
@@ -184,7 +198,7 @@ export function login(input: {
   password: string;
   device: DeviceDescriptor;
 }): Promise<AuthResult> {
-  return request<AuthResult>("/auth/login", {
+  return request<AuthResult>(`${API}/auth/login`, {
     method: "POST",
     body: input,
     anonymous: true,
@@ -192,7 +206,7 @@ export function login(input: {
 }
 
 export function logout(): Promise<void> {
-  return request<void>("/auth/logout", { method: "POST" });
+  return request<void>(`${API}/auth/logout`, { method: "POST" });
 }
 
 export function me(): Promise<{
@@ -200,7 +214,7 @@ export function me(): Promise<{
   device: PublicDevice;
   session: { id: string; expiresAt: string };
 }> {
-  return request("/auth/me");
+  return request(`${API}/auth/me`);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +229,7 @@ export function me(): Promise<{
  */
 export function lookupUser(username: string): Promise<PublicUser> {
   return request<PublicUser>(
-    `/users/lookup?username=${encodeURIComponent(username)}`,
+    `${API}/users/lookup?username=${encodeURIComponent(username)}`,
   );
 }
 
@@ -228,14 +242,14 @@ export function createConversation(input: {
   kind: "direct" | "group";
   memberUserIds: string[];
 }): Promise<Conversation> {
-  return request<Conversation>("/conversations", {
+  return request<Conversation>(`${API}/conversations`, {
     method: "POST",
     body: input,
   });
 }
 
 export async function listConversations(): Promise<Conversation[]> {
-  const page = await request<{ conversations: Conversation[] }>("/conversations");
+  const page = await request<{ conversations: Conversation[] }>(`${API}/conversations`);
   return page.conversations;
 }
 
@@ -254,7 +268,7 @@ export function sendMessage(input: {
   payload: string;
 }): Promise<SendResult> {
   return request<SendResult>(
-    `/conversations/${input.conversationId}/messages`,
+    `${API}/conversations/${input.conversationId}/messages`,
     {
       method: "POST",
       body: {
@@ -276,7 +290,7 @@ export function listConversationMessages(input: {
   if (input.limit) params.set("limit", String(input.limit));
   const query = params.toString();
   return request<MessagesPage>(
-    `/conversations/${input.conversationId}/messages${query ? `?${query}` : ""}`,
+    `${API}/conversations/${input.conversationId}/messages${query ? `?${query}` : ""}`,
   );
 }
 
@@ -290,7 +304,7 @@ export async function fetchInbox(
 ): Promise<InboxEnvelope[]> {
   const query = options.limit ? `?limit=${options.limit}` : "";
   const page = await request<{ envelopes: InboxEnvelope[] }>(
-    `/inbox${query}`,
+    `${API}/inbox${query}`,
     options.signal ? { signal: options.signal } : {},
   );
   return page.envelopes;
@@ -305,7 +319,7 @@ export function ackEnvelopes(
   envelopeIds: string[],
   options: { signal?: AbortSignal } = {},
 ): Promise<{ acked: number }> {
-  return request<{ acked: number }>("/inbox/ack", {
+  return request<{ acked: number }>(`${API}/inbox/ack`, {
     method: "POST",
     body: { envelopeIds },
     ...(options.signal ? { signal: options.signal } : {}),
@@ -333,7 +347,7 @@ export function fetchArchive(
   if (input.limit) params.set("limit", String(input.limit));
   const query = params.toString();
   return request<ArchivePage>(
-    `/archive${query ? `?${query}` : ""}`,
+    `${API}/archive${query ? `?${query}` : ""}`,
     options.signal ? { signal: options.signal } : {},
   );
 }
