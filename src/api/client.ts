@@ -533,3 +533,64 @@ function safeParse(raw: string): unknown {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Account settings
+// ---------------------------------------------------------------------------
+
+export type AccountSettings = {
+  displayName: string;
+  readReceiptsEnabled: boolean;
+};
+
+export type AccountDevice = {
+  id: string;
+  displayName: string;
+  platform: string;
+  createdAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+  current: boolean;
+};
+
+export function fetchAccountSettings(): Promise<AccountSettings> {
+  return request<AccountSettings>(`${API}/account/settings`);
+}
+
+export function changeDisplayName(
+  displayName: string,
+): Promise<{ displayName: string }> {
+  return request(`${API}/account/display-name`, {
+    method: "POST",
+    body: { displayName },
+  });
+}
+
+/** Resolves with how many other sessions were signed out. */
+export function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ otherSessionsRevoked: number }> {
+  return request(`${API}/account/password`, {
+    method: "POST",
+    body: { currentPassword, newPassword },
+  });
+}
+
+export function fetchDevices(): Promise<{ devices: AccountDevice[] }> {
+  return request(`${API}/account/devices`);
+}
+
+export function revokeDevice(deviceId: string): Promise<void> {
+  return request<void>(`${API}/account/devices/${deviceId}/revoke`, {
+    method: "POST",
+    body: {},
+  });
+}
+
+export function setReadReceipts(enabled: boolean): Promise<void> {
+  return request<void>(`${API}/account/read-receipts`, {
+    method: "POST",
+    body: { enabled },
+  });
+}

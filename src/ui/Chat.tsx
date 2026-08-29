@@ -7,6 +7,7 @@ import {
   type FormEvent,
 } from "react";
 import { Attachment } from "./Attachment";
+import { Settings } from "./Settings";
 import {
   decodeContent,
   encodeContent,
@@ -898,6 +899,7 @@ export function Chat({
   onSignOut: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
 
@@ -938,18 +940,38 @@ export function Chat({
   const showList = isDesktop || selected === null;
   const showThread = isDesktop || selected !== null;
 
+  if (settingsOpen) {
+    return (
+      <Settings
+        session={session}
+        onClose={() => setSettingsOpen(false)}
+        // Revoking this device already invalidated the session server-side, so
+        // the only honest thing left is the same local teardown as a sign-out.
+        onSignedOut={onSignOut}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
       <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2 dark:border-neutral-800 dark:bg-neutral-900">
         <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
           messenger
         </span>
-        <button
-          onClick={onSignOut}
-          className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
-        >
-          Sign out
-        </button>
+        <span className="flex items-center gap-3">
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+          >
+            Settings
+          </button>
+          <button
+            onClick={onSignOut}
+            className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+          >
+            Sign out
+          </button>
+        </span>
       </header>
 
       <StatusLine />
