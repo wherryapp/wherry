@@ -12,6 +12,28 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
     />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- iOS uses this for the home screen icon rather than the manifest's,
+         and it is the platform where the install matters most: web push is
+         only delivered to a site that has been added to the home screen. -->
+    <link rel="apple-touch-icon" href="/icon-180.png" />
+
+    <!-- Paints the browser and status bar chrome to match the app, which is
+         what stops an installed window looking like a web page in a frame.
+         Two, because the app follows the system light/dark setting. -->
+    <meta
+      name="theme-color"
+      content="#ffffff"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#111111"
+      media="(prefers-color-scheme: dark)"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+
     <title>messenger</title>
   </head>
   <body>
