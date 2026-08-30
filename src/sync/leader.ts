@@ -234,6 +234,7 @@ export type SyncBroadcast =
   | { type: "messages"; conversationIds: string[] }
   | { type: "conversations" }
   | { type: "announcements" }
+  | { type: "receipts"; conversationId: string }
   | { type: "signed-out" }
   /** The leader saying it is still running. See the watchdog in runAsLeader. */
   | { type: "leader-alive" };

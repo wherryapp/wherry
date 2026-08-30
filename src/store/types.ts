@@ -369,3 +369,14 @@ export const META_ANNOUNCEMENTS = "announcements";
  * devices, which it does not yet.
  */
 export const META_ANNOUNCEMENTS_SEEN = "announcements.seen";
+
+/**
+ * Per-conversation delivered watermarks: `delivered.<conversationId>` holds
+ * a Record of recipient user id -> the newest of this account's message ids
+ * that user has acked. Fed by "delivered" frames off the realtime socket
+ * (sync/engine.ts), monotone -- an entry only ever moves forward, so a
+ * missed frame is repaired by the next one. Rendered by the timeline as the
+ * "Delivered" receipt when nobody has read yet; a read receipt (which rides
+ * the conversation listing, persistently) always wins over it.
+ */
+export const META_DELIVERED_PREFIX = "delivered.";

@@ -13,6 +13,7 @@ import type { Announcement } from "../api/client";
 import {
   META_ANNOUNCEMENTS,
   META_ANNOUNCEMENTS_SEEN,
+  META_DELIVERED_PREFIX,
   type OutboxEntry,
   type StoredConversation,
   type StoredEvent,
@@ -42,6 +43,11 @@ function useSyncEvents(handler: (event: SyncEvent) => void): void {
         ref.current({ type: "conversations" });
       } else if (message.type === "announcements") {
         ref.current({ type: "announcements" });
+      } else if (message.type === "receipts") {
+        ref.current({
+          type: "receipts",
+          conversationId: message.conversationId,
+        });
       }
     });
     return () => {
@@ -261,6 +267,38 @@ export function useLatestMessages(
   });
 
   return latest;
+}
+
+/**
+ * The delivered watermarks for one conversation: recipient user id -> the
+ * newest of this account's message ids that user has acked. Fed by the
+ * engine off "delivered" socket frames; empty until the first one arrives,
+ * which is the honest state -- ticks are best-effort by design, and a read
+ * receipt (from the conversation listing) always outranks them.
+ */
+export function useDeliveredMarks(
+  conversationId: string | null,
+): Record<string, string> {
+  const [marks, setMarks] = useState<Record<string, string>>({});
+
+  const reload = useCallback(() => {
+    if (conversationId === null) {
+      setMarks({});
+      return;
+    }
+    void store
+      .getMeta<Record<string, string>>(META_DELIVERED_PREFIX + conversationId)
+      .then((stored) => setMarks(stored ?? {}));
+  }, [conversationId]);
+
+  useEffect(reload, [reload]);
+  useSyncEvents((event) => {
+    if (event.type === "receipts" && event.conversationId === conversationId) {
+      reload();
+    }
+  });
+
+  return marks;
 }
 
 /**

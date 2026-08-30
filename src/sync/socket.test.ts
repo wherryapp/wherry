@@ -190,3 +190,35 @@ test("staleness closes a silent socket, which routes into reconnect", async () =
   assert.ok(sockets.length >= 2, "no reconnect after staleness close");
   manager.stop();
 });
+
+test("a signal frame reaches onFrame; core frames and junk do not", () => {
+  const sockets: FakeSocket[] = [];
+  const frames: unknown[] = [];
+  const manager = new SocketManager({
+    createSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    url: "ws://test/api/ws",
+    getToken: () => "tok",
+    notify: () => {},
+    onFrame: (frame) => frames.push(frame),
+    backoff: new Backoff({ baseMs: 0, ceilingMs: 0 }),
+    staleCheckMs: 60 * 60 * 1000,
+  });
+  manager.start();
+  const socket = sockets[0]!;
+  socket.fire("open", {});
+  socket.fire("message", { data: '{"type":"ready"}' });
+  socket.fire("message", {
+    data: '{"type":"delivered","conversationId":"c","byUserId":"u","upTo":"m"}',
+  });
+  socket.fire("message", { data: '{"type":"ping"}' });
+  socket.fire("message", { data: "junk" });
+
+  assert.deepEqual(frames, [
+    { type: "delivered", conversationId: "c", byUserId: "u", upTo: "m" },
+  ]);
+  manager.stop();
+});

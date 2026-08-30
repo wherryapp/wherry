@@ -47,6 +47,7 @@ import { BlobCryptoError, openAttachmentBytes } from "../crypto/blob";
 import { store } from "../store";
 import {
   META_ANNOUNCEMENTS,
+  META_DELIVERED_PREFIX,
   META_HYDRATION,
   type HydrationState,
   type OutboxEntry,
@@ -154,7 +155,8 @@ export type SyncEvent =
   | { type: "status"; status: SyncStatus }
   | { type: "messages"; conversationIds: string[] }
   | { type: "conversations" }
-  | { type: "announcements" };
+  | { type: "announcements" }
+  | { type: "receipts"; conversationId: string };
 
 type Listener = (event: SyncEvent) => void;
 
@@ -469,6 +471,7 @@ export class SyncEngine {
     this.#socket = new SocketManager({
       getToken: currentToken,
       notify: () => this.poke(),
+      onFrame: (frame) => void this.#onSignalFrame(frame),
     });
     this.#socket.start();
     try {
@@ -986,6 +989,51 @@ export class SyncEngine {
     await store.setMeta(META_ANNOUNCEMENTS, fetched);
     this.#emit({ type: "announcements" });
     broadcast({ type: "announcements" });
+  }
+
+  /**
+   * A signal frame from the socket -- anything beyond ready/wake/ping.
+   *
+   * "delivered" feeds the per-conversation watermark the ticks render from:
+   * a map of recipient user id to the newest of this account's message ids
+   * that user has acked. Monotone by construction (ids are uuidv7, the max
+   * only moves forward), which is the whole reliability story -- a frame
+   * lost to a closed socket is repaired by the next ack in the conversation,
+   * and a read receipt subsumes delivered anyway. Nothing here fetches; the
+   * frame carries everything the watermark needs.
+   *
+   * Unknown types are ignored, same forward-compatibility stance as the
+   * socket itself: a newer server may speak frames this build has no use
+   * for yet.
+   */
+  async #onSignalFrame(
+    frame: { type: string } & Record<string, unknown>,
+  ): Promise<void> {
+    if (frame.type !== "delivered") return;
+    const conversationId = frame["conversationId"];
+    const byUserId = frame["byUserId"];
+    const upTo = frame["upTo"];
+    if (
+      typeof conversationId !== "string" ||
+      typeof byUserId !== "string" ||
+      typeof upTo !== "string"
+    ) {
+      return;
+    }
+
+    try {
+      const key = META_DELIVERED_PREFIX + conversationId;
+      const marks = (await store.getMeta<Record<string, string>>(key)) ?? {};
+      const current = marks[byUserId];
+      if (current !== undefined && current >= upTo) return;
+      marks[byUserId] = upTo;
+      await store.setMeta(key, marks);
+      this.#emit({ type: "receipts", conversationId });
+      broadcast({ type: "receipts", conversationId });
+    } catch {
+      // Best-effort, like everything on the signal path: a failed write
+      // means a tick appears a little later, never that anything is lost.
+    }
   }
 
   /**

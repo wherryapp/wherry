@@ -53,6 +53,13 @@ export type SocketManagerOptions = {
   getToken: () => string | null;
   /** "Run a sync pass." The engine passes poke; never anything heavier. */
   notify: () => void;
+  /**
+   * Any frame beyond the core ready/wake/ping vocabulary -- delivered ticks,
+   * and whatever the versioned protocol adds next. The socket stays dumb:
+   * it hands the parsed object over and the engine decides what it means.
+   * Best-effort by contract; nothing here retries or queues.
+   */
+  onFrame?: (frame: { type: string } & Record<string, unknown>) => void;
   backoff?: Backoff;
   staleMs?: number;
   staleCheckMs?: number;
@@ -180,8 +187,14 @@ export class SocketManager {
           socket.send(JSON.stringify({ type: "pong" }));
           break;
         default:
-          // A frame from a newer server. Ignoring it is the forward
+          // Not part of the core vocabulary. Hand it to the engine if it
+          // wants such frames; otherwise ignoring it is the forward
           // compatibility story, same as the server's post-auth stance.
+          if (typeof type === "string") {
+            this.#options.onFrame?.(
+              frame as { type: string } & Record<string, unknown>,
+            );
+          }
           break;
       }
     });

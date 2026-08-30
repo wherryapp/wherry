@@ -40,6 +40,7 @@ import { mlsEnabled, mlsSync } from "../sync/mls";
 import {
   useAnnouncements,
   useConversations,
+  useDeliveredMarks,
   useLatestMessages,
   useSyncStatus,
   useTimeline,
@@ -152,6 +153,33 @@ function readLabel(count: number, others: number): string | undefined {
   if (others <= 1) return "Read";
   if (count >= others) return "Read by everyone";
   return `Read by ${count}`;
+}
+
+/**
+ * How many other members' devices have received this message -- the
+ * delivered watermark comparison, same uuidv7 trick as readCount above.
+ *
+ * The marks arrive over the realtime socket and are best-effort: an empty
+ * map means "nothing known", not "not delivered", which is why the absence
+ * of a delivered label says nothing at all rather than showing a failure.
+ */
+function deliveredCount(
+  marks: Record<string, string>,
+  messageId: string,
+): number {
+  return Object.values(marks).filter((upTo) => upTo >= messageId).length;
+}
+
+/**
+ * The words for a delivered count, mirroring readLabel's shape. Only ever
+ * shown when nobody has read yet -- "Read" implies delivered, so showing
+ * both would say less with more.
+ */
+function deliveredLabel(count: number, others: number): string | undefined {
+  if (count === 0) return undefined;
+  if (others <= 1) return "Delivered";
+  if (count >= others) return "Delivered to everyone";
+  return `Delivered to ${count}`;
 }
 
 /** A member's display name, for attribution in groups. */
@@ -1169,6 +1197,7 @@ function Timeline({
   conversation: StoredConversation | undefined;
 }) {
   const { items, hasMore, loadOlder } = useTimeline(conversationId);
+  const delivered = useDeliveredMarks(conversationId);
 
   // Names by user id, so attribution is a lookup rather than a scan per
   // message. Only built for groups, since a 1:1 never shows them.
@@ -1244,6 +1273,10 @@ function Timeline({
                         session.user.id,
                         item.message.messageId,
                       ),
+                      others,
+                    ) ??
+                    deliveredLabel(
+                      deliveredCount(delivered, item.message.messageId),
                       others,
                     )
                   : undefined
