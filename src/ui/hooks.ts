@@ -9,7 +9,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
-import type { OutboxEntry, StoredConversation, StoredMessage } from "../store/types";
+import type {
+  OutboxEntry,
+  StoredConversation,
+  StoredEvent,
+  StoredMessage,
+} from "../store/types";
 import { sync, type SyncEvent, type SyncStatus } from "../sync/engine";
 import { subscribeToBroadcasts } from "../sync/leader";
 
@@ -76,15 +81,21 @@ const PAGE = 50;
 
 export type TimelineItem =
   | { kind: "sent"; message: StoredMessage }
-  | { kind: "pending"; entry: OutboxEntry };
+  | { kind: "pending"; entry: OutboxEntry }
+  | { kind: "event"; event: StoredEvent };
 
 /**
- * A conversation's messages, oldest at the top, with unsent ones at the end.
+ * A conversation's messages, oldest at the top, with unsent ones at the end,
+ * and notice lines (added/removed/renamed) interleaved among the sent ones.
  *
  * Stored messages and outbox entries are rendered together so a composed
  * message appears the instant it is typed rather than after a round trip. They
  * stay separate in storage because an outbox entry has no server id until the
  * send succeeds, and `messages` is keyed on exactly that.
+ *
+ * Notices are not paged with the messages: they are rare, the store holds a
+ * conversation's whole notice history, and mixing a second cursor into the
+ * "load older" walk would be real complexity for a handful of extra rows.
  */
 export function useTimeline(conversationId: string | null): {
   items: TimelineItem[];
@@ -92,6 +103,7 @@ export function useTimeline(conversationId: string | null): {
   loadOlder: () => void;
 } {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
+  const [events, setEvents] = useState<StoredEvent[]>([]);
   const [pending, setPending] = useState<OutboxEntry[]>([]);
   const [limit, setLimit] = useState(PAGE);
   const [hasMore, setHasMore] = useState(false);
@@ -99,6 +111,7 @@ export function useTimeline(conversationId: string | null): {
   const reload = useCallback(() => {
     if (!conversationId) {
       setMessages([]);
+      setEvents([]);
       setPending([]);
       return;
     }
@@ -114,6 +127,7 @@ export function useTimeline(conversationId: string | null): {
         setMessages(page.slice(0, limit).reverse());
       });
 
+    void store.getConversationEvents(conversationId).then(setEvents);
     void store.listOutbox(conversationId).then(setPending);
   }, [conversationId, limit]);
 
@@ -124,15 +138,36 @@ export function useTimeline(conversationId: string | null): {
       if (!conversationId) return;
       if (!event.conversationIds.includes(conversationId)) return;
       reload();
+    } else if (event.type === "conversations") {
+      // Notices refresh on the conversation-refresh cadence (see
+      // sync/engine.ts's #refreshEvents), which is what fires this event.
+      reload();
     }
   });
 
   const items = useMemo<TimelineItem[]>(
     () => [
       ...messages.map((message) => ({ kind: "sent" as const, message })),
+      ...events.map((event) => ({ kind: "event" as const, event })),
       ...pending.map((entry) => ({ kind: "pending" as const, entry })),
-    ],
-    [messages, pending],
+    ].sort((a, b) => {
+      // Pending entries have no server id yet and always sort last, after
+      // everything with one. Sent messages and notices interleave by id --
+      // both are uuidv7, so id order is send order.
+      const idOf = (item: TimelineItem) =>
+        item.kind === "sent"
+          ? item.message.messageId
+          : item.kind === "event"
+            ? item.event.id
+            : null;
+      const aId = idOf(a);
+      const bId = idOf(b);
+      if (aId === null && bId === null) return 0;
+      if (aId === null) return 1;
+      if (bId === null) return -1;
+      return aId.localeCompare(bId);
+    }),
+    [messages, events, pending],
   );
 
   const loadOlder = useCallback(() => setLimit((n) => n + PAGE), []);

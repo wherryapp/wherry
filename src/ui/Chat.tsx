@@ -18,11 +18,13 @@ import {
 import { prepareForUpload } from "./media";
 import {
   ApiError,
+  addMembers,
   createConversation,
   fetchAttachmentUsage,
   fetchFriends,
   lookupUser,
   markConversationRead,
+  renameConversation,
   uploadAttachment,
   type Friend,
 } from "../api/client";
@@ -30,7 +32,7 @@ import { e2e } from "../crypto";
 import { encryptBlob } from "../crypto/blob";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
-import type { StoredConversation, StoredMessage } from "../store/types";
+import type { StoredConversation, StoredEvent, StoredMessage } from "../store/types";
 import { sync } from "../sync/engine";
 import {
   useConversations,
@@ -73,9 +75,35 @@ function conversationTitle(
   conversation: StoredConversation,
   selfUserId: string,
 ): string {
+  if (conversation.title) return conversation.title;
   const others = conversation.members.filter((m) => m.userId !== selfUserId);
   if (others.length === 0) return "You";
   return others.map((m) => m.displayName || m.username).join(", ");
+}
+
+/** The words for a notice line -- see StoredEvent in store/types.ts. */
+function eventText(event: StoredEvent, selfUserId: string): string {
+  const actor =
+    event.actorUserId === selfUserId
+      ? "You"
+      : event.actorDisplayName || event.actorUsername;
+  const target =
+    event.targetUserId === selfUserId
+      ? "you"
+      : (event.targetDisplayName || event.targetUsername) ?? "someone";
+
+  switch (event.kind) {
+    case "member_added":
+      return event.historyShared
+        ? `${actor} added ${target}, with earlier messages shared`
+        : `${actor} added ${target}`;
+    case "member_removed":
+      return `${actor} removed ${target}`;
+    case "renamed":
+      return event.title
+        ? `${actor} named the group "${event.title}"`
+        : `${actor} cleared the group name`;
+  }
 }
 
 /**
@@ -371,6 +399,232 @@ function NewConversation({
         </button>
       </div>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Group details
+// ---------------------------------------------------------------------------
+
+/**
+ * Rename and add-members, in one panel -- the two things only a group can do.
+ * Same full-screen shape as Friends and Settings, for the same reason.
+ */
+function GroupDetails({
+  conversation,
+  selfUserId,
+  onClose,
+}: {
+  conversation: StoredConversation;
+  selfUserId: string;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState(conversation.title ?? "");
+  const [titleBusy, setTitleBusy] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+
+  const [contacts, setContacts] = useState<Friend[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [username, setUsername] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const memberIds = useMemo(
+    () => new Set(conversation.members.map((m) => m.userId)),
+    [conversation.members],
+  );
+
+  useEffect(() => {
+    void fetchFriends()
+      .then((lists) => setContacts(lists.friends))
+      .catch(() => setContacts([]));
+  }, []);
+
+  async function saveTitle(event: FormEvent) {
+    event.preventDefault();
+    setTitleBusy(true);
+    setTitleError(null);
+    try {
+      await renameConversation({
+        conversationId: conversation.id,
+        title: title.trim() || null,
+      });
+      // The list is refreshed on a timer, same as after creating a
+      // conversation -- nudge it rather than waiting up to 30 seconds.
+      sync.invalidateConversations();
+    } catch (caught) {
+      setTitleError(
+        caught instanceof ApiError ? caught.message : "Could not rename the group.",
+      );
+    } finally {
+      setTitleBusy(false);
+    }
+  }
+
+  function toggle(userId: string): void {
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  }
+
+  async function addPicked(event: FormEvent) {
+    event.preventDefault();
+    setAddBusy(true);
+    setAddError(null);
+
+    try {
+      const names = [
+        ...new Set(
+          username
+            .split(/[\s,]+/)
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0),
+        ),
+      ];
+      const typed = await Promise.all(names.map((name) => lookupUser(name)));
+
+      const newIds = [
+        ...new Set([...picked, ...typed.map((user) => user.id)]),
+      ].filter((id) => id !== selfUserId && !memberIds.has(id));
+
+      if (newIds.length === 0) return;
+
+      await addMembers({ conversationId: conversation.id, memberUserIds: newIds });
+      sync.invalidateConversations();
+      setPicked(new Set());
+      setUsername("");
+    } catch (caught) {
+      setAddError(
+        caught instanceof ApiError && caught.code === "UNKNOWN_USER"
+          ? "No account with one of those usernames."
+          : caught instanceof ApiError
+            ? caught.message
+            : "Could not add them.",
+      );
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  // Contacts not already in the group and not yourself -- the only people
+  // this form can usefully add.
+  const addable = (contacts ?? []).filter(
+    (contact) => !memberIds.has(contact.userId),
+  );
+
+  return (
+    <div className="flex h-full flex-col bg-white dark:bg-neutral-900">
+      <header className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
+        <button
+          onClick={onClose}
+          aria-label="Back"
+          className="-ml-2 rounded px-2 py-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+        >
+          ←
+        </button>
+        <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+          Group details
+        </span>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4">
+        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Name
+          </h2>
+          <form onSubmit={saveTitle} className="mt-2 flex gap-2">
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Group name"
+              maxLength={100}
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+            <button
+              type="submit"
+              disabled={titleBusy}
+              className="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+            >
+              {titleBusy ? "…" : "Save"}
+            </button>
+          </form>
+          {titleError && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{titleError}</p>
+          )}
+        </section>
+
+        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Members ({conversation.members.length})
+          </h2>
+          <ul className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
+            {conversation.members.map((member) => (
+              <li key={member.userId} className="py-2 text-sm text-neutral-900 dark:text-neutral-100">
+                {member.displayName || member.username}
+                {member.userId === selfUserId && (
+                  <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
+                    (you)
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Add people
+          </h2>
+          <form onSubmit={addPicked} className="mt-2 space-y-2">
+            {addable.length > 0 && (
+              <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
+                {addable.map((contact) => (
+                  <label
+                    key={contact.userId}
+                    className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm text-neutral-800 hover:bg-neutral-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={picked.has(contact.userId)}
+                      onChange={() => toggle(contact.userId)}
+                      className="h-4 w-4 shrink-0"
+                    />
+                    <span className="min-w-0 truncate">
+                      {contact.displayName}
+                      <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
+                        @{contact.username}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Or add by username"
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+
+            {addError && (
+              <p className="text-xs text-red-600 dark:text-red-400">{addError}</p>
+            )}
+
+            <button
+              type="submit"
+              disabled={addBusy || (picked.size === 0 && username.trim().length === 0)}
+              className="w-full rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+            >
+              {addBusy ? "…" : "Add"}
+            </button>
+          </form>
+        </section>
+      </div>
+    </div>
   );
 }
 
@@ -741,6 +995,17 @@ function Bubble({
   );
 }
 
+/** A notice line: no bubble, no sender, no side -- centred and easy to skip. */
+function Notice({ text }: { text: string }) {
+  return (
+    <div className="flex justify-center">
+      <span className="max-w-[85%] text-center text-xs text-neutral-500 dark:text-neutral-400">
+        {text}
+      </span>
+    </div>
+  );
+}
+
 function Timeline({
   conversationId,
   session,
@@ -801,32 +1066,40 @@ function Timeline({
         </button>
       )}
 
-      {items.map((item: TimelineItem) =>
-        item.kind === "sent" ? (
-          <Bubble
-            key={item.message.messageId}
-            mine={item.message.senderUserId === session.user.id}
-            content={messageContent(item.message)}
-            meta={time(item.message.sentAt)}
-            sender={
-              isGroup && item.message.senderUserId !== session.user.id
-                ? (names.get(item.message.senderUserId) ?? "Someone")
-                : undefined
-            }
-            receipt={
-              item.message.senderUserId === session.user.id
-                ? readLabel(
-                    readCount(
-                      conversation,
-                      session.user.id,
-                      item.message.messageId,
-                    ),
-                    others,
-                  )
-                : undefined
-            }
-          />
-        ) : (
+      {items.map((item: TimelineItem) => {
+        if (item.kind === "event") {
+          return (
+            <Notice key={item.event.id} text={eventText(item.event, session.user.id)} />
+          );
+        }
+        if (item.kind === "sent") {
+          return (
+            <Bubble
+              key={item.message.messageId}
+              mine={item.message.senderUserId === session.user.id}
+              content={messageContent(item.message)}
+              meta={time(item.message.sentAt)}
+              sender={
+                isGroup && item.message.senderUserId !== session.user.id
+                  ? (names.get(item.message.senderUserId) ?? "Someone")
+                  : undefined
+              }
+              receipt={
+                item.message.senderUserId === session.user.id
+                  ? readLabel(
+                      readCount(
+                        conversation,
+                        session.user.id,
+                        item.message.messageId,
+                      ),
+                      others,
+                    )
+                  : undefined
+              }
+            />
+          );
+        }
+        return (
           <Bubble
             key={item.entry.clientMessageId}
             mine
@@ -838,8 +1111,8 @@ function Timeline({
                 : "Sending…"
             }
           />
-        ),
-      )}
+        );
+      })}
 
       <div ref={bottom} />
     </div>
@@ -1047,6 +1320,7 @@ export function Chat({
   const [selected, setSelected] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
+  const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
 
@@ -1111,6 +1385,16 @@ export function Chat({
     );
   }
 
+  if (groupDetailsOpen && current) {
+    return (
+      <GroupDetails
+        conversation={current}
+        selfUserId={session.user.id}
+        onClose={() => setGroupDetailsOpen(false)}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
       <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2 dark:border-neutral-800 dark:bg-neutral-900">
@@ -1164,11 +1448,19 @@ export function Chat({
                       ←
                     </button>
                   )}
-                  <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
                     {current
                       ? conversationTitle(current, session.user.id)
                       : "Conversation"}
                   </span>
+                  {current?.kind === "group" && (
+                    <button
+                      onClick={() => setGroupDetailsOpen(true)}
+                      className="shrink-0 text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+                    >
+                      Details
+                    </button>
+                  )}
                 </div>
                 <Timeline
                   conversationId={selected}

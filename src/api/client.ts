@@ -20,6 +20,7 @@ import type {
   CommitEntry,
   Conversation,
   DeviceDescriptor,
+  EventsPage,
   InboxEnvelope,
   MessagesPage,
   PasswordWrapWire,
@@ -116,7 +117,7 @@ export function isUnreachable(error: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PUT";
+  method?: "GET" | "POST" | "PUT" | "PATCH";
   body?: unknown;
   /** Skips the Authorization header. Register and login are the only two. */
   anonymous?: boolean;
@@ -265,6 +266,47 @@ export function createConversation(input: {
 export async function listConversations(): Promise<Conversation[]> {
   const page = await request<{ conversations: Conversation[] }>(`${API}/conversations`);
   return page.conversations;
+}
+
+/**
+ * Adds people to an existing group. No MLS call needed alongside this: the
+ * reconciliation sweep in sync/mls.ts diffs the server's membership record
+ * against the local group on its own cadence and issues the Add and welcome.
+ */
+export function addMembers(input: {
+  conversationId: string;
+  memberUserIds: string[];
+}): Promise<Conversation> {
+  return request<Conversation>(
+    `${API}/conversations/${input.conversationId}/members`,
+    { method: "POST", body: { memberUserIds: input.memberUserIds } },
+  );
+}
+
+/** Null clears the title back to the member-list default. */
+export function renameConversation(input: {
+  conversationId: string;
+  title: string | null;
+}): Promise<Conversation> {
+  return request<Conversation>(`${API}/conversations/${input.conversationId}`, {
+    method: "PATCH",
+    body: { title: input.title },
+  });
+}
+
+/** Notice-line history: who added or removed whom, and renames. */
+export function fetchEvents(input: {
+  conversationId: string;
+  cursor?: string | undefined;
+  limit?: number | undefined;
+}): Promise<EventsPage> {
+  const params = new URLSearchParams();
+  if (input.cursor) params.set("cursor", input.cursor);
+  if (input.limit) params.set("limit", String(input.limit));
+  const query = params.toString();
+  return request<EventsPage>(
+    `${API}/conversations/${input.conversationId}/events${query ? `?${query}` : ""}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

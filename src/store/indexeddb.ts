@@ -14,17 +14,19 @@ import type {
   OutboxEntry,
   StoredBlob,
   StoredConversation,
+  StoredEvent,
   StoredMessage,
 } from "./types";
 
 const DB_NAME = "messenger";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 const MESSAGES = "messages";
 const CONVERSATIONS = "conversations";
 const OUTBOX = "outbox";
 const META = "meta";
 const BLOBS = "blobs";
+const EVENTS = "events";
 
 /** The index that makes a timeline query one seek instead of a scan. */
 const BY_CONVERSATION = "byConversation";
@@ -53,6 +55,11 @@ interface Schema extends DBSchema {
   };
   meta: { key: string; value: unknown };
   blobs: { key: string; value: StoredBlob };
+  events: {
+    key: string;
+    value: StoredEvent;
+    indexes: { byConversation: [string, string] };
+  };
 }
 
 const DEFAULT_PAGE = 50;
@@ -108,6 +115,14 @@ export class IndexedDbMessageStore implements MessageStore {
         // will never be any. Keyed by attachment id.
         if (!db.objectStoreNames.contains(BLOBS)) {
           db.createObjectStore(BLOBS);
+        }
+
+        // Notice lines. Same [conversationId, id] index as messages, for the
+        // same reason: id is uuidv7, so a conversation's events are already in
+        // time order with no separate timestamp index.
+        if (!db.objectStoreNames.contains(EVENTS)) {
+          const events = db.createObjectStore(EVENTS, { keyPath: "id" });
+          events.createIndex(BY_CONVERSATION, ["conversationId", "id"]);
         }
       },
 
@@ -326,6 +341,25 @@ export class IndexedDbMessageStore implements MessageStore {
     return db.get(CONVERSATIONS, id);
   }
 
+  async putEvents(events: readonly StoredEvent[]): Promise<void> {
+    if (events.length === 0) return;
+    const db = await this.#open();
+    const tx = db.transaction(EVENTS, "readwrite");
+    // put(), not add(): the background sync refetches the same recent window
+    // on every tick, so the same event legitimately arrives more than once.
+    await Promise.all(events.map((event) => tx.store.put(event)));
+    await tx.done;
+  }
+
+  async getConversationEvents(conversationId: string): Promise<StoredEvent[]> {
+    const db = await this.#open();
+    return db.getAllFromIndex(
+      EVENTS,
+      BY_CONVERSATION,
+      IDBKeyRange.bound([conversationId, ID_MIN], [conversationId, ID_MAX]),
+    );
+  }
+
   async enqueueOutbox(entry: OutboxEntry): Promise<void> {
     const db = await this.#open();
     await db.put(OUTBOX, entry);
@@ -397,7 +431,7 @@ export class IndexedDbMessageStore implements MessageStore {
   async clear(): Promise<void> {
     const db = await this.#open();
     const tx = db.transaction(
-      [MESSAGES, CONVERSATIONS, OUTBOX, META],
+      [MESSAGES, CONVERSATIONS, OUTBOX, META, EVENTS],
       "readwrite",
     );
     await Promise.all([
@@ -405,6 +439,7 @@ export class IndexedDbMessageStore implements MessageStore {
       tx.objectStore(CONVERSATIONS).clear(),
       tx.objectStore(OUTBOX).clear(),
       tx.objectStore(META).clear(),
+      tx.objectStore(EVENTS).clear(),
     ]);
     await tx.done;
   }

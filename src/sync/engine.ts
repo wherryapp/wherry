@@ -24,6 +24,7 @@ import {
   ApiError,
   ackEnvelopes,
   fetchArchive,
+  fetchEvents,
   fetchInbox,
   isUnauthorized,
   isUnreachable,
@@ -806,8 +807,52 @@ export class SyncEngine {
     this.#lastConversationRefresh = now;
 
     await store.putConversations(conversations);
+    await this.#refreshEvents(conversations, signal);
     this.#emit({ type: "conversations" });
     broadcast({ type: "conversations" });
+  }
+
+  /**
+   * Notice lines, on the same cadence as the conversation list rather than
+   * the poll cadence -- they change exactly as often as membership does.
+   *
+   * Direct conversations never have any (only a group can be renamed or have
+   * members added), so this only ever calls out for groups. Always fetches
+   * the newest page rather than tracking a per-conversation cursor: notices
+   * are rare, `putEvents` upserts on id, and the newest EVENTS_DEFAULT_LIMIT
+   * comfortably covers a group's entire membership history in practice.
+   */
+  async #refreshEvents(
+    conversations: readonly { id: string; kind: string }[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    for (const conversation of conversations) {
+      if (signal.aborted) return;
+      if (conversation.kind !== "group") continue;
+      try {
+        const page = await fetchEvents({ conversationId: conversation.id });
+        await store.putEvents(
+          page.events.map((event) => ({
+            id: event.id,
+            conversationId: event.conversationId,
+            kind: event.kind,
+            actorUserId: event.actorUserId,
+            actorUsername: event.actorUsername,
+            actorDisplayName: event.actorDisplayName,
+            targetUserId: event.targetUserId,
+            targetUsername: event.targetUsername,
+            targetDisplayName: event.targetDisplayName,
+            title: event.title,
+            historyShared: event.historyShared,
+            createdAt: event.createdAt,
+          })),
+        );
+      } catch (error) {
+        // One conversation's trouble must not stop the sweep, the same
+        // tolerance mlsSync.tick has for a single reconcile failing.
+        console.warn("event refresh failed", conversation.id, error);
+      }
+    }
   }
 
   /**

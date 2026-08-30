@@ -87,6 +87,8 @@ export type StoredBlob =
 export type StoredConversation = {
   id: string;
   kind: "direct" | "group";
+  /** Null uses the default (member names joined) rather than a real name. */
+  title: string | null;
   createdAt: string;
   members: {
     userId: string;
@@ -96,6 +98,26 @@ export type StoredConversation = {
     lastReadMessageId: string | null;
     lastReadAt: string | null;
   }[];
+};
+
+/**
+ * A notice line, server-authored -- see api/types.ts's ConversationEvent for
+ * why. Interleaves with StoredMessage in the timeline by id alone, since both
+ * are uuidv7.
+ */
+export type StoredEvent = {
+  id: string;
+  conversationId: string;
+  kind: "member_added" | "member_removed" | "renamed";
+  actorUserId: string;
+  actorUsername: string;
+  actorDisplayName: string;
+  targetUserId: string | null;
+  targetUsername: string | null;
+  targetDisplayName: string | null;
+  title: string | null;
+  historyShared: boolean;
+  createdAt: string;
 };
 
 /**
@@ -213,6 +235,12 @@ export interface MessageStore {
   countMessages(conversationId?: string): Promise<number>;
 
   putConversations(conversations: readonly StoredConversation[]): Promise<void>;
+
+  /** Upserts notice lines, keyed on id. Same at-least-once shape as messages. */
+  putEvents(events: readonly StoredEvent[]): Promise<void>;
+
+  /** Every notice line stored for a conversation. Rare enough not to page. */
+  getConversationEvents(conversationId: string): Promise<StoredEvent[]>;
 
   /**
    * Moves a member's read marker in the locally stored conversation.

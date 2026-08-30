@@ -134,8 +134,41 @@ export type ConversationMember = {
 export type Conversation = {
   id: string;
   kind: ConversationKind;
+  /** Null uses the default (member names joined) rather than a real name. */
+  title: string | null;
   createdAt: string;
   members: ConversationMember[];
+};
+
+export type ConversationEventKind =
+  | "member_added"
+  | "member_removed"
+  | "renamed";
+
+/**
+ * A notice line: who did what, server-authored so it stays consistent across
+ * devices and survives the target having since left. Interleaves with
+ * messages in the timeline by id alone -- both are uuidv7.
+ */
+export type ConversationEvent = {
+  id: string;
+  conversationId: string;
+  kind: ConversationEventKind;
+  actorUserId: string;
+  actorUsername: string;
+  actorDisplayName: string;
+  targetUserId: string | null;
+  targetUsername: string | null;
+  targetDisplayName: string | null;
+  title: string | null;
+  historyShared: boolean;
+  createdAt: string;
+};
+
+export type EventsPage = {
+  events: ConversationEvent[];
+  /** Null means the walk is finished. This, not an empty page, is the signal. */
+  nextCursor: string | null;
 };
 
 export type SendResult = {
@@ -221,6 +254,7 @@ export type ApiErrorCode =
   | "INVALID_MEMBERS"
   | "UNKNOWN_USER"
   | "NOT_A_MEMBER"
+  | "NOT_A_GROUP"
   | "NO_RECIPIENTS"
   | "EMAIL_NOT_VERIFIED"
   | "NO_EMAIL"
