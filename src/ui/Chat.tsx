@@ -50,13 +50,7 @@ import {
   type TimelineItem,
 } from "./hooks";
 import {
-  availability as pushAvailability,
-  disable as disablePush,
-  enable as enablePush,
-  isSubscribed,
-  type PushState,
-} from "../sync/push";
-import {
+  Avatar,
   BackButton,
   Badge,
   Button,
@@ -65,6 +59,7 @@ import {
   Input,
   Panel,
   PlusIcon,
+  UsersIcon,
 } from "./kit";
 
 // ---------------------------------------------------------------------------
@@ -205,6 +200,39 @@ function time(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/**
+ * A conversation-list timestamp: the time today, the weekday within a week,
+ * a date beyond that. The list answers "how stale is this thread" at a
+ * glance; the exact minute of last Tuesday answers nothing.
+ */
+function listTime(iso: string): string {
+  const then = new Date(iso);
+  const now = new Date();
+  if (then.toDateString() === now.toDateString()) {
+    return then.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  if (now.getTime() - then.getTime() < 6 * 86_400_000) {
+    return then.toLocaleDateString([], { weekday: "short" });
+  }
+  return then.toLocaleDateString([], { month: "numeric", day: "numeric" });
+}
+
+/**
+ * Who a conversation's avatar depicts: the other person in a 1:1, the group
+ * itself otherwise. The id doubles as the colour seed (see kit's Avatar),
+ * so a group keeps one identity even as its title changes.
+ */
+function avatarSeed(
+  conversation: StoredConversation,
+  selfUserId: string,
+): string {
+  const others = conversation.members.filter((m) => m.userId !== selfUserId);
+  if (conversation.kind !== "group" && others.length === 1) {
+    return others[0]!.userId;
+  }
+  return conversation.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,12 +422,13 @@ function NewConversation({
 
   if (!open) {
     return (
-      <button
+      <Button
+        variant="secondary"
         onClick={() => setOpen(true)}
-        className="w-full rounded-md border border-dashed border-neutral-300 px-3 py-2 text-sm text-neutral-600 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-400"
+        className="w-full"
       >
         New conversation
-      </button>
+      </Button>
     );
   }
 
@@ -780,86 +809,6 @@ function GroupDetails({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Notifications
-// ---------------------------------------------------------------------------
-
-/**
- * The notification toggle, and an explanation when it cannot be one.
- *
- * Never asks on load. A permission prompt that arrives before somebody knows
- * what the app is gets refused, and a refusal on iOS is permanent from the
- * page's side -- only the browser's own settings can undo it. So this is a
- * button, and the prompt happens when it is pressed.
- */
-function NotificationSetting() {
-  const [state, setState] = useState<PushState | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      const available = pushAvailability();
-      if (available.state !== "ready") {
-        if (!cancelled) setState(available.state);
-        return;
-      }
-      const on = await isSubscribed();
-      if (!cancelled) setState(on ? "on" : "ready");
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Nothing to say on a browser that could never do this.
-  if (state === null || state === "unsupported") return null;
-
-  if (state === "needs-install") {
-    return (
-      <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
-        Add this to your home screen to get notifications.
-      </p>
-    );
-  }
-
-  if (state === "blocked") {
-    return (
-      <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
-        Notifications are blocked in your browser settings.
-      </p>
-    );
-  }
-
-  if (state === "server-disabled") {
-    return (
-      <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
-        Notifications are not set up on this server.
-      </p>
-    );
-  }
-
-  const on = state === "on";
-
-  return (
-    <button
-      disabled={busy}
-      onClick={() => {
-        setBusy(true);
-        void (on ? disablePush() : enablePush())
-          .then(setState)
-          .catch(() => setState(on ? "on" : "ready"))
-          .finally(() => setBusy(false));
-      }}
-      className="mt-2 text-xs text-neutral-500 underline-offset-2 hover:underline disabled:opacity-50 dark:text-neutral-400"
-    >
-      {busy ? "…" : on ? "Notifications on" : "Turn on notifications"}
-    </button>
-  );
-}
-
 /**
  * Marks a conversation read while it is on screen.
  *
@@ -1018,11 +967,13 @@ function ConversationList({
               ? `${memberName(conversation, preview.senderUserId)}: `
               : "";
 
+          const title = conversationTitle(conversation, session.user.id);
+
           return (
             <button
               key={conversation.id}
               onClick={() => onSelect(conversation.id)}
-              className={`block w-full border-b border-neutral-100 px-4 py-3 text-left transition-colors dark:border-neutral-800 ${
+              className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${
                 selected === conversation.id
                   ? "bg-neutral-100 dark:bg-neutral-800"
                   : // neutral-800, not the "neutral-850" that sat here
@@ -1030,42 +981,48 @@ function ConversationList({
                     "hover:bg-neutral-50 dark:hover:bg-neutral-800"
               }`}
             >
-              <span className="flex items-center gap-2">
-                <span
-                  className={`block flex-1 truncate text-sm text-neutral-900 dark:text-neutral-100 ${
-                    count > 0 ? "font-semibold" : "font-medium"
-                  }`}
-                >
-                  {conversationTitle(conversation, session.user.id)}
+              <Avatar
+                name={title}
+                userId={avatarSeed(conversation, session.user.id)}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline gap-2">
+                  <span
+                    className={`min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-neutral-100 ${
+                      count > 0 ? "font-semibold" : "font-medium"
+                    }`}
+                  >
+                    {title}
+                  </span>
+                  {/* Timestamp and, one day, a mute icon share this slot --
+                      the row is laid out so either fits without moving the
+                      name. */}
+                  {preview && (
+                    <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">
+                      {listTime(preview.sentAt)}
+                    </span>
+                  )}
                 </span>
-                <Badge count={count} />
-              </span>
-              <span
-                className={`block truncate text-xs ${
-                  count > 0
-                    ? "text-neutral-700 dark:text-neutral-300"
-                    : "text-neutral-500 dark:text-neutral-400"
-                }`}
-              >
-                {preview
-                  ? `${prefix}${text ?? "Encrypted message"}`
-                  : "No messages yet"}
+                <span className="mt-0.5 flex items-center gap-2">
+                  <span
+                    className={`min-w-0 flex-1 truncate text-xs ${
+                      count > 0
+                        ? "text-neutral-700 dark:text-neutral-300"
+                        : "text-neutral-500 dark:text-neutral-400"
+                    }`}
+                  >
+                    {preview
+                      ? `${prefix}${text ?? "Encrypted message"}`
+                      : "No messages yet"}
+                  </span>
+                  <Badge count={count} />
+                </span>
               </span>
             </button>
           );
         })}
       </div>
 
-      <div className="border-t border-neutral-200 p-3 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-        <div className="truncate">
-          Signed in as{" "}
-          <span className="font-medium text-neutral-700 dark:text-neutral-200">
-            {session.user.username}
-          </span>
-        </div>
-        <div className="truncate">{session.device.displayName}</div>
-        <NotificationSetting />
-      </div>
     </aside>
   );
 }
@@ -1623,34 +1580,44 @@ export function Chat({
 
   return (
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2 dark:border-neutral-800 dark:bg-neutral-900">
-        <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-          messenger
-        </span>
-        <span className="flex items-center gap-3">
-          <Button variant="ghost" onClick={() => setFriendsOpen(true)}>
-            Contacts
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => setSettingsOpen(true)}
-            className="relative"
-          >
-            Settings
-            {unreadAnnouncements > 0 && (
-              <span
-                aria-label={`${unreadAnnouncements} unread ${
-                  unreadAnnouncements === 1 ? "announcement" : "announcements"
-                }`}
-                className="absolute -right-1.5 -top-0.5 block h-2 w-2 rounded-full bg-accent-600"
+      {/* The app header is the LIST's header: a title and two controls, the
+          shape a phone expects, instead of the row of webpage links this
+          used to be. On a phone with a thread open it does not render at
+          all -- the thread's own header is the only chrome -- which is what
+          `showList` already means. Sign out moved into Settings; it is a
+          rare act and was sitting on the most valuable row of the screen. */}
+      {showList && (
+        <header className="flex items-center justify-between border-b border-neutral-200 bg-white py-2 pl-4 pr-2 dark:border-neutral-800 dark:bg-neutral-900">
+          <span className="text-lg font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
+            Chats
+          </span>
+          <span className="flex items-center gap-1">
+            <IconButton label="Contacts" onClick={() => setFriendsOpen(true)}>
+              <UsersIcon />
+            </IconButton>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              aria-label={
+                unreadAnnouncements > 0
+                  ? `Settings — ${unreadAnnouncements} unread ${
+                      unreadAnnouncements === 1 ? "announcement" : "announcements"
+                    }`
+                  : "Settings"
+              }
+              className="relative rounded-full p-1 transition-opacity hover:opacity-80"
+            >
+              <Avatar
+                size="sm"
+                name={session.user.displayName}
+                userId={session.user.id}
               />
-            )}
-          </Button>
-          <Button variant="ghost" onClick={onSignOut}>
-            Sign out
-          </Button>
-        </span>
-      </header>
+              {unreadAnnouncements > 0 && (
+                <span className="absolute right-0 top-0 block h-2.5 w-2.5 rounded-full border-2 border-white bg-accent-600 dark:border-neutral-900" />
+              )}
+            </button>
+          </span>
+        </header>
+      )}
 
       <StatusLine />
       <UpdateBanner />
@@ -1673,6 +1640,13 @@ export function Chat({
                     <BackButton
                       onClick={() => setSelected(null)}
                       label="Back to conversations"
+                    />
+                  )}
+                  {current && (
+                    <Avatar
+                      size="sm"
+                      name={conversationTitle(current, session.user.id)}
+                      userId={avatarSeed(current, session.user.id)}
                     />
                   )}
                   <span className="min-w-0 flex-1 truncate">

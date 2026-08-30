@@ -21,6 +21,13 @@ import {
 } from "../api/client";
 import type { StoredSession } from "../api/session";
 import { changePasswordWithRewrap } from "../crypto/account";
+import {
+  availability as pushAvailability,
+  disable as disablePush,
+  enable as enablePush,
+  isSubscribed,
+  type PushState,
+} from "../sync/push";
 import { useAnnouncements } from "./hooks";
 import { Button, ErrorText, Input, Note, Panel } from "./kit";
 
@@ -293,6 +300,13 @@ export function Settings({
         </Section>
 
         <Section
+          title="Notifications"
+          description={`This device: ${session.device.displayName}.`}
+        >
+          <NotificationSetting />
+        </Section>
+
+        <Section
           title="Devices"
           description="Revoking a device signs it out and stops it receiving new messages."
         >
@@ -388,6 +402,14 @@ export function Settings({
             </a>
           </Section>
         )}
+
+        {/* Last, where every app keeps it. It used to be a header link on the
+            main screen -- prime space for the rarest action in the app. */}
+        <div className="px-4 py-5">
+          <Button variant="secondary" onClick={() => onSignedOut()} className="w-full">
+            Sign out
+          </Button>
+        </div>
       </div>
     </Panel>
   );
@@ -466,5 +488,93 @@ function PasswordSection({
         </Button>
       </form>
     </Section>
+  );
+}
+
+/**
+ * The notification toggle, and an explanation when it cannot be one.
+ *
+ * Never asks on load. A permission prompt that arrives before somebody knows
+ * what the app is gets refused, and a refusal on iOS is permanent from the
+ * page's side -- only the browser's own settings can undo it. So this is a
+ * button, and the prompt happens when it is pressed.
+ *
+ * It lived in the conversation list's footer until the stage-2 shell work
+ * (docs/ui-reform-plan.md); a per-device capability is a setting, and the
+ * list's footer was debug chrome on the app's most valuable screen.
+ */
+function NotificationSetting() {
+  const [state, setState] = useState<PushState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const available = pushAvailability();
+      if (available.state !== "ready") {
+        if (!cancelled) setState(available.state);
+        return;
+      }
+      const on = await isSubscribed();
+      if (!cancelled) setState(on ? "on" : "ready");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (state === null || state === "unsupported") {
+    return (
+      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        This browser cannot show notifications.
+      </p>
+    );
+  }
+
+  if (state === "needs-install") {
+    return (
+      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        Add this to your home screen to get notifications.
+      </p>
+    );
+  }
+
+  if (state === "blocked") {
+    return (
+      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        Notifications are blocked in your browser settings.
+      </p>
+    );
+  }
+
+  if (state === "server-disabled") {
+    return (
+      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        Notifications are not set up on this server.
+      </p>
+    );
+  }
+
+  const on = state === "on";
+
+  return (
+    <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+      <input
+        type="checkbox"
+        checked={on}
+        disabled={busy}
+        onChange={() => {
+          setBusy(true);
+          void (on ? disablePush() : enablePush())
+            .then(setState)
+            .catch(() => setState(on ? "on" : "ready"))
+            .finally(() => setBusy(false));
+        }}
+        className="h-4 w-4"
+      />
+      Notify me about new messages on this device
+    </label>
   );
 }

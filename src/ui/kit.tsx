@@ -67,6 +67,25 @@ export function PlusIcon({ className }: IconProps) {
   );
 }
 
+export function UsersIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <circle cx="7.5" cy="6.5" r="3" />
+      <path d="M2 17c0-3 2.5-4.5 5.5-4.5S13 14 13 17" />
+      <path d="M13.5 4a3 3 0 0 1 0 5M15.5 12.6c1.7.7 2.5 2.2 2.5 4.4" />
+    </svg>
+  );
+}
+
 export function XIcon({ className }: IconProps) {
   return (
     <svg
