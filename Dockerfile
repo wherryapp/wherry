@@ -23,10 +23,15 @@ COPY src ./src
 # Declared last, right before the one step that reads it, so a source-only
 # change does not bust the layers above -- same placement reasoning as the
 # server Dockerfile's GIT_SHA. Vite embeds any VITE_-prefixed env var into
-# the bundle automatically (see sync/engine.ts's BUILD_COMMIT), so nothing
-# in vite.config.ts has to know this exists.
+# the bundle automatically (see sync/engine.ts's BUILD_COMMIT and
+# ui/Settings.tsx's TIP_URL), so nothing in vite.config.ts has to know
+# either exists. VITE_TIP_URL defaults to empty, which is what keeps the
+# tip-jar section out of the rendered Settings page entirely when an
+# operator has not configured one.
 ARG GIT_SHA=unknown
+ARG VITE_TIP_URL=
 ENV VITE_COMMIT_SHA=$GIT_SHA
+ENV VITE_TIP_URL=$VITE_TIP_URL
 RUN pnpm build
 
 # alpine rather than node: nothing here runs JavaScript, it copies files.

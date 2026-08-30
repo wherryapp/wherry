@@ -52,6 +52,15 @@ const inputClass =
 const buttonClass =
   "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900";
 
+/**
+ * Stamped at build time the same way BUILD_COMMIT is (see sync/engine.ts) --
+ * a bare VITE_-prefixed env var Vite embeds automatically, set via
+ * client/Dockerfile and docker-compose.prod.yml. Unset by default, which is
+ * what keeps dev and a self-hosted instance clean: no monetization ask
+ * unless the operator deliberately configures one.
+ */
+const TIP_URL: string | undefined = import.meta.env["VITE_TIP_URL"];
+
 function bytes(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
@@ -340,6 +349,19 @@ export function Settings({
               {bytes(usage.usedBytes)} of {bytes(usage.quotaBytes)} used ·{" "}
               {bytes(usage.maxBytes)} per file
             </p>
+          </Section>
+        )}
+
+        {TIP_URL && (
+          <Section title="Support the project">
+            <a
+              href={TIP_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-neutral-700 underline underline-offset-2 dark:text-neutral-200"
+            >
+              Open tip jar ↗
+            </a>
           </Section>
         )}
       </div>
