@@ -118,7 +118,7 @@ export function isUnreachable(error: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PUT" | "PATCH";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   /** Skips the Authorization header. Register and login are the only two. */
   anonymous?: boolean;
@@ -291,6 +291,30 @@ export function addMembers(input: {
       },
     },
   );
+}
+
+/**
+ * Removes another member from a group. Any current member may remove any
+ * other. No MLS call rides alongside this either -- same reconciliation
+ * sweep that handles addMembers issues the Remove commit and rotates the
+ * history key on its own cadence. The removed member's own client keeps its
+ * local copy of the conversation and everything sent before this.
+ */
+export function removeMember(input: {
+  conversationId: string;
+  userId: string;
+}): Promise<Conversation> {
+  return request<Conversation>(
+    `${API}/conversations/${input.conversationId}/members/${input.userId}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Leaves a group -- self-removal, always allowed. */
+export function leaveConversation(conversationId: string): Promise<void> {
+  return request<void>(`${API}/conversations/${conversationId}/leave`, {
+    method: "POST",
+  });
 }
 
 /** Null clears the title back to the member-list default. */

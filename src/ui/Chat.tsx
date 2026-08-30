@@ -22,8 +22,10 @@ import {
   createConversation,
   fetchAttachmentUsage,
   fetchFriends,
+  leaveConversation,
   lookupUser,
   markConversationRead,
+  removeMember,
   renameConversation,
   uploadAttachment,
   type Friend,
@@ -433,6 +435,13 @@ function GroupDetails({
   // member's messages, not only their own.
   const [shareHistory, setShareHistory] = useState(false);
 
+  // Which member is currently being removed, if any -- disables just that
+  // row's button rather than the whole panel.
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [leaveBusy, setLeaveBusy] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+
   const memberIds = useMemo(
     () => new Set(conversation.members.map((m) => m.userId)),
     [conversation.members],
@@ -532,6 +541,42 @@ function GroupDetails({
     }
   }
 
+  async function removeOne(userId: string): Promise<void> {
+    setRemovingUserId(userId);
+    setRemoveError(null);
+    try {
+      await removeMember({ conversationId: conversation.id, userId });
+      // Same nudge as addMembers: membership changed, so run the MLS sweep
+      // now (it issues the Remove and rotates the history key) rather than
+      // waiting for its own cadence, and refresh the list now too.
+      mlsSync.invalidate();
+      sync.invalidateConversations();
+    } catch (caught) {
+      setRemoveError(
+        caught instanceof ApiError ? caught.message : "Could not remove them.",
+      );
+    } finally {
+      setRemovingUserId(null);
+    }
+  }
+
+  async function doLeave(): Promise<void> {
+    setLeaveBusy(true);
+    setLeaveError(null);
+    try {
+      await leaveConversation(conversation.id);
+      mlsSync.invalidate();
+      sync.invalidateConversations();
+      // Nothing left to show a member of a group they just left.
+      onClose();
+    } catch (caught) {
+      setLeaveError(
+        caught instanceof ApiError ? caught.message : "Could not leave the group.",
+      );
+      setLeaveBusy(false);
+    }
+  }
+
   // Contacts not already in the group and not yourself -- the only people
   // this form can usefully add.
   const addable = (contacts ?? []).filter(
@@ -585,16 +630,46 @@ function GroupDetails({
           </h2>
           <ul className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
             {conversation.members.map((member) => (
-              <li key={member.userId} className="py-2 text-sm text-neutral-900 dark:text-neutral-100">
-                {member.displayName || member.username}
-                {member.userId === selfUserId && (
-                  <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
-                    (you)
-                  </span>
+              <li
+                key={member.userId}
+                className="flex items-center justify-between gap-2 py-2 text-sm text-neutral-900 dark:text-neutral-100"
+              >
+                <span>
+                  {member.displayName || member.username}
+                  {member.userId === selfUserId && (
+                    <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
+                      (you)
+                    </span>
+                  )}
+                </span>
+                {member.userId !== selfUserId && (
+                  <button
+                    onClick={() => removeOne(member.userId)}
+                    disabled={removingUserId === member.userId}
+                    className="shrink-0 text-xs font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                  >
+                    {removingUserId === member.userId ? "…" : "Remove"}
+                  </button>
                 )}
               </li>
             ))}
           </ul>
+          {removeError && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{removeError}</p>
+          )}
+        </section>
+
+        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
+          <button
+            onClick={doLeave}
+            disabled={leaveBusy}
+            className="w-full rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 disabled:opacity-50 dark:border-red-900 dark:text-red-400"
+          >
+            {leaveBusy ? "…" : "Leave group"}
+          </button>
+          {leaveError && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{leaveError}</p>
+          )}
         </section>
 
         <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
