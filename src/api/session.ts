@@ -42,6 +42,14 @@ export type StoredSession = {
   expiresAt: string;
   user: PublicUser;
   device: PublicDevice;
+  /**
+   * A snapshot, not a live value -- it is only as fresh as the last login,
+   * register, or explicit refresh. Verifying happens by clicking a link in
+   * another tab or device, which nothing here is told about as it happens.
+   * The gate screen that reads this is what keeps it honest, by re-checking
+   * against `GET /auth/me` rather than trusting this forever.
+   */
+  emailVerified: boolean;
 };
 
 /**
@@ -115,6 +123,7 @@ export function saveSession(result: AuthResult): StoredSession {
     expiresAt: result.expiresAt,
     user: result.user,
     device: result.device,
+    emailVerified: result.emailVerified,
   };
   cached = session;
   writeKey(SESSION_KEY, JSON.stringify(session));
@@ -123,6 +132,18 @@ export function saveSession(result: AuthResult): StoredSession {
   writeKey(DEVICE_KEY, result.device.id);
 
   return session;
+}
+
+/**
+ * Updates just the verification snapshot, after the gate screen asks
+ * `GET /auth/me` and learns the address was confirmed elsewhere. Everything
+ * else about the session is unchanged -- this is not a re-login.
+ */
+export function markEmailVerified(session: StoredSession): StoredSession {
+  const updated: StoredSession = { ...session, emailVerified: true };
+  cached = updated;
+  writeKey(SESSION_KEY, JSON.stringify(updated));
+  return updated;
 }
 
 /**

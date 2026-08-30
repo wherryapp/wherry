@@ -82,7 +82,7 @@ export function Login({
           displayName,
           password,
           device,
-          ...(email.trim() ? { email: email.trim() } : {}),
+          email: email.trim(),
           accountKeys: keys.wire,
         });
         await persistKeypair(keys.keypair);
@@ -236,7 +236,7 @@ export function Login({
         {mode === "register" && (
           <label className="block space-y-1">
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              Email <span className="font-normal text-neutral-500">(optional)</span>
+              Email
             </span>
             <input
               type="email"
@@ -244,11 +244,12 @@ export function Login({
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
               placeholder="you@example.com"
+              required
               className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
             <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-              Adding one lets you reset your password. Without it, a forgotten
-              password cannot be recovered.
+              You will need to confirm this before you can send or receive
+              anything. It is also what lets you reset a forgotten password.
             </span>
           </label>
         )}

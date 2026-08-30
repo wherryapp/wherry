@@ -32,6 +32,9 @@ export type AuthResult = {
   expiresAt: string;
   user: PublicUser;
   device: PublicDevice;
+  /** Never true straight out of registration -- verifying means clicking a
+   * link that has not been sent yet. */
+  emailVerified: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -219,6 +222,8 @@ export type ApiErrorCode =
   | "UNKNOWN_USER"
   | "NOT_A_MEMBER"
   | "NO_RECIPIENTS"
+  | "EMAIL_NOT_VERIFIED"
+  | "NO_EMAIL"
   | "RATE_LIMITED"
   | "REQUEST_FAILED"
   | "INTERNAL_ERROR"

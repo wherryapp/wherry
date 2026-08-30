@@ -7,6 +7,7 @@ import { sync } from "./sync/engine";
 import { broadcast, subscribeToBroadcasts } from "./sync/leader";
 import { Chat } from "./ui/Chat";
 import { Login } from "./ui/Login";
+import { VerifyGate } from "./ui/VerifyGate";
 import {
   ResetPassword,
   VerifyEmail,
@@ -37,9 +38,11 @@ export default function App() {
     setSession(null);
   }, []);
 
-  // Start and stop the engine with the session.
+  // Start and stop the engine with the session. Not until the address is
+  // verified: almost every route the engine calls now requires one, so
+  // starting it earlier would just be a poll loop generating 403s.
   useEffect(() => {
-    if (!session) return;
+    if (!session || !session.emailVerified) return;
 
     void requestPersistentStorage();
 
@@ -104,5 +107,12 @@ export default function App() {
   }
 
   if (!session) return <Login onSignedIn={setSession} />;
+
+  if (!session.emailVerified) {
+    return (
+      <VerifyGate session={session} onVerified={setSession} onSignOut={signOut} />
+    );
+  }
+
   return <Chat session={session} onSignOut={signOut} />;
 }
