@@ -59,6 +59,7 @@ import {
   Input,
   Panel,
   PlusIcon,
+  SendIcon,
   UsersIcon,
 } from "./kit";
 
@@ -1038,6 +1039,8 @@ function Bubble({
   muted,
   sender,
   receipt,
+  first = true,
+  last = true,
 }: {
   mine: boolean;
   /**
@@ -1062,27 +1065,38 @@ function Bubble({
    * three-way conversation is unreadable.
    */
   sender?: string | undefined;
+  /**
+   * Position in a run of consecutive messages from one sender (see
+   * sameRun in Timeline). The name renders on the first of a run and the
+   * time on the last -- a run reads as one turn in the conversation, and
+   * stamping every line of a turn says nothing five times.
+   */
+  first?: boolean;
+  last?: boolean;
 }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+      {/* The horizontal padding beyond the bubble is deliberate slack: the
+          affordance space where hover actions and long-press targets for
+          reactions/replies land later without re-laying anything out. */}
       <div
         className={`max-w-[85%] rounded-2xl px-3 py-2 md:max-w-[70%] ${
           mine
-            ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+            ? "bg-accent-600 text-white"
             : "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
         } ${muted ? "opacity-60" : ""}`}
       >
-        {sender && (
+        {sender && first && (
           <span className="mb-0.5 block text-[11px] font-medium opacity-70">
             {sender}
           </span>
         )}
         {content === null ? (
-          <span className="text-sm italic opacity-70">
+          <span className="text-sm italic opacity-80">
             Encrypted message — waiting for keys
           </span>
         ) : content === "unsupported" ? (
-          <span className="text-sm italic opacity-70">
+          <span className="text-sm italic opacity-80">
             This message needs a newer version of the app
           </span>
         ) : (
@@ -1101,10 +1115,16 @@ function Bubble({
             )}
           </>
         )}
-        <span className="mt-1 block text-[10px] opacity-60">
-          {meta}
-          {receipt && ` · ${receipt}`}
-        </span>
+        {(last || receipt) && (
+          <span
+            className={`mt-1 block text-[10px] ${
+              mine ? "text-white/70" : "opacity-60"
+            }`}
+          >
+            {meta}
+            {receipt && ` · ${receipt}`}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -1118,6 +1138,43 @@ function Notice({ text }: { text: string }) {
         {text}
       </span>
     </div>
+  );
+}
+
+/** Two adjacent timeline items read as one turn when the same person sent
+ *  both within a few minutes. Notices always break a run -- "X removed Y"
+ *  between two messages is a boundary in the conversation, not a pause. */
+const RUN_GAP_MS = 5 * 60_000;
+
+function runIdentity(
+  item: TimelineItem | undefined,
+  selfUserId: string,
+): { sender: string; at: number } | null {
+  if (!item) return null;
+  if (item.kind === "sent") {
+    return {
+      sender: item.message.senderUserId,
+      at: Date.parse(item.message.sentAt),
+    };
+  }
+  if (item.kind === "pending") {
+    return { sender: selfUserId, at: Date.parse(item.entry.createdAt) };
+  }
+  return null;
+}
+
+function sameRun(
+  a: TimelineItem | undefined,
+  b: TimelineItem | undefined,
+  selfUserId: string,
+): boolean {
+  const first = runIdentity(a, selfUserId);
+  const second = runIdentity(b, selfUserId);
+  return (
+    first !== null &&
+    second !== null &&
+    first.sender === second.sender &&
+    Math.abs(second.at - first.at) < RUN_GAP_MS
   );
 }
 
@@ -1171,66 +1228,95 @@ function Timeline({
     return () => viewport.removeEventListener("resize", pin);
   }, []);
 
+  // The newest message you sent, which is the ONE that shows a receipt.
+  // Per-message receipts were noise stacked on noise: "Read" under the last
+  // message already says everything above it was read too (markers are
+  // monotone), and delivered marks are watermarks with the same property.
+  const newestOwnId = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i]!;
+      if (item.kind === "sent" && item.message.senderUserId === session.user.id) {
+        return item.message.messageId;
+      }
+    }
+    return null;
+  }, [items, session.user.id]);
+
   return (
-    <div className="flex-1 space-y-2 overflow-y-auto p-4">
+    <div className="flex-1 overflow-y-auto p-4">
       {hasMore && (
         <button
           onClick={loadOlder}
-          className="mx-auto block rounded-md px-3 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="mx-auto block rounded-md px-3 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800"
         >
           Load older messages
         </button>
       )}
 
-      {items.map((item: TimelineItem) => {
+      {items.map((item: TimelineItem, index) => {
         if (item.kind === "event") {
           return (
-            <Notice key={item.event.id} text={eventText(item.event, session.user.id)} />
+            <div key={item.event.id} className="mt-3">
+              <Notice text={eventText(item.event, session.user.id)} />
+            </div>
           );
         }
+
+        // A run reads as one turn: tight spacing inside it, a real gap
+        // between turns, the name once and the time once.
+        const self = session.user.id;
+        const first = !sameRun(items[index - 1], item, self);
+        const last = !sameRun(item, items[index + 1], self);
+
         if (item.kind === "sent") {
           return (
-            <Bubble
-              key={item.message.messageId}
-              mine={item.message.senderUserId === session.user.id}
-              content={messageContent(item.message)}
-              meta={time(item.message.sentAt)}
-              sender={
-                isGroup && item.message.senderUserId !== session.user.id
-                  ? (names.get(item.message.senderUserId) ?? "Someone")
-                  : undefined
-              }
-              receipt={
-                item.message.senderUserId === session.user.id
-                  ? readLabel(
-                      readCount(
-                        conversation,
-                        session.user.id,
-                        item.message.messageId,
-                      ),
-                      others,
-                    ) ??
-                    deliveredLabel(
-                      deliveredCount(delivered, item.message.messageId),
-                      others,
-                    )
-                  : undefined
-              }
-            />
+            <div key={item.message.messageId} className={first ? "mt-3" : "mt-0.5"}>
+              <Bubble
+                mine={item.message.senderUserId === session.user.id}
+                first={first}
+                last={last}
+                content={messageContent(item.message)}
+                meta={time(item.message.sentAt)}
+                sender={
+                  isGroup && item.message.senderUserId !== session.user.id
+                    ? (names.get(item.message.senderUserId) ?? "Someone")
+                    : undefined
+                }
+                receipt={
+                  item.message.messageId === newestOwnId
+                    ? readLabel(
+                        readCount(
+                          conversation,
+                          session.user.id,
+                          item.message.messageId,
+                        ),
+                        others,
+                      ) ??
+                      deliveredLabel(
+                        deliveredCount(delivered, item.message.messageId),
+                        others,
+                      )
+                    : undefined
+                }
+              />
+            </div>
           );
         }
         return (
-          <Bubble
-            key={item.entry.clientMessageId}
-            mine
-            muted
-            content={decodeContent(item.entry.content)}
-            meta={
-              item.entry.failedPermanently
-                ? `Failed — ${item.entry.lastError ?? "not sent"}`
-                : "Sending…"
-            }
-          />
+          <div key={item.entry.clientMessageId} className={first ? "mt-3" : "mt-0.5"}>
+            <Bubble
+              mine
+              muted
+              first={first}
+              last={last}
+              content={decodeContent(item.entry.content)}
+              meta={
+                item.entry.failedPermanently
+                  ? `Failed — ${item.entry.lastError ?? "not sent"}`
+                  : "Sending…"
+              }
+            />
+          </div>
         );
       })}
 
@@ -1439,11 +1525,14 @@ function Composer({ conversationId }: { conversationId: string }) {
         </div>
       )}
 
-      {error && (
-        <p className="mb-2 text-xs text-red-600 dark:text-red-400">{error}</p>
-      )}
+      {error && <ErrorText className="mb-2">{error}</ErrorText>}
 
-      <div className="flex gap-2">
+      {/* A column on purpose: the row below keeps the reply-context bar's
+          slot above it (reply/quote is a known future payload kind), so
+          adding one later inserts a sibling here rather than re-laying out
+          the whole composer. The row itself has room for a mic button
+          beside the attach one for the same reason. */}
+      <div className="flex items-center gap-2">
         {/* accept without capture. `capture` forces the camera and removes the
             photo library, which on a phone is where the photo somebody wants
             to send almost always already is. */}
@@ -1472,14 +1561,15 @@ function Composer({ conversationId }: { conversationId: string }) {
             if (e.target.value.length > 0) sync.sendTyping(conversationId);
           }}
           placeholder="Message"
-          className="flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+          className="min-w-0 flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none transition-colors focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
         />
         <button
           type="submit"
+          aria-label="Send"
           disabled={busy || (text.trim().length === 0 && pending.length === 0)}
-          className="rounded-full bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-600 text-white transition-colors hover:bg-accent-700 disabled:bg-neutral-300 dark:disabled:bg-neutral-700"
         >
-          {busy ? "…" : "Send"}
+          <SendIcon className="h-4.5 w-4.5" />
         </button>
       </div>
     </form>

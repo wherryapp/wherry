@@ -86,6 +86,19 @@ export function UsersIcon({ className }: IconProps) {
   );
 }
 
+export function SendIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M2.5 10 17 3.2c.5-.24 1 .27.78.78L11.5 17.5c-.23.53-1 .48-1.16-.07l-1.6-5.36a.6.6 0 0 0-.4-.4L2.57 10.9c-.55-.16-.6-.93-.07-1.16Z" />
+    </svg>
+  );
+}
+
 export function XIcon({ className }: IconProps) {
   return (
     <svg
