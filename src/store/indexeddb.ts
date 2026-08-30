@@ -145,13 +145,40 @@ export class IndexedDbMessageStore implements MessageStore {
     // again from /archive on a device that also drained it from the inbox.
     // add() would throw a ConstraintError on the second copy and abort the
     // whole batch; put() makes dedupe a property of the key.
-    await Promise.all(messages.map((message) => tx.store.put(message)));
+    //
+    // One asymmetry: a record whose decrypt failed never overwrites one
+    // whose decrypt succeeded. The success direction is the healing path --
+    // the forward archive sync re-storing a readable copy over a failed one
+    // -- and the failure direction would be that healing undone by a
+    // harmless redelivery.
+    await Promise.all(
+      messages.map(async (message) => {
+        if (message.decryptFailed) {
+          const existing = (await tx.store.get(message.messageId)) as
+            | StoredMessage
+            | undefined;
+          if (existing && !existing.decryptFailed) return;
+        }
+        await tx.store.put(message);
+      }),
+    );
 
     // The durability point. This resolves when the transaction commits, and
     // the sync engine acks only after it does. Resolving before this would
     // mean acking messages that are not on disk -- and acking is what stops
     // the server ever sending them again.
     await tx.done;
+  }
+
+  async existingMessageIds(ids: readonly string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const db = await this.#open();
+    const tx = db.transaction(MESSAGES, "readonly");
+    const found = await Promise.all(
+      ids.map(async (id) => ((await tx.store.getKey(id)) ? id : null)),
+    );
+    await tx.done;
+    return new Set(found.filter((id): id is string => id !== null));
   }
 
   async getConversationPage(

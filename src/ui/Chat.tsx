@@ -28,7 +28,6 @@ import {
 } from "../api/client";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
-import { PROTOCOL_PLAINTEXT } from "../api/types";
 import type { StoredConversation, StoredMessage } from "../store/types";
 import { sync } from "../sync/engine";
 import {
@@ -69,7 +68,11 @@ import {
  * value.
  */
 function messageContent(message: StoredMessage): MessageContent | null {
-  if (message.protocolVersion !== PROTOCOL_PLAINTEXT) return null;
+  // The explicit flag, not the version number: under v2 most version-2
+  // messages are readable and a few are not (sealed to an epoch this device
+  // never held), and only decrypt-at-ingest knew which. The forward archive
+  // sync heals these, so null here is usually a placeholder for seconds.
+  if (message.decryptFailed) return null;
   return decodeContent(message.payload);
 }
 
@@ -718,7 +721,7 @@ function Bubble({
         )}
         {content === null ? (
           <span className="text-sm italic opacity-70">
-            Encrypted message — this version cannot display it
+            Encrypted message — waiting for keys
           </span>
         ) : (
           <>

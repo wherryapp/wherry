@@ -17,6 +17,7 @@ import type {
   ApiErrorCode,
   ArchivePage,
   AuthResult,
+  CommitEntry,
   Conversation,
   DeviceDescriptor,
   InboxEnvelope,
@@ -24,7 +25,9 @@ import type {
   PasswordWrapWire,
   PublicDevice,
   PublicUser,
+  RecipientsResponse,
   SendResult,
+  WelcomeEntry,
 } from "./types";
 
 /**
@@ -273,6 +276,10 @@ export function sendMessage(input: {
   clientMessageId: string;
   /** base64. */
   payload: string;
+  /** v2 pair, together or not at all: the epoch the payload was sealed
+   * under, and one client-sealed archive payload per recipient user. */
+  epoch?: number;
+  archive?: { userId: string; payload: string }[];
 }): Promise<SendResult> {
   return request<SendResult>(
     `${API}/conversations/${input.conversationId}/messages`,
@@ -281,6 +288,9 @@ export function sendMessage(input: {
       body: {
         clientMessageId: input.clientMessageId,
         payload: input.payload,
+        ...(input.epoch !== undefined && input.archive
+          ? { epoch: input.epoch, archive: input.archive }
+          : {}),
       },
     },
   );
@@ -346,17 +356,111 @@ export function ackEnvelopes(
  * the contract.
  */
 export function fetchArchive(
-  input: { cursor?: string | undefined; limit?: number | undefined } = {},
+  input: {
+    cursor?: string | undefined;
+    /** Ascending mode: entries after this message id, oldest first. The
+     * forward gap-fill; mutually exclusive with cursor. */
+    after?: string | undefined;
+    limit?: number | undefined;
+  } = {},
   options: { signal?: AbortSignal } = {},
 ): Promise<ArchivePage> {
   const params = new URLSearchParams();
   if (input.cursor) params.set("cursor", input.cursor);
+  if (input.after) params.set("after", input.after);
   if (input.limit) params.set("limit", String(input.limit));
   const query = params.toString();
   return request<ArchivePage>(
     `${API}/archive${query ? `?${query}` : ""}`,
     options.signal ? { signal: options.signal } : {},
   );
+}
+
+// ---------------------------------------------------------------------------
+// MLS delivery
+// ---------------------------------------------------------------------------
+
+/** Publish fresh key packages plus this device's MLS signature key. */
+export function publishKeyPackages(input: {
+  identityPublicKey: string;
+  keyPackages: string[];
+}): Promise<{ available: number }> {
+  return request(`${API}/devices/key-packages`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export function countKeyPackages(): Promise<{ available: number }> {
+  return request(`${API}/devices/key-packages/count`);
+}
+
+/** One single-use key package per device, or null where none can be handed out. */
+export function claimKeyPackages(
+  deviceIds: string[],
+): Promise<{ keyPackages: { deviceId: string; keyPackage: string | null }[] }> {
+  return request(`${API}/key-packages/claim`, {
+    method: "POST",
+    body: { deviceIds },
+  });
+}
+
+/** The roster authority: members × unrevoked devices, keys, current epoch. */
+export function fetchRecipients(
+  conversationId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<RecipientsResponse> {
+  return request<RecipientsResponse>(
+    `${API}/conversations/${conversationId}/recipients`,
+    options.signal ? { signal: options.signal } : {},
+  );
+}
+
+/** Post a commit and its welcomes. 409 EPOCH_CONFLICT means rebase and retry. */
+export function postCommit(input: {
+  conversationId: string;
+  epoch: number;
+  payload: string;
+  welcomes: { deviceId: string; payload: string }[];
+}): Promise<{ epoch: number }> {
+  return request(`${API}/conversations/${input.conversationId}/commits`, {
+    method: "POST",
+    body: {
+      epoch: input.epoch,
+      payload: input.payload,
+      welcomes: input.welcomes,
+    },
+  });
+}
+
+/** Commits after the given epoch, ascending. Replayable. */
+export function fetchCommits(
+  input: { conversationId: string; afterEpoch: number; limit?: number },
+  options: { signal?: AbortSignal } = {},
+): Promise<{ commits: CommitEntry[] }> {
+  const params = new URLSearchParams({ afterEpoch: String(input.afterEpoch) });
+  if (input.limit) params.set("limit", String(input.limit));
+  return request(
+    `${API}/conversations/${input.conversationId}/commits?${params}`,
+    options.signal ? { signal: options.signal } : {},
+  );
+}
+
+/** The per-device welcome drain. Fetch, join durably, then ack. */
+export function fetchWelcomes(
+  options: { signal?: AbortSignal } = {},
+): Promise<{ welcomes: WelcomeEntry[] }> {
+  return request(
+    `${API}/mls/welcomes`,
+    options.signal ? { signal: options.signal } : {},
+  );
+}
+
+export function ackWelcomes(welcomeIds: string[]): Promise<{ acked: number }> {
+  return request(`${API}/mls/welcomes/ack`, {
+    method: "POST",
+    body: { welcomeIds },
+  });
 }
 
 // ---------------------------------------------------------------------------

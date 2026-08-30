@@ -35,7 +35,7 @@ import { decodeBase64, encodeBase64 } from "../api/base64";
 import { loadSession } from "../api/session";
 import { decodeContent } from "../api/payload";
 import type { ArchiveEntry, InboxEnvelope } from "../api/types";
-import { e2e, E2EError, PROTOCOL_PLAINTEXT } from "../crypto";
+import { e2e, E2EError } from "../crypto";
 import { store } from "../store";
 import {
   META_HYDRATION,
@@ -45,6 +45,12 @@ import {
 } from "../store/types";
 import { Backoff, sleep } from "./backoff";
 import { broadcast, runAsLeader, type LeaderHandle } from "./leader";
+import {
+  ensureRecipients,
+  mlsEnabled,
+  mlsSync,
+  type Identity,
+} from "./mls";
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -69,6 +75,14 @@ const ARCHIVE_PAGE = 200;
 // Conversation metadata changes rarely; there is no reason to re-read it on
 // every 2-second tick.
 const CONVERSATION_REFRESH_MS = 30_000;
+
+// The forward archive sync runs while any stored message is still
+// undecrypted -- a state that resolves within a sweep or two, or not at all
+// (a locked account key). Either way, once per interval is plenty.
+const FORWARD_SYNC_INTERVAL_MS = 30_000;
+
+/** messageId -> conversationId of stored messages whose decrypt failed. */
+const META_PENDING_DECRYPT = "mls.pendingDecrypt";
 
 // ---------------------------------------------------------------------------
 // Status
@@ -112,36 +126,31 @@ type Listener = (event: SyncEvent) => void;
  * duplicate.
  */
 /**
- * Decrypts wire bytes for storage, falling back to the wire bytes themselves
- * on a version this build's provider does not understand.
+ * Decrypts wire bytes for storage.
  *
  * Decryption happens once, at ingest, rather than at render time -- see the
- * note on `E2EProvider.decrypt` in crypto/provider.ts. Shared between
- * messages arriving through the inbox/archive and a device's own message
- * being written back after a successful send, so both paths store the same
- * thing: content bytes, not wire bytes.
- *
- * A version this build cannot decrypt is still stored as-is: bytes are
- * bytes, and it is the render layer (Chat.tsx) that decides it cannot
- * display them, the same way it always has.
+ * note on `E2EProvider.decrypt` in crypto/provider.ts. A payload the
+ * provider cannot open is stored as the wire bytes with `decryptFailed`
+ * set: the flag is what Chat.tsx renders a placeholder from, and what the
+ * forward archive sync uses to know there is healing to do.
  */
 async function decryptForStorage(
   conversationId: string,
   protocolVersion: number,
   wireBytes: Uint8Array,
-): Promise<Uint8Array> {
+  from: "envelope" | "archive",
+): Promise<{ payload: Uint8Array; decryptFailed: boolean }> {
   try {
-    return await e2e.decrypt({
+    const payload = await e2e.decrypt({
       conversationId,
       protocolVersion,
       payload: wireBytes,
+      source: from,
     });
+    return { payload, decryptFailed: false };
   } catch (error) {
     if (error instanceof E2EError) {
-      // Left as the undecrypted wire bytes. `protocolVersion` still says what
-      // they are, and nothing downstream reads `payload` for a message whose
-      // version it does not recognise -- see Chat.tsx's own version check.
-      return wireBytes;
+      return { payload: wireBytes, decryptFailed: true };
     }
     throw error;
   }
@@ -150,12 +159,14 @@ async function decryptForStorage(
 /** Turns one inbox envelope or archive entry into the record the store keeps. */
 async function toStored(
   source: InboxEnvelope | ArchiveEntry,
+  from: "envelope" | "archive",
 ): Promise<StoredMessage> {
   const wireBytes = decodeBase64(source.payload);
-  const payload = await decryptForStorage(
+  const { payload, decryptFailed } = await decryptForStorage(
     source.conversationId,
     source.protocolVersion,
     wireBytes,
+    from,
   );
 
   return {
@@ -167,12 +178,68 @@ async function toStored(
     // recorded here, not inferred from the bytes.
     protocolVersion: source.protocolVersion,
     payload,
+    ...(decryptFailed ? { decryptFailed: true as const } : {}),
     sentAt: source.sentAt,
   };
 }
 
 function uniqueConversations(messages: readonly StoredMessage[]): string[] {
   return [...new Set(messages.map((m) => m.conversationId))];
+}
+
+/**
+ * Everything a v2 send needs, sealed -- or null when it cannot be sealed
+ * yet. Shared by enqueue (compose time) and the outbox flush (the retry
+ * after `pendingEncryption`, and the re-encrypt after EPOCH_STALE).
+ *
+ * Under passthrough there is nothing that can fail and no archive to seal:
+ * the server-side provider still does that work until the cutover.
+ */
+async function sealForOutbox(
+  conversationId: string,
+  plaintext: Uint8Array,
+): Promise<Pick<
+  OutboxEntry,
+  "protocolVersion" | "payload" | "epoch" | "archive"
+> | null> {
+  if (!e2e.handshake) {
+    const wire = await e2e.encrypt(conversationId, plaintext);
+    return { protocolVersion: wire.protocolVersion, payload: wire.payload };
+  }
+
+  // Recipient keys first, encryption second, deliberately: encrypting
+  // advances the ratchet, and a wire payload we then had to throw away
+  // because the archive could not be sealed would consume a key for
+  // nothing.
+  const recipients = await ensureRecipients(conversationId);
+  if (!recipients) return null;
+
+  try {
+    const wire = await e2e.encrypt(conversationId, plaintext);
+    const archive = await e2e.encryptForArchive(
+      conversationId,
+      plaintext,
+      recipients.map((recipient) => ({
+        userId: recipient.userId,
+        publicKey: decodeBase64(recipient.publicKey),
+      })),
+    );
+
+    return {
+      protocolVersion: wire.protocolVersion,
+      payload: wire.payload,
+      ...(wire.epoch !== undefined ? { epoch: wire.epoch } : {}),
+      archive: archive.map((row) => ({
+        userId: row.userId,
+        payload: row.payload,
+      })),
+    };
+  } catch (error) {
+    if (error instanceof E2EError && error.code === "NOT_IN_GROUP") {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -205,6 +272,7 @@ export class SyncEngine {
   #backoff = new Backoff();
   #wake: (() => void) | null = null;
   #lastConversationRefresh = 0;
+  #lastForwardSync = 0;
   #onUnauthorized: (() => void) | null = null;
 
   // -- public surface ------------------------------------------------------
@@ -262,21 +330,31 @@ export class SyncEngine {
    * fresh key on every retry of what is supposed to be the same message.
    */
   async enqueue(conversationId: string, plaintext: Uint8Array): Promise<void> {
-    const wire = await e2e.encrypt(conversationId, plaintext);
-
-    const entry: OutboxEntry = {
+    const base = {
       // Generated once here and reused on every retry. A fresh id per attempt
       // is what turns one message into several; see docs/api.md.
       clientMessageId: crypto.randomUUID(),
       conversationId,
-      protocolVersion: wire.protocolVersion,
-      payload: wire.payload,
       // Kept alongside the encrypted payload purely so the pending bubble has
       // something to render -- see the field's comment in store/types.ts.
       content: plaintext,
       createdAt: new Date().toISOString(),
       attempts: 0,
     };
+
+    const sealed = await sealForOutbox(conversationId, plaintext);
+    const entry: OutboxEntry = sealed
+      ? { ...base, ...sealed }
+      : {
+          // Cannot encrypt yet -- no group state (not joined, or the group
+          // is still being created) or no recipient keys. Parked with the
+          // plaintext; the flush seals it the moment it can. The message
+          // still appears instantly, which is the outbox's whole promise.
+          ...base,
+          protocolVersion: e2e.protocolVersion,
+          payload: new Uint8Array(0),
+          pendingEncryption: true,
+        };
 
     await store.enqueueOutbox(entry);
     this.#emit({ type: "messages", conversationIds: [conversationId] });
@@ -325,8 +403,28 @@ export class SyncEngine {
         this.#setStatus({ state: "syncing" });
 
         await this.#refreshConversations(signal);
+
+        // Membership before messages: welcomes and commits are what make
+        // the sends and reads below able to happen at all. No-op without a
+        // handshake-capable provider.
+        if (mlsEnabled()) {
+          const session = loadSession();
+          if (session) {
+            const identity: Identity = {
+              userId: session.user.id,
+              deviceId: session.device.id,
+            };
+            const joined = await mlsSync.tick(identity, signal);
+            if (joined.length > 0) {
+              this.#emit({ type: "messages", conversationIds: joined });
+              broadcast({ type: "messages", conversationIds: joined });
+            }
+          }
+        }
+
         await this.#flushOutbox(signal);
         await this.#drainInbox(signal);
+        await this.#forwardArchiveSync(signal);
 
         this.#backoff.reset();
         this.#setStatus({
@@ -471,8 +569,11 @@ export class SyncEngine {
         { signal },
       );
 
-      const messages = await Promise.all(page.entries.map(toStored));
+      const messages = await Promise.all(
+        page.entries.map((entry) => toStored(entry, "archive")),
+      );
       await store.putMessages(messages);
+      await this.#recordPendingDecrypts(messages);
 
       // Written after the messages are durable, so a crash between the two
       // costs a re-read rather than a gap.
@@ -509,12 +610,29 @@ export class SyncEngine {
       const envelopes = await fetchInbox({ limit: INBOX_PAGE, signal });
       if (envelopes.length === 0) return;
 
-      const messages = await Promise.all(envelopes.map(toStored));
+      // Dedup BEFORE decrypt, not after. Two envelopes legitimately carry a
+      // message the store already has: a redelivery after a failed ack, and
+      // the echo of this device's own send (already stored from the send
+      // response). Under a ratcheting protocol the key that decrypted the
+      // first copy is gone, so a second decrypt attempt is guaranteed to
+      // fail -- the known copies are acked without one.
+      const known = await store.existingMessageIds(
+        envelopes.map((envelope) => envelope.messageId),
+      );
+      const fresh = envelopes.filter(
+        (envelope) => !known.has(envelope.messageId),
+      );
+
+      const messages = await Promise.all(
+        fresh.map((envelope) => toStored(envelope, "envelope")),
+      );
 
       // Resolves on commit. Everything below depends on that.
       await store.putMessages(messages);
+      await this.#recordPendingDecrypts(messages);
 
-      // Only now. See the note at the top of this file.
+      // Only now, and every envelope in the page -- the known ones too.
+      // See the note at the top of this file.
       await ackEnvelopes(
         envelopes.map((envelope) => envelope.envelopeId),
         { signal },
@@ -553,15 +671,42 @@ export class SyncEngine {
 
     const pending = await store.listOutbox();
 
-    for (const entry of pending) {
+    // Conversations with an entry that cannot be sealed yet. Later entries
+    // for the same conversation must wait behind it -- sending them first
+    // would deliver a person's messages out of the order they typed them --
+    // while other conversations flow on.
+    const blocked = new Set<string>();
+
+    for (let entry of pending) {
       if (signal.aborted) return;
       if (entry.failedPermanently) continue;
+      if (blocked.has(entry.conversationId)) continue;
+
+      if (entry.pendingEncryption) {
+        const sealed = await sealForOutbox(entry.conversationId, entry.content);
+        if (!sealed) {
+          blocked.add(entry.conversationId);
+          continue;
+        }
+        const { pendingEncryption: _dropped, ...rest } = entry;
+        entry = { ...rest, ...sealed };
+        await store.enqueueOutbox(entry);
+      }
 
       try {
         const result = await sendMessage({
           conversationId: entry.conversationId,
           clientMessageId: entry.clientMessageId,
           payload: encodeBase64(entry.payload),
+          ...(entry.epoch !== undefined && entry.archive
+            ? {
+                epoch: entry.epoch,
+                archive: entry.archive.map((row) => ({
+                  userId: row.userId,
+                  payload: encodeBase64(row.payload),
+                })),
+              }
+            : {}),
         });
 
         // Written from the send response rather than waiting for the echo
@@ -593,6 +738,37 @@ export class SyncEngine {
         broadcast({ type: "messages", conversationIds: [entry.conversationId] });
       } catch (error) {
         if (isUnauthorized(error)) throw error;
+
+        // The two v2 refusals that mean "repair and retry", not "give up":
+        // a commit advanced the group after this entry was sealed, or the
+        // member set changed under the archive list. Both are fixed by
+        // catching up and re-sealing from the retained plaintext -- the one
+        // sanctioned exception to encrypt-once, safe because the refused
+        // send created no message row.
+        if (
+          e2e.handshake &&
+          error instanceof ApiError &&
+          (error.code === "EPOCH_STALE" || error.code === "ARCHIVE_INCOMPLETE")
+        ) {
+          try {
+            await mlsSync.reconcileConversation(entry.conversationId, {
+              userId: session.user.id,
+              deviceId: session.device.id,
+            });
+            const resealed = await sealForOutbox(
+              entry.conversationId,
+              entry.content,
+            );
+            if (resealed) {
+              await store.enqueueOutbox({ ...entry, ...resealed });
+            }
+          } catch (repairError) {
+            console.warn("re-seal after stale send failed", repairError);
+          }
+          // Retried next tick either way; entries behind it hold their order.
+          blocked.add(entry.conversationId);
+          continue;
+        }
 
         if (isPermanentSendFailure(error)) {
           // Park it and keep going. One undeliverable message must not stop
@@ -667,13 +843,11 @@ export class SyncEngine {
     ).connection;
     if (connection?.saveData) return;
 
-    // v1-only scaffolding, same as Chat.tsx's own version check: this filters
-    // "decryptable" by checking for exactly PROTOCOL_PLAINTEXT, which is
-    // correct only because that is the only version decrypt ever succeeds
-    // for today. A real second provider needs this to mean "decrypt
-    // succeeded" rather than "is this specific version".
+    // "Decrypt succeeded" is now a recorded fact rather than a version
+    // check -- exactly the change the old comment here said a real second
+    // provider would force.
     const refs = messages
-      .filter((message) => message.protocolVersion === PROTOCOL_PLAINTEXT)
+      .filter((message) => !message.decryptFailed)
       .flatMap((message) => decodeContent(message.payload).attachments);
 
     // One at a time. A burst of parallel photo downloads competes with the
@@ -696,6 +870,99 @@ export class SyncEngine {
         // above. A network failure is not a verdict about the attachment.
         return;
       }
+    }
+  }
+
+  /**
+   * Remembers which stored messages still hold undecrypted wire bytes, so
+   * the forward archive sync knows there is healing to do without scanning
+   * the whole store. A best-effort record: a lost entry costs a delayed
+   * heal, a stale one costs a harmless re-read.
+   */
+  async #recordPendingDecrypts(
+    messages: readonly StoredMessage[],
+  ): Promise<void> {
+    const failed = messages.filter((message) => message.decryptFailed);
+    if (failed.length === 0) return;
+
+    const pending =
+      (await store.getMeta<Record<string, string>>(META_PENDING_DECRYPT)) ?? {};
+    for (const message of failed) {
+      pending[message.messageId] = message.conversationId;
+    }
+    await store.setMeta(META_PENDING_DECRYPT, pending);
+  }
+
+  /**
+   * The healing read: archive rows for messages whose envelopes could not
+   * be decrypted.
+   *
+   * The canonical case is a new device added to a group mid-history. Its
+   * envelopes from before the Add are sealed to epochs it never held and
+   * never will -- MLS forward secrecy working as designed -- but the same
+   * messages exist in the archive, sealed to the account key it unlocked at
+   * login. Reading forward from just before the first failure and
+   * re-storing heals them; `putMessages` lets a successful decrypt replace
+   * a failed record and never the reverse.
+   */
+  async #forwardArchiveSync(signal: AbortSignal): Promise<void> {
+    const pending = await store.getMeta<Record<string, string>>(
+      META_PENDING_DECRYPT,
+    );
+    if (!pending || Object.keys(pending).length === 0) return;
+
+    const now = Date.now();
+    if (now - this.#lastForwardSync < FORWARD_SYNC_INTERVAL_MS) return;
+    this.#lastForwardSync = now;
+
+    // uuidv7 ids sort by time, so the smallest failed id is the earliest
+    // gap. `after` is exclusive, and the failed message itself must be in
+    // range -- so the cursor is its predecessor within its conversation
+    // (safe: at most a little earlier than the true global predecessor), or
+    // the all-zeros uuid when it has none.
+    const ids = Object.keys(pending).sort();
+    const firstId = ids[0]!;
+    const conversationId = pending[firstId]!;
+    const before = await store.getConversationPage(conversationId, {
+      before: firstId,
+      limit: 1,
+    });
+    let after = before[0]?.messageId ?? "00000000-0000-0000-0000-000000000000";
+
+    const healedConversations = new Set<string>();
+
+    // Bounded per tick; anything left continues next time.
+    for (let page = 0; page < 5; page++) {
+      if (signal.aborted) return;
+
+      const result = await fetchArchive(
+        { after, limit: ARCHIVE_PAGE },
+        { signal },
+      );
+      if (result.entries.length === 0) break;
+
+      const messages = await Promise.all(
+        result.entries.map((entry) => toStored(entry, "archive")),
+      );
+      await store.putMessages(messages);
+
+      for (const message of messages) {
+        if (!message.decryptFailed && pending[message.messageId]) {
+          delete pending[message.messageId];
+          healedConversations.add(message.conversationId);
+        }
+      }
+
+      if (result.entries.length < ARCHIVE_PAGE) break;
+      after = result.entries[result.entries.length - 1]!.messageId;
+    }
+
+    await store.setMeta(META_PENDING_DECRYPT, pending);
+
+    if (healedConversations.size > 0) {
+      const conversationIds = [...healedConversations];
+      this.#emit({ type: "messages", conversationIds });
+      broadcast({ type: "messages", conversationIds });
     }
   }
 

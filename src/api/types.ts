@@ -66,6 +66,44 @@ export type PasswordWrapWire = {
   passwordKdfParams: KdfParamsWire;
 };
 
+// ---------------------------------------------------------------------------
+// MLS delivery
+// ---------------------------------------------------------------------------
+
+/** GET /conversations/:id/recipients — the roster authority. */
+export type RecipientsResponse = {
+  epoch: number;
+  members: {
+    userId: string;
+    /** base64, or null for an account that predates v2. */
+    accountPublicKey: string | null;
+    devices: {
+      deviceId: string;
+      /** base64, or null until the device first publishes key packages. */
+      identityPublicKey: string | null;
+    }[];
+  }[];
+};
+
+/** One row of GET /conversations/:id/commits. */
+export type CommitEntry = {
+  epoch: number;
+  senderDeviceId: string;
+  /** base64 MLSMessage(Commit). */
+  payload: string;
+  createdAt: string;
+};
+
+/** One row of GET /mls/welcomes. */
+export type WelcomeEntry = {
+  welcomeId: string;
+  conversationId: string;
+  /** The epoch the joining device's new state corresponds to. */
+  epoch: number;
+  /** base64 MLSMessage(Welcome). */
+  payload: string;
+};
+
 export type DeviceDescriptor = {
   /** Omitted on a device's first login, sent on every later one. */
   id?: string;

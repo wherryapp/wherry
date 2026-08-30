@@ -55,6 +55,16 @@ export type StoredMessage = {
    * sync/engine.ts.
    */
   payload: Uint8Array;
+  /**
+   * Set when decrypt could not produce content and `payload` still holds the
+   * wire bytes. The explicit flag replaces inferring "readable" from
+   * `protocolVersion` -- under v2 a version-2 message is usually readable
+   * and occasionally not (sealed to an epoch this device never held), and
+   * only decrypt knows which. Healed by the forward archive sync: a
+   * successful re-store clears it, and `putMessages` never lets a failed
+   * record overwrite a decrypted one.
+   */
+  decryptFailed?: true;
   /** ISO-8601, from the server. Display ordering uses messageId, not this. */
   sentAt: string;
 };
@@ -101,6 +111,28 @@ export type OutboxEntry = {
   conversationId: string;
   /** Set once at enqueue time by the E2E provider. A retry never changes it. */
   protocolVersion: number;
+  /**
+   * The group epoch the payload was sealed under (v2 only). Named on the
+   * send request so the server can refuse a stale-roster message. The one
+   * field a retry MAY change: a 409 EPOCH_STALE re-encrypts from `content`
+   * under the new epoch, replacing payload, epoch and archive together --
+   * the sanctioned exception to encrypt-once, safe because the server
+   * created no message row for the refused send.
+   */
+  epoch?: number;
+  /**
+   * The archive payloads sealed at enqueue time, one per recipient user
+   * (v2 only). Sent alongside `payload`; re-produced only on EPOCH_STALE.
+   */
+  archive?: { userId: string; payload: Uint8Array }[];
+  /**
+   * Set when enqueue could not encrypt yet -- no group state (not joined,
+   * group not created) or no cached recipients. `payload` is empty and
+   * `content` holds the plaintext; the outbox flush encrypts when it can,
+   * and entries behind one of these in the same conversation wait so the
+   * conversation's order is preserved.
+   */
+  pendingEncryption?: true;
   /**
    * Already encrypted -- see `E2EProvider.encrypt` in crypto/provider.ts.
    * This is what a retry resends: fixed once at enqueue time, never
@@ -159,6 +191,14 @@ export interface MessageStore {
    * Resolves after the transaction commits. See the note above.
    */
   putMessages(messages: readonly StoredMessage[]): Promise<void>;
+
+  /**
+   * Which of these ids the store already holds. The dedup-before-decrypt
+   * check: a redelivered envelope must be acked without a second decrypt,
+   * because under a ratcheting protocol the key that opened it the first
+   * time no longer exists.
+   */
+  existingMessageIds(ids: readonly string[]): Promise<Set<string>>;
 
   /** A conversation's messages, newest first. */
   getConversationPage(
