@@ -56,6 +56,16 @@ import {
   isSubscribed,
   type PushState,
 } from "../sync/push";
+import {
+  BackButton,
+  Badge,
+  Button,
+  ErrorText,
+  IconButton,
+  Input,
+  Panel,
+  PlusIcon,
+} from "./kit";
 
 // ---------------------------------------------------------------------------
 // Rendering content
@@ -421,7 +431,7 @@ function NewConversation({
         </div>
       )}
 
-      <input
+      <Input
         autoFocus
         value={username}
         onChange={(e) => setUsername(e.target.value)}
@@ -430,7 +440,6 @@ function NewConversation({
             ? "Or add by username"
             : "username, or several for a group"
         }
-        className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
       />
 
       {picked.size > 1 && (
@@ -439,25 +448,20 @@ function NewConversation({
         </p>
       )}
 
-      {error && (
-        <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
-      )}
+      {error && <ErrorText>{error}</ErrorText>}
 
       <div className="flex gap-2">
-        <button
+        <Button
           type="submit"
+          size="sm"
           disabled={busy || !canSend}
-          className="flex-1 rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          className="flex-1"
         >
           {busy ? "…" : "Start"}
-        </button>
-        <button
-          type="button"
-          onClick={reset}
-          className="rounded-md px-3 py-1.5 text-sm text-neutral-500"
-        >
+        </Button>
+        <Button variant="ghost" size="sm" onClick={reset} className="px-3 py-1.5">
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -642,44 +646,24 @@ function GroupDetails({
   );
 
   return (
-    <div className="flex h-full flex-col bg-white dark:bg-neutral-900">
-      <header className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
-        <button
-          onClick={onClose}
-          aria-label="Back"
-          className="-ml-2 rounded px-2 py-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
-        >
-          ←
-        </button>
-        <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-          Group details
-        </span>
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-4">
+    <Panel title="Group details" onClose={onClose}>
+      <div className="px-4">
         <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
             Name
           </h2>
           <form onSubmit={saveTitle} className="mt-2 flex gap-2">
-            <input
+            <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Group name"
               maxLength={100}
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
-            <button
-              type="submit"
-              disabled={titleBusy}
-              className="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-            >
+            <Button type="submit" size="sm" disabled={titleBusy} className="shrink-0">
               {titleBusy ? "…" : "Save"}
-            </button>
+            </Button>
           </form>
-          {titleError && (
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{titleError}</p>
-          )}
+          {titleError && <ErrorText className="mt-1">{titleError}</ErrorText>}
         </section>
 
         <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
@@ -712,22 +696,20 @@ function GroupDetails({
               </li>
             ))}
           </ul>
-          {removeError && (
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{removeError}</p>
-          )}
+          {removeError && <ErrorText className="mt-1">{removeError}</ErrorText>}
         </section>
 
         <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
-          <button
+          <Button
+            variant="danger"
+            size="sm"
             onClick={doLeave}
             disabled={leaveBusy}
-            className="w-full rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 disabled:opacity-50 dark:border-red-900 dark:text-red-400"
+            className="w-full"
           >
             {leaveBusy ? "…" : "Leave group"}
-          </button>
-          {leaveError && (
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{leaveError}</p>
-          )}
+          </Button>
+          {leaveError && <ErrorText className="mt-1">{leaveError}</ErrorText>}
         </section>
 
         <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
@@ -759,11 +741,10 @@ function GroupDetails({
               </div>
             )}
 
-            <input
+            <Input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Or add by username"
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
 
             <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
@@ -782,21 +763,20 @@ function GroupDetails({
               </span>
             </label>
 
-            {addError && (
-              <p className="text-xs text-red-600 dark:text-red-400">{addError}</p>
-            )}
+            {addError && <ErrorText>{addError}</ErrorText>}
 
-            <button
+            <Button
               type="submit"
+              size="sm"
               disabled={addBusy || (picked.size === 0 && username.trim().length === 0)}
-              className="w-full rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+              className="w-full"
             >
               {addBusy ? "…" : "Add"}
-            </button>
+            </Button>
           </form>
         </section>
       </div>
-    </div>
+    </Panel>
   );
 }
 
@@ -1042,10 +1022,12 @@ function ConversationList({
             <button
               key={conversation.id}
               onClick={() => onSelect(conversation.id)}
-              className={`block w-full border-b border-neutral-100 px-4 py-3 text-left dark:border-neutral-800 ${
+              className={`block w-full border-b border-neutral-100 px-4 py-3 text-left transition-colors dark:border-neutral-800 ${
                 selected === conversation.id
                   ? "bg-neutral-100 dark:bg-neutral-800"
-                  : "hover:bg-neutral-50 dark:hover:bg-neutral-850"
+                  : // neutral-800, not the "neutral-850" that sat here
+                    // silently generating no rule -- the scale has no 850.
+                    "hover:bg-neutral-50 dark:hover:bg-neutral-800"
               }`}
             >
               <span className="flex items-center gap-2">
@@ -1056,14 +1038,7 @@ function ConversationList({
                 >
                   {conversationTitle(conversation, session.user.id)}
                 </span>
-                {count > 0 && (
-                  <span
-                    aria-label={`${count} unread`}
-                    className="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white"
-                  >
-                    {count > 98 ? "99+" : count}
-                  </span>
-                )}
+                <Badge count={count} />
               </span>
               <span
                 className={`block truncate text-xs ${
@@ -1523,14 +1498,13 @@ function Composer({ conversationId }: { conversationId: string }) {
           onInput={choose}
           className="hidden"
         />
-        <button
-          type="button"
+        <IconButton
+          label="Attach a photo"
           onClick={() => fileInput.current?.click()}
-          aria-label="Attach a photo"
-          className="rounded-full px-2 text-xl leading-none text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+          className="rounded-full"
         >
-          +
-        </button>
+          <PlusIcon />
+        </IconButton>
         <input
           value={text}
           onChange={(e) => {
@@ -1654,15 +1628,13 @@ export function Chat({
           messenger
         </span>
         <span className="flex items-center gap-3">
-          <button
-            onClick={() => setFriendsOpen(true)}
-            className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
-          >
+          <Button variant="ghost" onClick={() => setFriendsOpen(true)}>
             Contacts
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="ghost"
             onClick={() => setSettingsOpen(true)}
-            className="relative text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+            className="relative"
           >
             Settings
             {unreadAnnouncements > 0 && (
@@ -1670,16 +1642,13 @@ export function Chat({
                 aria-label={`${unreadAnnouncements} unread ${
                   unreadAnnouncements === 1 ? "announcement" : "announcements"
                 }`}
-                className="absolute -right-1.5 -top-0.5 block h-2 w-2 rounded-full bg-blue-600"
+                className="absolute -right-1.5 -top-0.5 block h-2 w-2 rounded-full bg-accent-600"
               />
             )}
-          </button>
-          <button
-            onClick={onSignOut}
-            className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
-          >
+          </Button>
+          <Button variant="ghost" onClick={onSignOut}>
             Sign out
-          </button>
+          </Button>
         </span>
       </header>
 
@@ -1701,13 +1670,10 @@ export function Chat({
               <>
                 <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
                   {!isDesktop && (
-                    <button
+                    <BackButton
                       onClick={() => setSelected(null)}
-                      aria-label="Back to conversations"
-                      className="-ml-2 rounded px-2 py-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
-                    >
-                      ←
-                    </button>
+                      label="Back to conversations"
+                    />
                   )}
                   <span className="min-w-0 flex-1 truncate">
                     <span className="block truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
@@ -1721,12 +1687,13 @@ export function Chat({
                     />
                   </span>
                   {current?.kind === "group" && (
-                    <button
+                    <Button
+                      variant="ghost"
                       onClick={() => setGroupDetailsOpen(true)}
-                      className="shrink-0 text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+                      className="shrink-0"
                     >
                       Details
-                    </button>
+                    </Button>
                   )}
                 </div>
                 <Timeline

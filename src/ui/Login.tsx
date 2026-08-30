@@ -15,6 +15,7 @@ import {
   unlockAccountKey,
 } from "../crypto/account";
 import { KeysError } from "../crypto/keys";
+import { Button, Input } from "./kit";
 
 /**
  * What stands between a successful auth call and entering the app.
@@ -179,13 +180,12 @@ export function Login({
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
               Email
             </span>
-            <input
+            <Input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
               required
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
             <span className="block text-xs text-neutral-500 dark:text-neutral-400">
               Only a confirmed address can receive a reset link.
@@ -198,7 +198,7 @@ export function Login({
           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
             {mode === "login" ? "Username or email" : "Username"}
           </span>
-          <input
+          <Input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
@@ -213,7 +213,6 @@ export function Login({
                     "3–32 characters: letters, numbers, dot, underscore or hyphen",
                 }
               : {})}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
           />
         </label>
         )}
@@ -223,12 +222,11 @@ export function Login({
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
               Display name
             </span>
-            <input
+            <Input
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               required
               maxLength={100}
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
           </label>
         )}
@@ -238,14 +236,13 @@ export function Login({
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
               Email
             </span>
-            <input
+            <Input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
               placeholder="you@example.com"
               required
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
             <span className="block text-xs text-neutral-500 dark:text-neutral-400">
               You will need to confirm this before you can send or receive
@@ -259,14 +256,13 @@ export function Login({
           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Password
           </span>
-          <input
+          <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete={mode === "login" ? "current-password" : "new-password"}
             required
             minLength={12}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
           />
           <span className="text-xs text-neutral-500 dark:text-neutral-400">
             At least 12 characters.
@@ -287,11 +283,7 @@ export function Login({
           </p>
         )}
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-        >
+        <Button type="submit" disabled={busy} className="w-full">
           {busy
             ? "Working…"
             : mode === "login"
@@ -299,7 +291,7 @@ export function Login({
               : mode === "register"
                 ? "Create account"
                 : "Send reset link"}
-        </button>
+        </Button>
 
         {mode === "login" && (
           <button
@@ -398,14 +390,14 @@ function RecoveryCodeScreen({
           <span>I have written this code down.</span>
         </label>
 
-        <button
+        <Button
           type="button"
           disabled={!acknowledged}
           onClick={onDone}
-          className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          className="w-full"
         >
           Continue
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -487,14 +479,14 @@ function RecoveryPrompt({
           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Recovery code
           </span>
-          <input
+          <Input
             value={code}
             onChange={(e) => setCode(e.target.value)}
             autoComplete="off"
             spellCheck={false}
             placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXXX"
             required
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 font-mono text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            className="font-mono"
           />
         </label>
 
@@ -504,13 +496,9 @@ function RecoveryPrompt({
           </p>
         )}
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-        >
+        <Button type="submit" disabled={busy} className="w-full">
           {busy ? "Working…" : "Unlock history"}
-        </button>
+        </Button>
 
         <button
           type="button"

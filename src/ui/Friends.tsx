@@ -18,9 +18,12 @@ import {
   type FriendLists,
 } from "../api/client";
 import { sync } from "../sync/engine";
+import { Button, ErrorText, Input, Note, Panel } from "./kit";
 
-const buttonClass =
-  "shrink-0 rounded-md px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800";
+// Block is the one action here with no kit equivalent -- a plain-text button
+// but red, and the kit's ghost variant carries no color. See kit.tsx.
+const blockClass =
+  "shrink-0 rounded-md px-2 py-1 text-xs font-medium text-red-600 hover:bg-neutral-100 dark:text-red-400 dark:hover:bg-neutral-800";
 
 function Person({
   person,
@@ -143,48 +146,30 @@ export function Friends({
   }
 
   return (
-    <div className="flex h-full flex-col bg-white dark:bg-neutral-900">
-      <header className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
-        <button
-          onClick={onClose}
-          aria-label="Back"
-          className="-ml-2 rounded px-2 py-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
-        >
-          ←
-        </button>
-        <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-          Contacts
-        </span>
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-4">
+    <Panel title="Contacts" onClose={onClose}>
+      <div className="px-4">
         <form onSubmit={add} className="flex gap-2 py-4">
-          <input
+          <Input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             placeholder="Add by username"
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
           />
-          <button
+          <Button
             type="submit"
+            size="sm"
             disabled={busy || username.trim().length === 0}
-            className="shrink-0 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+            className="shrink-0"
           >
             {busy ? "…" : "Add"}
-          </button>
+          </Button>
         </form>
 
-        {(note || error) && (
-          <p
-            className={`pb-3 text-xs ${
-              error
-                ? "text-red-600 dark:text-red-400"
-                : "text-neutral-600 dark:text-neutral-300"
-            }`}
-          >
-            {error ?? note}
-          </p>
-        )}
+        {(note || error) &&
+          (error ? (
+            <ErrorText className="pb-3">{error}</ErrorText>
+          ) : (
+            <Note className="pb-3">{note}</Note>
+          ))}
 
         {lists === null ? (
           <p className="text-xs text-neutral-500">Loading…</p>
@@ -194,8 +179,10 @@ export function Friends({
               <Group title={`Requests (${lists.incoming.length})`}>
                 {lists.incoming.map((person) => (
                   <Person key={person.userId} person={person}>
-                    <button
-                      className={buttonClass}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="px-2 py-1"
                       onClick={() =>
                         void act(
                           () => acceptFriend(person.userId),
@@ -204,13 +191,15 @@ export function Friends({
                       }
                     >
                       Accept
-                    </button>
-                    <button
-                      className={buttonClass}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="px-2 py-1"
                       onClick={() => void act(() => removeFriend(person.userId))}
                     >
                       Decline
-                    </button>
+                    </Button>
                   </Person>
                 ))}
               </Group>
@@ -224,17 +213,24 @@ export function Friends({
               ) : (
                 lists.friends.map((person) => (
                   <Person key={person.userId} person={person}>
-                    <button className={buttonClass} onClick={() => void message(person)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="px-2 py-1"
+                      onClick={() => void message(person)}
+                    >
                       Message
-                    </button>
-                    <button
-                      className={buttonClass}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="px-2 py-1"
                       onClick={() => void act(() => removeFriend(person.userId))}
                     >
                       Remove
-                    </button>
+                    </Button>
                     <button
-                      className={`${buttonClass} text-red-600 dark:text-red-400`}
+                      className={blockClass}
                       onClick={() =>
                         void act(
                           () => blockUser(person.userId),
@@ -253,12 +249,14 @@ export function Friends({
               <Group title="Sent">
                 {lists.outgoing.map((person) => (
                   <Person key={person.userId} person={person} detail="waiting">
-                    <button
-                      className={buttonClass}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="px-2 py-1"
                       onClick={() => void act(() => removeFriend(person.userId))}
                     >
                       Cancel
-                    </button>
+                    </Button>
                   </Person>
                 ))}
               </Group>
@@ -271,8 +269,10 @@ export function Friends({
               >
                 {lists.blocked.map((person) => (
                   <Person key={person.userId} person={person}>
-                    <button
-                      className={buttonClass}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="px-2 py-1"
                       onClick={() =>
                         void act(
                           () => unblockUser(person.userId),
@@ -281,7 +281,7 @@ export function Friends({
                       }
                     >
                       Unblock
-                    </button>
+                    </Button>
                   </Person>
                 ))}
               </Group>
@@ -289,7 +289,7 @@ export function Friends({
           </>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }
 

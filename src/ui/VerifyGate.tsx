@@ -17,6 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, me, resendVerification, setEmail } from "../api/client";
 import { markEmailVerified } from "../api/session";
 import type { StoredSession } from "../api/session";
+import { Button, Input } from "./kit";
 
 // Frequent enough that finishing verification in another tab feels immediate
 // without switching back, cheap enough that it costs nothing sitting idle --
@@ -144,14 +145,14 @@ export function VerifyGate({
         )}
 
         {currentEmail && (
-          <button
+          <Button
             type="button"
             disabled={sending}
             onClick={() => void resend()}
-            className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+            className="w-full"
           >
             Resend the link
-          </button>
+          </Button>
         )}
 
         <form onSubmit={submitEmail} className="space-y-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
@@ -159,23 +160,23 @@ export function VerifyGate({
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
               {currentEmail ? "Use a different address" : "Email"}
             </span>
-            <input
+            <Input
               type="email"
               value={email}
               onChange={(e) => setEmailField(e.target.value)}
               autoComplete="email"
               placeholder="you@example.com"
               required
-              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
           </label>
-          <button
+          <Button
             type="submit"
+            variant="secondary"
             disabled={sending || !email.trim()}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+            className="w-full"
           >
             {currentEmail ? "Send to this address instead" : "Send confirmation link"}
-          </button>
+          </Button>
         </form>
 
         <div className="flex items-center justify-between pt-2">

@@ -3,8 +3,43 @@
 /* Tailwind v4 is configured in CSS rather than a tailwind.config.js -- there
    is no config file to create unless a theme needs extending. */
 
+/* The theme extension: one accent, by name.
+
+   `accent` rather than `blue` because the point is that components stop
+   choosing colours -- they say "accent" and this file decides what that
+   means, once. The values are Tailwind's blue scale today (the unread badge
+   had already picked blue-600 before this existed), and changing the app's
+   accent is editing these lines, not a find-and-replace.
+
+   The neutral scale is deliberately NOT re-tokenised: ui/kit.tsx constrains
+   how neutrals are used by owning the components that use them, which is
+   the enforcement that matters. A parallel "surface" palette would just be
+   a second name for the same eleven grays. */
+@theme {
+  --color-accent-50: oklch(0.97 0.014 254.604);
+  --color-accent-100: oklch(0.932 0.032 255.585);
+  --color-accent-500: oklch(0.623 0.214 259.815);
+  --color-accent-600: oklch(0.546 0.245 262.881);
+  --color-accent-700: oklch(0.488 0.243 264.376);
+  --color-accent-900: oklch(0.379 0.146 265.522);
+  --color-accent-950: oklch(0.282 0.091 267.935);
+}
+
 :root {
   color-scheme: light dark;
+}
+
+/* One focus treatment for everything keyboard-reachable. Inputs opt out in
+   ui/kit.tsx because a text field already shows focus with its border and a
+   second box around a box reads as an error; everything else -- buttons,
+   links, rows -- had only the browser default before, which several of the
+   existing classlists then suppressed by accident. :focus-visible, not
+   :focus, so mouse and touch never see it. */
+@layer base {
+  :where(button, a, [role="button"], [tabindex]):focus-visible {
+    outline: 2px solid var(--color-accent-600);
+    outline-offset: 2px;
+  }
 }
 
 html,

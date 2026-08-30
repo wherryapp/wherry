@@ -11,6 +11,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, confirmPasswordReset, verifyEmail } from "../api/client";
+import { Button, ErrorText, Input } from "./kit";
 
 export type EmailRoute =
   | { kind: "verify"; token: string }
@@ -44,12 +45,6 @@ export function routeFromLocation(): EmailRoute | null {
 function clearUrl(): void {
   window.history.replaceState(null, "", "/");
 }
-
-const inputClass =
-  "w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100";
-
-const buttonClass =
-  "w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900";
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -108,9 +103,9 @@ export function VerifyEmail({ token, onDone }: { token: string; onDone: () => vo
       )}
 
       {state !== "working" && (
-        <button onClick={onDone} className={buttonClass}>
+        <Button onClick={onDone} className="w-full">
           Continue
-        </button>
+        </Button>
       )}
     </Shell>
   );
@@ -158,9 +153,9 @@ export function ResetPassword({
           Every device has been signed out, including any you did not recognise.
           Sign in again with the new password.
         </p>
-        <button onClick={onDone} className={buttonClass}>
+        <Button onClick={onDone} className="w-full">
           Sign in
-        </button>
+        </Button>
       </Shell>
     );
   }
@@ -171,24 +166,17 @@ export function ResetPassword({
         Choose a new password
       </h1>
       <form onSubmit={submit} className="space-y-3">
-        <input
+        <Input
           type="password"
           autoComplete="new-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="New password (at least 12 characters)"
-          className={inputClass}
         />
-        {error && (
-          <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
-        )}
-        <button
-          type="submit"
-          disabled={busy || password.length < 12}
-          className={buttonClass}
-        >
+        {error && <ErrorText>{error}</ErrorText>}
+        <Button type="submit" disabled={busy || password.length < 12} className="w-full">
           {busy ? "…" : "Set password"}
-        </button>
+        </Button>
       </form>
       <p className="text-xs text-neutral-500 dark:text-neutral-400">
         This signs out every device on the account.

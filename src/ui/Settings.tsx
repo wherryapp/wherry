@@ -22,6 +22,7 @@ import {
 import type { StoredSession } from "../api/session";
 import { changePasswordWithRewrap } from "../crypto/account";
 import { useAnnouncements } from "./hooks";
+import { Button, ErrorText, Input, Note, Panel } from "./kit";
 
 function Section({
   title,
@@ -46,12 +47,6 @@ function Section({
     </section>
   );
 }
-
-const inputClass =
-  "w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100";
-
-const buttonClass =
-  "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900";
 
 /**
  * Stamped at build time the same way BUILD_COMMIT is (see sync/engine.ts) --
@@ -210,48 +205,29 @@ export function Settings({
   }
 
   return (
-    <div className="flex h-full flex-col bg-white dark:bg-neutral-900">
-      <header className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
-        <button
-          onClick={onClose}
-          aria-label="Back"
-          className="-ml-2 rounded px-2 py-1 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
-        >
-          ←
-        </button>
-        <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-          Settings
-        </span>
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {(note || error) && (
-          <p
-            className={`px-4 py-2 text-xs ${
-              error
-                ? "text-red-600 dark:text-red-400"
-                : "text-neutral-600 dark:text-neutral-300"
-            }`}
-          >
-            {error ?? note}
-          </p>
-        )}
+    <Panel title="Settings" onClose={onClose}>
+      <div>
+        {(note || error) &&
+          (error ? (
+            <ErrorText className="px-4 py-2">{error}</ErrorText>
+          ) : (
+            <Note className="px-4 py-2">{note}</Note>
+          ))}
 
         <Section title="Display name" description={`Signed in as ${session.user.username}`}>
           <form onSubmit={submitName} className="flex gap-2">
-            <input
+            <Input
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               maxLength={60}
-              className={inputClass}
             />
-            <button
+            <Button
               type="submit"
+              size="sm"
               disabled={displayName.trim().length === 0}
-              className={buttonClass}
             >
               Save
-            </button>
+            </Button>
           </form>
         </Section>
 
@@ -260,23 +236,22 @@ export function Settings({
           description="Used to sign in and to reset your password. Nothing else."
         >
           <form onSubmit={submitEmail} className="flex gap-2">
-            <input
+            <Input
               type="email"
               value={emailAddress}
               onChange={(e) => setEmailAddress(e.target.value)}
               placeholder="you@example.com"
-              className={inputClass}
             />
-            <button
+            <Button
               type="submit"
+              size="sm"
               disabled={
                 emailAddress.trim().length === 0 ||
                 emailAddress.trim() === savedEmail
               }
-              className={buttonClass}
             >
               Save
-            </button>
+            </Button>
           </form>
 
           {savedEmail && emailVerified === false && (
@@ -414,7 +389,7 @@ export function Settings({
           </Section>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }
 
@@ -468,29 +443,27 @@ function PasswordSection({
       description="Changing it signs out every other device."
     >
       <form onSubmit={submit} className="space-y-2">
-        <input
+        <Input
           type="password"
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
           placeholder="Current password"
           autoComplete="current-password"
-          className={inputClass}
         />
-        <input
+        <Input
           type="password"
           value={next}
           onChange={(e) => setNext(e.target.value)}
           placeholder="New password (at least 12 characters)"
           autoComplete="new-password"
-          className={inputClass}
         />
-        <button
+        <Button
           type="submit"
+          size="sm"
           disabled={busy || current.length === 0 || next.length < 12}
-          className={buttonClass}
         >
           {busy ? "…" : "Change password"}
-        </button>
+        </Button>
       </form>
     </Section>
   );
