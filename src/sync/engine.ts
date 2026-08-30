@@ -193,8 +193,9 @@ function uniqueConversations(messages: readonly StoredMessage[]): string[] {
  * yet. Shared by enqueue (compose time) and the outbox flush (the retry
  * after `pendingEncryption`, and the re-encrypt after EPOCH_STALE).
  *
- * Under passthrough there is nothing that can fail and no archive to seal:
- * the server-side provider still does that work until the cutover.
+ * Under passthrough there is nothing that can fail and nothing to seal --
+ * which is also why a passthrough build cannot talk to the v2 server: it
+ * produces no epoch and no archive payloads. Dev instrument only.
  */
 async function sealForOutbox(
   conversationId: string,

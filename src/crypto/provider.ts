@@ -1,36 +1,21 @@
-// The client half of the seam described in server/src/crypto/provider.ts.
+// The E2E seam: the contract between the sync engine and whatever does the
+// cryptography.
 //
-// Under real end-to-end encryption the client is where keys live and where
-// encrypt/decrypt actually run -- see CLAUDE.md rule 7 and the long comment at
-// the top of the server file. Today nothing calls this but the passthrough
-// implementation, because there is nothing to encrypt with yet. The value is
-// the same as it was on the server: the sync engine is written against "a
-// provider turns plaintext into wire bytes and back" instead of "payload is
-// whatever decodeBase64 hands me", so the day MLS lands, that is a new file
-// implementing this interface plus a different line in index.ts -- not a
-// rewrite of the sync engine.
+// Under end-to-end encryption the client is where keys live and where
+// encrypt/decrypt actually run -- see CLAUDE.md rule 7. The engine is
+// written against "a provider turns plaintext into wire bytes and back"
+// instead of "payload is whatever decodeBase64 hands me", which is what let
+// MLS land as a new file implementing this interface plus one line in
+// index.ts rather than a rewrite of the sync engine. The server once had a
+// sibling interface that did the v1 fan-out; it was deleted at the cutover
+// -- the server now stores bytes it cannot read, full stop.
 //
-// ---------------------------------------------------------------------------
-// Why this is not a copy of the server's interface
-// ---------------------------------------------------------------------------
-//
-// The server's `encrypt` returns one payload per recipient *device*, because
-// the server is the one fanning a send out to N envelope rows. The client
-// never sees that fan-out: `POST /conversations/:id/messages` takes one
-// payload and `GET /inbox` hands back one payload per message, regardless of
-// how many devices are involved. So the client seam is scoped to what the
-// wire actually carries -- one plaintext in, one wire payload out, and back --
-// rather than mirroring the server's per-recipient array.
-//
-// This still holds under MLS. A group's ciphertext is one blob copied to
-// every member device's envelope (see the server file's note on `encrypt`),
-// so a client sealing a message for its own conversation produces exactly the
-// one payload the wire already has a field for.
-//
-// initSession, addMember and encryptForArchive stay on the interface, as
-// no-ops, for the day the client is the one managing MLS group state and
-// sealing archive rows -- neither is exercised by anything today, the way the
-// server's own decrypt is documented as dead code that must stay dead.
+// The seam is scoped to what the wire actually carries: one plaintext in,
+// one wire payload out, and back. A group's MLS ciphertext is one blob the
+// server copies into every member device's envelope, so a client sealing a
+// message produces exactly the one payload the wire has a field for; the
+// per-recipient work that remains client-side -- the archive rows -- gets
+// its own method, because those really are N different seals.
 
 export const PROTOCOL_PLAINTEXT = 1;
 export const PROTOCOL_MLS = 2;
@@ -226,7 +211,7 @@ export interface E2EProvider {
    * Seal the archive copies: one payload per recipient user, sealed to that
    * user's account public key -- the sender's own included, which is how
    * their future devices recover sent history. Under passthrough the
-   * "sealing" is a copy, matching what the server-side provider does today.
+   * "sealing" is a copy per recipient.
    */
   encryptForArchive(
     conversationId: string,

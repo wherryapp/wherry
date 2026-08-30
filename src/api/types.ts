@@ -224,11 +224,3 @@ export type ApiErrorCode =
   | "INTERNAL_ERROR"
   | (string & {});
 
-/**
- * Protocol version 1 is plaintext. 2 will be ciphertext. Dispatch on it.
- *
- * Re-exported from crypto/provider.ts, which owns it -- that is the E2E
- * contract's constant, and this file does not get its own copy to drift out
- * of step with it.
- */
-export { PROTOCOL_PLAINTEXT } from "../crypto/provider";

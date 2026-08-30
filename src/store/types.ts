@@ -35,7 +35,7 @@ export type StoredMessage = {
   conversationId: string;
   senderUserId: string;
   senderDeviceId: string;
-  /** 1 is plaintext, 2 will be ciphertext. Never assume. */
+  /** 2 (MLS) on everything since the cutover; 1 was the plaintext era. */
   protocolVersion: number;
   /**
    * The message content as bytes, already decrypted by `E2EProvider.decrypt`

@@ -53,21 +53,12 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Turns a stored payload into text, or null if this build cannot read it.
- *
- * This is CLAUDE.md rule 3 made visible. Version 1 payloads are plaintext;
- * version 2 will be ciphertext, and a client that assumed 1 would render
- * ciphertext as mojibake the day that changed. Old and new messages sit side
- * by side in storage forever, so the check is per message rather than a
- * per-account flag.
- */
-/**
  * What to render for a message, or null when it cannot be rendered at all.
  *
- * Null is kept distinct from empty content on purpose: a version 2 payload is
- * ciphertext this build has no key for, which is a different thing to say than
- * a message with no text, and the two look identical if they share a return
- * value.
+ * Null is kept distinct from empty content on purpose: a payload whose
+ * decrypt failed is ciphertext this device holds no key for (yet), which is
+ * a different thing to say than a message with no text, and the two look
+ * identical if they share a return value.
  */
 function messageContent(message: StoredMessage): MessageContent | null {
   // The explicit flag, not the version number: under v2 most version-2

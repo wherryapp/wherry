@@ -170,7 +170,7 @@ export function Login({
                 : "Reset your password"}
           </h1>
           <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-            Messages are not end-to-end encrypted yet.
+            Messages are end-to-end encrypted.
           </p>
         </div>
 

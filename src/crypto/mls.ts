@@ -552,7 +552,10 @@ export class MlsE2EProvider implements E2EProvider {
 
   async decrypt(input: DecryptInput): Promise<Uint8Array> {
     if (input.protocolVersion === PROTOCOL_PLAINTEXT) {
-      // Pre-cutover history in dev databases. Bytes are already content.
+      // A version-1 row: plaintext-era bytes, already content. After the
+      // cutover wipe none exist server-side, but a long-lived IndexedDB may
+      // still replay one through this path, and refusing it would be
+      // refusing to read a message this device already had.
       return new Uint8Array(input.payload);
     }
     if (input.protocolVersion !== PROTOCOL_MLS) {

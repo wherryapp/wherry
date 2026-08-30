@@ -4,20 +4,20 @@
 // `MessageStore` implementation is live. Nothing else constructs a provider
 // directly.
 //
-// The choice is build-time: `VITE_E2E=mls pnpm dev` runs the real MLS
-// provider, anything else runs the passthrough. Default passthrough,
-// deliberately -- production stays v1 until the cutover ships with the wipe,
-// while dev exercises MLS end to end. Flipping the default IS the cutover's
-// client half.
+// MLS is the default -- this line flipping was the cutover's client half
+// (2026-08-30). `VITE_E2E=passthrough` still selects the old provider, as a
+// dev instrument only: a passthrough build cannot send against a v2 server
+// (no epoch, no archive payloads), so what it is for is reading code paths
+// and the occasional experiment, not talking to anything real.
 
 import { MlsE2EProvider } from "./mls";
 import { PassthroughE2EProvider } from "./passthrough";
 import type { E2EProvider } from "./provider";
 
 export const e2e: E2EProvider =
-  import.meta.env.VITE_E2E === "mls"
-    ? new MlsE2EProvider()
-    : new PassthroughE2EProvider();
+  import.meta.env.VITE_E2E === "passthrough"
+    ? new PassthroughE2EProvider()
+    : new MlsE2EProvider();
 
 export * from "./provider";
 export { PassthroughE2EProvider } from "./passthrough";

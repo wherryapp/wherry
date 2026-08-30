@@ -1,13 +1,12 @@
-// v1's client-side E2EProvider: no encryption at all.
+// The v1-era E2EProvider: no encryption at all. Kept after the cutover as
+// the interface's trivial second implementation -- proof the seam does not
+// secretly depend on MLS -- and as a dev instrument (`VITE_E2E=passthrough`).
+// It cannot send against the v2 server, which requires an epoch and archive
+// payloads it does not produce.
 //
-// Mirrors server/src/crypto/passthrough.ts. It exists so the sync engine
-// calls a provider from the first message rather than acquiring one later --
-// see provider.ts for why the interface is worth having before there is
-// anything real behind it.
-//
-// Stateless, like the server's implementation, for the same reason: an MLS
-// provider's state is group keys and epochs, and if this file ever grows a
-// field to hold any, something has gone wrong with what "passthrough" means.
+// Stateless, deliberately: an MLS provider's state is group keys and epochs,
+// and if this file ever grows a field to hold any, something has gone wrong
+// with what "passthrough" means.
 
 import {
   E2EError,
