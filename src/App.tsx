@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { logout } from "./api/client";
 import { clearSession, loadSession, type StoredSession } from "./api/session";
+import { clearAccountKeypair } from "./crypto/db";
 import { requestPersistentStorage, store } from "./store";
 import { sync } from "./sync/engine";
 import { broadcast, subscribeToBroadcasts } from "./sync/leader";
@@ -71,6 +72,10 @@ export default function App() {
       // Ignored on purpose.
     }
     broadcast({ type: "signed-out" });
+    // Only an *explicit* sign-out forgets the account key. The 401 path above
+    // keeps it, so a password reset can be repaired without the recovery code
+    // -- see clearAccountKeypair in crypto/db.ts for the reasoning.
+    await clearAccountKeypair();
     await signOutLocally();
   }, [signOutLocally]);
 

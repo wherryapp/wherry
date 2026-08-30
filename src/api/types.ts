@@ -34,6 +34,38 @@ export type AuthResult = {
   device: PublicDevice;
 };
 
+// ---------------------------------------------------------------------------
+// Account keys
+// ---------------------------------------------------------------------------
+
+/** KDF cost parameters, stored per wrap. `m` is KiB. */
+export type KdfParamsWire = { alg: string; m: number; t: number; p: number };
+
+/**
+ * The wrapped account keypair as it crosses the wire: every key field is
+ * base64 bytes the server stores without opening. See crypto/keys.ts for
+ * what the fields mean; this type only says what the endpoints carry.
+ */
+export type AccountKeysWire = {
+  publicKey: string;
+  passwordWrappedKey: string;
+  passwordKdfSalt: string;
+  passwordKdfParams: KdfParamsWire;
+  recoveryWrappedKey: string;
+  recoveryKdfSalt: string;
+  recoveryKdfParams: KdfParamsWire;
+};
+
+/** What GET /account/keys returns: the row plus when it last changed. */
+export type AccountKeysResponse = AccountKeysWire & { updatedAt: string };
+
+/** The re-wrap that rides along with a password change. */
+export type PasswordWrapWire = {
+  passwordWrappedKey: string;
+  passwordKdfSalt: string;
+  passwordKdfParams: KdfParamsWire;
+};
+
 export type DeviceDescriptor = {
   /** Omitted on a device's first login, sent on every later one. */
   id?: string;

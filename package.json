@@ -8,10 +8,14 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@hpke/core": "^1.9.0",
+    "@hpke/dhkem-x25519": "^1.8.0",
     "@tailwindcss/vite": "^4.3.3",
+    "hash-wasm": "^4.12.0",
     "idb": "^8.0.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -23,6 +27,7 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
     "oxlint": "^1.79.0",
+    "tsx": "^4.23.12",
     "typescript": "~6.0.2",
     "vite": "^8.2.2"
   }

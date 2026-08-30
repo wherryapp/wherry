@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "composite": true,
+    // "node" for the test runner's imports; "vite/client" because the app
+    // modules under test are re-checked here and some read import.meta.env.
+    "types": ["node", "vite/client"]
+  },
+  "include": ["src"],
+  "exclude": []
+}

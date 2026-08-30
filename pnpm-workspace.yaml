@@ -1,0 +1,4 @@
+allowBuilds:
+  # tsx bundles esbuild, whose install script places the platform binary.
+  # Same approval the server already grants for the same reason.
+  esbuild: true

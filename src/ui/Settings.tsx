@@ -9,7 +9,6 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   ApiError,
   changeDisplayName,
-  changePassword,
   fetchAccountSettings,
   fetchAttachmentUsage,
   fetchDevices,
@@ -21,6 +20,7 @@ import {
   type AttachmentUsage,
 } from "../api/client";
 import type { StoredSession } from "../api/session";
+import { changePasswordWithRewrap } from "../crypto/account";
 
 function Section({
   title,
@@ -362,7 +362,13 @@ function PasswordSection({
     event.preventDefault();
     setBusy(true);
     try {
-      const { otherSessionsRevoked } = await changePassword(current, next);
+      // The rewrap variant keeps the account key's password wrap in step
+      // with the new password -- see crypto/account.ts. Without it, the next
+      // sign-in would land on the recovery-code screen for no reason.
+      const { otherSessionsRevoked } = await changePasswordWithRewrap(
+        current,
+        next,
+      );
       setCurrent("");
       setNext("");
       // The count is the reassurance somebody changing a password after a
