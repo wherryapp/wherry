@@ -204,12 +204,13 @@ function time(iso: string): string {
 /**
  * The banner for states worth interrupting the layout for.
  *
- * Deliberately says nothing about a routine sync. The loop polls every two
- * seconds, so a "Syncing…" banner would insert and remove itself from the
- * layout at the poll rate -- the content below it shifting down and back
- * roughly thirty times a minute. That is not a status indicator, it is a
- * flicker, and the information it conveys ("a poll happened") is worth
- * nothing to the person reading the conversation.
+ * Deliberately says nothing about a routine sync. The loop ticks every two
+ * seconds as a fallback, stretched to thirty while the realtime socket is
+ * healthy, so a "Syncing…" banner would insert and remove itself from the
+ * layout on every pass either way -- the content below it shifting down and
+ * back on a rhythm the reader would learn to see. That is not a status
+ * indicator, it is a flicker, and the information it conveys ("a sync pass
+ * happened") is worth nothing to the person reading the conversation.
  *
  * What is worth showing is the three states that persist and that the user
  * can act on: history still loading, the server unreachable, the session

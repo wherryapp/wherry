@@ -4,8 +4,8 @@
 // the engine says something changed. Components never call the API directly
 // and never poll -- there is one loop, it runs in one tab, and everything else
 // is a view over local storage. That is what makes the leader election
-// invisible to the UI and what will make the Phase 4 switch to WebSockets a
-// change to the engine alone.
+// invisible to the UI, and it is what made Phase 4's realtime socket a change
+// to the engine alone: no component here knows it exists.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
