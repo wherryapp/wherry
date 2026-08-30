@@ -38,6 +38,7 @@ import type { StoredConversation, StoredEvent, StoredMessage } from "../store/ty
 import { sync } from "../sync/engine";
 import { mlsEnabled, mlsSync } from "../sync/mls";
 import {
+  useAnnouncements,
   useConversations,
   useLatestMessages,
   useSyncStatus,
@@ -1474,6 +1475,9 @@ export function Chat({
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
+  // Only the count; the list itself renders in Settings. Zero whenever the
+  // announcements flag is off, so the dot is dark exactly when the feature is.
+  const { unread: unreadAnnouncements } = useAnnouncements();
 
   // Only when a thread is actually on screen. On a phone that is the same
   // thing as being selected; on desktop both panes are visible at once.
@@ -1561,9 +1565,17 @@ export function Chat({
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
-            className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+            className="relative text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
           >
             Settings
+            {unreadAnnouncements > 0 && (
+              <span
+                aria-label={`${unreadAnnouncements} unread ${
+                  unreadAnnouncements === 1 ? "announcement" : "announcements"
+                }`}
+                className="absolute -right-1.5 -top-0.5 block h-2 w-2 rounded-full bg-blue-600"
+              />
+            )}
           </button>
           <button
             onClick={onSignOut}

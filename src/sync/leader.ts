@@ -233,6 +233,7 @@ export function runAsLeader(name: string, task: LeaderTask): LeaderHandle {
 export type SyncBroadcast =
   | { type: "messages"; conversationIds: string[] }
   | { type: "conversations" }
+  | { type: "announcements" }
   | { type: "signed-out" }
   /** The leader saying it is still running. See the watchdog in runAsLeader. */
   | { type: "leader-alive" };

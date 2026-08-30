@@ -27,12 +27,14 @@ import {
   fetchEvents,
   fetchHealth,
   fetchHistoryKeys,
+  fetchAnnouncements,
   fetchInbox,
   isUnauthorized,
   isUnreachable,
   listConversations,
   sendMessage,
   downloadAttachment,
+  type Announcement,
 } from "../api/client";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { currentToken, loadSession } from "../api/session";
@@ -44,6 +46,7 @@ import { ingestWrappedKeys } from "../crypto/history";
 import { BlobCryptoError, openAttachmentBytes } from "../crypto/blob";
 import { store } from "../store";
 import {
+  META_ANNOUNCEMENTS,
   META_HYDRATION,
   type HydrationState,
   type OutboxEntry,
@@ -150,7 +153,8 @@ export type SyncStatus = {
 export type SyncEvent =
   | { type: "status"; status: SyncStatus }
   | { type: "messages"; conversationIds: string[] }
-  | { type: "conversations" };
+  | { type: "conversations" }
+  | { type: "announcements" };
 
 type Listener = (event: SyncEvent) => void;
 
@@ -943,6 +947,45 @@ export class SyncEngine {
     broadcast({ type: "conversations" });
 
     void this.#checkForUpdate();
+    void this.#refreshAnnouncements();
+  }
+
+  /**
+   * Operator announcements, riding the conversation-refresh tick the same
+   * way the update check does -- one more cheap call on an existing cadence
+   * rather than a second poll loop.
+   *
+   * One page, newest first, replaced whole. The list is operator release
+   * notes -- small by nature -- so pagination is for a client that wants to
+   * walk further back, not for this refresh. While the `announcements` flag
+   * is off the server answers an empty page and this stores nothing new.
+   *
+   * Best-effort like the update check: a failure here must not affect the
+   * pass it rides on, and the next tick simply tries again.
+   */
+  async #refreshAnnouncements(): Promise<void> {
+    let fetched: Announcement[];
+    try {
+      const page = await fetchAnnouncements();
+      fetched = page.announcements;
+    } catch {
+      return;
+    }
+
+    // Only write and notify on change, or every 30 s tick would re-render
+    // every subscriber for nothing. Ids are uuidv7 and rows are immutable
+    // once published (retraction is a soft delete, which removes the id from
+    // the page), so "same ids in the same order" is "nothing changed".
+    const previous =
+      (await store.getMeta<Announcement[]>(META_ANNOUNCEMENTS)) ?? [];
+    const unchanged =
+      previous.length === fetched.length &&
+      previous.every((entry, i) => entry.id === fetched[i]?.id);
+    if (unchanged) return;
+
+    await store.setMeta(META_ANNOUNCEMENTS, fetched);
+    this.#emit({ type: "announcements" });
+    broadcast({ type: "announcements" });
   }
 
   /**

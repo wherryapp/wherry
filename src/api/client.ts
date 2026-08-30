@@ -801,7 +801,7 @@ export type AccountSettings = {
    * every time Settings opens rather than cached -- toggling one takes
    * effect on the next open, no reload or rebuild needed.
    */
-  features: { tipJar: boolean };
+  features: { tipJar: boolean; announcements: boolean };
 };
 
 export type AccountDevice = {
@@ -816,6 +816,38 @@ export type AccountDevice = {
 
 export function fetchAccountSettings(): Promise<AccountSettings> {
   return request<AccountSettings>(`${API}/account/settings`);
+}
+
+// ---------------------------------------------------------------------------
+// Announcements
+// ---------------------------------------------------------------------------
+
+/**
+ * Operator-published release notes and news -- server-readable plaintext by
+ * design (operator content, not user content; see docs/roadmap.md). While
+ * the `announcements` feature flag is off the server answers an empty page,
+ * so a caller needs no flag check of its own: dark looks exactly like
+ * "nothing published yet".
+ */
+export type Announcement = {
+  id: string;
+  kind: "release" | "news";
+  title: string;
+  /** Markdown; rendered client-side. */
+  body: string;
+  version: string | null;
+  publishedAt: string;
+};
+
+export function fetchAnnouncements(options?: {
+  cursor?: string;
+  limit?: number;
+}): Promise<{ announcements: Announcement[]; nextCursor: string | null }> {
+  const params = new URLSearchParams();
+  if (options?.cursor) params.set("cursor", options.cursor);
+  if (options?.limit) params.set("limit", String(options.limit));
+  const query = params.size > 0 ? `?${params}` : "";
+  return request(`${API}/announcements${query}`);
 }
 
 export function changeDisplayName(

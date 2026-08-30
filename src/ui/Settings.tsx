@@ -21,6 +21,7 @@ import {
 } from "../api/client";
 import type { StoredSession } from "../api/session";
 import { changePasswordWithRewrap } from "../crypto/account";
+import { useAnnouncements } from "./hooks";
 
 function Section({
   title,
@@ -92,6 +93,21 @@ export function Settings({
   // so it can be turned off for people who should not see it, and defaulting
   // to visible until the fetch resolves would flash it at exactly them.
   const [tipJarEnabled, setTipJarEnabled] = useState(false);
+
+  // The minimal announcements surface: a section that exists only while
+  // there are announcements to show (the feature flag off means the engine
+  // stored none, so this is dark exactly when the feature is). Its real
+  // face is a UI-reform design question -- this is the framework's proof it
+  // works, not the presentation.
+  const { announcements, markSeen } = useAnnouncements();
+
+  // Opening Settings with the section visible is what "seen" means. Keyed on
+  // the newest id so a new announcement published while the panel is open is
+  // marked too.
+  const newestAnnouncement = announcements[0]?.id;
+  useEffect(() => {
+    if (newestAnnouncement) markSeen();
+  }, [newestAnnouncement, markSeen]);
 
   useEffect(() => {
     void (async () => {
@@ -354,6 +370,34 @@ export function Settings({
               {bytes(usage.usedBytes)} of {bytes(usage.quotaBytes)} used ·{" "}
               {bytes(usage.maxBytes)} per file
             </p>
+          </Section>
+        )}
+
+        {announcements.length > 0 && (
+          <Section title="What's new">
+            <ul className="space-y-4">
+              {announcements.map((entry) => (
+                <li key={entry.id}>
+                  <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                    {entry.title}
+                    {entry.version && (
+                      <span className="ml-2 text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                        {entry.version}
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                    {new Date(entry.publishedAt).toLocaleDateString()}
+                  </p>
+                  {/* The body is markdown by contract, shown as plain text
+                      for now -- whether it deserves real rendering (and the
+                      dependency that costs) is the reform's call. */}
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-200">
+                    {entry.body}
+                  </p>
+                </li>
+              ))}
+            </ul>
           </Section>
         )}
 

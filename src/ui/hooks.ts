@@ -9,14 +9,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
-import type {
-  OutboxEntry,
-  StoredConversation,
-  StoredEvent,
-  StoredMessage,
+import type { Announcement } from "../api/client";
+import {
+  META_ANNOUNCEMENTS,
+  META_ANNOUNCEMENTS_SEEN,
+  type OutboxEntry,
+  type StoredConversation,
+  type StoredEvent,
+  type StoredMessage,
 } from "../store/types";
 import { sync, type SyncEvent, type SyncStatus } from "../sync/engine";
-import { subscribeToBroadcasts } from "../sync/leader";
+import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 
 /**
  * Subscribes to change notifications from both sources.
@@ -37,6 +40,8 @@ function useSyncEvents(handler: (event: SyncEvent) => void): void {
         ref.current({ type: "messages", conversationIds: message.conversationIds });
       } else if (message.type === "conversations") {
         ref.current({ type: "conversations" });
+      } else if (message.type === "announcements") {
+        ref.current({ type: "announcements" });
       }
     });
     return () => {
@@ -256,4 +261,74 @@ export function useLatestMessages(
   });
 
   return latest;
+}
+
+/**
+ * markSeen has to reach every mounted useAnnouncements, not just its own:
+ * the unread dot and the list that clears it are different components with
+ * separate hook instances. Sync events cover engine writes; this covers the
+ * one write a hook makes itself. Module scope, because all instances in a
+ * tab share this file -- and a broadcast handles the other tabs, since a
+ * BroadcastChannel deliberately does not deliver to its own sender.
+ */
+const announcementListeners = new Set<() => void>();
+
+/**
+ * Operator announcements, plus how many the user has not yet looked at.
+ *
+ * Same shape as every hook here: a view over what the engine last stored,
+ * re-read when it says so. The list is empty while the feature flag is off
+ * (the server answers an empty page), so a surface gated on
+ * `announcements.length > 0` is dark exactly when the feature is.
+ *
+ * "Seen" is the newest id at the moment the surface was actually shown --
+ * ids are uuidv7, so "unread" is a string comparison against it. Client-
+ * local by design; see META_ANNOUNCEMENTS_SEEN in store/types.ts.
+ */
+export function useAnnouncements(): {
+  announcements: Announcement[];
+  unread: number;
+  markSeen: () => void;
+} {
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [lastSeen, setLastSeen] = useState<string | null>(null);
+
+  const reload = useCallback(() => {
+    void Promise.all([
+      store.getMeta<Announcement[]>(META_ANNOUNCEMENTS),
+      store.getMeta<string>(META_ANNOUNCEMENTS_SEEN),
+    ]).then(([list, seen]) => {
+      setAnnouncements(list ?? []);
+      setLastSeen(seen ?? null);
+    });
+  }, []);
+
+  useEffect(reload, [reload]);
+  useSyncEvents((event) => {
+    if (event.type === "announcements") reload();
+  });
+  useEffect(() => {
+    announcementListeners.add(reload);
+    return () => {
+      announcementListeners.delete(reload);
+    };
+  }, [reload]);
+
+  const unread = announcements.filter(
+    (entry) => lastSeen === null || entry.id > lastSeen,
+  ).length;
+
+  const markSeen = useCallback(() => {
+    const newest = announcements[0]?.id;
+    if (!newest) return;
+    setLastSeen(newest);
+    void store.setMeta(META_ANNOUNCEMENTS_SEEN, newest).then(() => {
+      // After the write, not before: a listener re-reads the store, and
+      // notifying first would race it into reading the old value.
+      for (const listener of announcementListeners) listener();
+      broadcast({ type: "announcements" });
+    });
+  }, [announcements]);
+
+  return { announcements, unread, markSeen };
 }

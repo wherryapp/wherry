@@ -352,3 +352,20 @@ export type HydrationState = {
   cursor: string | null;
   updatedAt: string;
 };
+
+/**
+ * The newest page of operator announcements, as fetched (an Announcement[]
+ * from api/client.ts). A meta entry rather than an object store of its own:
+ * the list is small, always replaced whole, and never queried by key -- a
+ * schema version bump would buy nothing. Written by the engine on the
+ * conversation-refresh cadence; read by useAnnouncements in ui/hooks.ts.
+ */
+export const META_ANNOUNCEMENTS = "announcements";
+
+/**
+ * The newest announcement id the user has actually seen, for the unread
+ * indicator. Client-local by design -- see docs/roadmap.md: a per-user
+ * column on the server is only worth it if the unread dot must sync across
+ * devices, which it does not yet.
+ */
+export const META_ANNOUNCEMENTS_SEEN = "announcements.seen";
