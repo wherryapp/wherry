@@ -211,6 +211,30 @@ function StatusLine() {
   );
 }
 
+/**
+ * A commit mismatch between this build and what the server reports it is
+ * running -- see sync/engine.ts's #checkForUpdate. Never auto-reloads: a
+ * deploy landing mid-compose must not lose a draft on its own, so this only
+ * ever offers the reload, same as the tab would ask a person to do by hand.
+ */
+function UpdateBanner() {
+  const status = useSyncStatus();
+
+  if (!status.updateAvailable) return null;
+
+  return (
+    <div className="flex items-center justify-between gap-2 border-b border-blue-200 bg-blue-50 px-4 py-1.5 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-200">
+      <span>A new version is available.</span>
+      <button
+        onClick={() => window.location.reload()}
+        className="shrink-0 font-medium underline"
+      >
+        Reload
+      </button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Starting a conversation
 // ---------------------------------------------------------------------------
@@ -1538,6 +1562,7 @@ export function Chat({
       </header>
 
       <StatusLine />
+      <UpdateBanner />
 
       <div className="flex min-h-0 flex-1">
         {showList && (

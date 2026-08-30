@@ -222,6 +222,23 @@ export function logout(): Promise<void> {
   return request<void>(`${API}/auth/logout`, { method: "POST" });
 }
 
+/**
+ * Unauthenticated and outside `/api` -- see server.ts and deploy/Caddyfile,
+ * where it gets its own `handle` block rather than falling under the API
+ * prefix or the client's SPA fallback. `commit` is what the sync engine
+ * compares against this build's own `VITE_COMMIT_SHA` to prompt a reload;
+ * see `docs/history-key-runbook.md` for why an open tab does not pick up a
+ * deploy on its own otherwise.
+ */
+export function fetchHealth(): Promise<{
+  status: string;
+  database: string;
+  commit: string;
+  time: string;
+}> {
+  return request("/health", { anonymous: true });
+}
+
 export function me(): Promise<{
   user: PublicUser;
   device: PublicDevice;

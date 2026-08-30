@@ -25,6 +25,7 @@ import {
   ackEnvelopes,
   fetchArchive,
   fetchEvents,
+  fetchHealth,
   fetchHistoryKeys,
   fetchInbox,
   isUnauthorized,
@@ -76,6 +77,14 @@ const ARCHIVE_PAGE = 200;
 // every 2-second tick.
 const CONVERSATION_REFRESH_MS = 30_000;
 
+// Stamped at build time by client/Dockerfile via the bare VITE_COMMIT_SHA
+// env var Vite embeds automatically -- no custom `define` needed, the same
+// way VITE_E2E already works (crypto/index.ts). "unknown" in dev and in a
+// plain `pnpm build` outside Docker, which is what turns the update check
+// below into a no-op there: there is nothing meaningful to compare a dev
+// server's build against.
+const BUILD_COMMIT: string = import.meta.env["VITE_COMMIT_SHA"] ?? "unknown";
+
 // The forward archive sync runs while any stored message is still
 // undecrypted -- a state that resolves within a sweep or two, or not at all
 // (a locked account key). Either way, once per interval is plenty.
@@ -119,6 +128,14 @@ export type SyncStatus = {
   lastSyncAt: string | null;
   /** Human-readable, for a status line. Never matched on. */
   error: string | null;
+  /**
+   * This build's own commit does not match what the server reports it is
+   * running -- see `#checkForUpdate`. Always false in dev and in a plain
+   * `pnpm build`, where `BUILD_COMMIT` is "unknown". Never true on its own
+   * initiative: only a leader tab's poll loop sets it, the same as every
+   * other field here.
+   */
+  updateAvailable: boolean;
 };
 
 export type SyncEvent =
@@ -290,7 +307,12 @@ function isPermanentSendFailure(error: unknown): boolean {
 export class SyncEngine {
   #leader: LeaderHandle | null = null;
   #listeners = new Set<Listener>();
-  #status: SyncStatus = { state: "stopped", lastSyncAt: null, error: null };
+  #status: SyncStatus = {
+    state: "stopped",
+    lastSyncAt: null,
+    error: null,
+    updateAvailable: false,
+  };
   #backoff = new Backoff();
   #wake: (() => void) | null = null;
   #lastConversationRefresh = 0;
@@ -859,6 +881,40 @@ export class SyncEngine {
     await this.#refreshEvents(conversations, signal);
     this.#emit({ type: "conversations" });
     broadcast({ type: "conversations" });
+
+    void this.#checkForUpdate();
+  }
+
+  /**
+   * Compares this build's own commit against what `/health` reports the
+   * server is running, on the same cadence as the conversation refresh
+   * above rather than its own timer -- one more cheap, unauthenticated call
+   * riding along an existing tick rather than a second poll loop.
+   *
+   * Never auto-reloads and never surfaces as an `error` -- a deploy landing
+   * mid-compose must not interrupt anything on its own; see UpdateBanner in
+   * ui/Chat.tsx for the reload prompt this only turns on.
+   */
+  async #checkForUpdate(): Promise<void> {
+    if (BUILD_COMMIT === "unknown") return;
+
+    let stale: boolean;
+    try {
+      const health = await fetchHealth();
+      // "unknown" on the server side means it was not built by the same
+      // pipeline either (a bare `pnpm build` on the host) -- nothing to
+      // compare, so treat that the same as no mismatch rather than a false
+      // positive that can never be resolved by reloading.
+      stale = health.commit !== "unknown" && health.commit !== BUILD_COMMIT;
+    } catch {
+      // Best-effort. A failed health check must not affect anything else
+      // this loop does, and must not flip the banner off on a blip.
+      return;
+    }
+
+    if (stale !== this.#status.updateAvailable) {
+      this.#setStatus({ updateAvailable: stale });
+    }
   }
 
   /**

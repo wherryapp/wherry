@@ -19,6 +19,14 @@ RUN pnpm install --frozen-lockfile || pnpm install
 COPY tsconfig*.json vite.config.ts index.html ./
 COPY public ./public
 COPY src ./src
+
+# Declared last, right before the one step that reads it, so a source-only
+# change does not bust the layers above -- same placement reasoning as the
+# server Dockerfile's GIT_SHA. Vite embeds any VITE_-prefixed env var into
+# the bundle automatically (see sync/engine.ts's BUILD_COMMIT), so nothing
+# in vite.config.ts has to know this exists.
+ARG GIT_SHA=unknown
+ENV VITE_COMMIT_SHA=$GIT_SHA
 RUN pnpm build
 
 # alpine rather than node: nothing here runs JavaScript, it copies files.
