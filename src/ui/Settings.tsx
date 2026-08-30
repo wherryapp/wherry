@@ -13,7 +13,9 @@ import {
   fetchAccountSettings,
   fetchAttachmentUsage,
   fetchDevices,
+  resendVerification,
   revokeDevice,
+  setEmail,
   setReadReceipts,
   type AccountDevice,
   type AttachmentUsage,
@@ -70,6 +72,9 @@ export function Settings({
 }) {
   const [displayName, setDisplayName] = useState(session.user.displayName);
   const [receipts, setReceipts] = useState<boolean | null>(null);
+  const [emailAddress, setEmailAddress] = useState("");
+  const [emailVerified, setEmailVerified] = useState<boolean | null>(null);
+  const [savedEmail, setSavedEmail] = useState<string | null>(null);
   const [devices, setDevices] = useState<AccountDevice[] | null>(null);
   const [usage, setUsage] = useState<AttachmentUsage | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -85,6 +90,9 @@ export function Settings({
         ]);
         setDisplayName(settings.displayName);
         setReceipts(settings.readReceiptsEnabled);
+        setEmailAddress(settings.email ?? "");
+        setSavedEmail(settings.email);
+        setEmailVerified(settings.emailVerified);
         setDevices(deviceList.devices);
         setUsage(attachmentUsage);
       } catch {
@@ -110,6 +118,35 @@ export function Settings({
       setNote("Saved. Other people will see it the next time their app syncs.");
     } catch (caught) {
       report(caught, "Could not save that name.");
+    }
+  }
+
+
+  async function submitEmail(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    try {
+      await setEmail(emailAddress.trim());
+      setSavedEmail(emailAddress.trim());
+      setEmailVerified(false);
+      // Deliberately vague, because the server is deliberately vague: an
+      // address somebody else already uses returns the same 204 as a fresh
+      // one, so that this screen cannot be used to test whether an address is
+      // registered. Promising "we sent you a link" would be a lie in that
+      // case; "check your email" is true either way.
+      setNote("Check that inbox for a confirmation link.");
+    } catch (caught) {
+      report(caught, "Could not save that address.");
+    }
+  }
+
+  async function resend() {
+    setError(null);
+    try {
+      await resendVerification();
+      setNote("Sent again. The previous link no longer works.");
+    } catch (caught) {
+      report(caught, "Could not send that email.");
     }
   }
 
@@ -186,6 +223,50 @@ export function Settings({
               Save
             </button>
           </form>
+        </Section>
+
+        <Section
+          title="Email"
+          description="Used to sign in and to reset your password. Nothing else."
+        >
+          <form onSubmit={submitEmail} className="flex gap-2">
+            <input
+              type="email"
+              value={emailAddress}
+              onChange={(e) => setEmailAddress(e.target.value)}
+              placeholder="you@example.com"
+              className={inputClass}
+            />
+            <button
+              type="submit"
+              disabled={
+                emailAddress.trim().length === 0 ||
+                emailAddress.trim() === savedEmail
+              }
+              className={buttonClass}
+            >
+              Save
+            </button>
+          </form>
+
+          {savedEmail && emailVerified === false && (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+              Not confirmed yet — until it is, this address cannot sign you in
+              or reset your password.{" "}
+              <button
+                onClick={() => void resend()}
+                className="underline underline-offset-2"
+              >
+                Send the link again
+              </button>
+            </p>
+          )}
+
+          {savedEmail && emailVerified && (
+            <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+              Confirmed.
+            </p>
+          )}
         </Section>
 
         <PasswordSection onDone={setNote} onError={setError} />

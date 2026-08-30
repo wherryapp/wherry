@@ -1,5 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { ApiError, login, register } from "../api/client";
+import {
+  ApiError,
+  login,
+  register,
+  requestPasswordReset,
+} from "../api/client";
 import { defaultDeviceName, deviceDescriptor, saveSession } from "../api/session";
 import type { StoredSession } from "../api/session";
 
@@ -17,9 +22,11 @@ export function Login({
 }: {
   onSignedIn: (session: StoredSession) => void;
 }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<"login" | "register" | "forgot">("login");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,11 +37,27 @@ export function Login({
     setError(null);
 
     try {
+      if (mode === "forgot") {
+        await requestPasswordReset(email);
+        // Shown whether or not that address has an account, because the server
+        // answers the same way either way. Saying "we have sent you a link"
+        // would be a promise this screen cannot keep and a way to test which
+        // addresses are registered.
+        setSent(true);
+        return;
+      }
+
       const device = deviceDescriptor(defaultDeviceName());
       const result =
         mode === "login"
           ? await login({ username, password, device })
-          : await register({ username, displayName, password, device });
+          : await register({
+              username,
+              displayName,
+              password,
+              device,
+              ...(email.trim() ? { email: email.trim() } : {}),
+            });
 
       onSignedIn(saveSession(result));
     } catch (caught) {
@@ -68,27 +91,60 @@ export function Login({
       >
         <div>
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
-            {mode === "login" ? "Sign in" : "Create an account"}
+            {mode === "login"
+              ? "Sign in"
+              : mode === "register"
+                ? "Create an account"
+                : "Reset your password"}
           </h1>
           <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
             Messages are not end-to-end encrypted yet.
           </p>
         </div>
 
+        {mode === "forgot" && (
+          <label className="block space-y-1">
+            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+              Email
+            </span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              required
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+              Only a confirmed address can receive a reset link.
+            </span>
+          </label>
+        )}
+
+        {mode !== "forgot" && (
         <label className="block space-y-1">
           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Username
+            {mode === "login" ? "Username or email" : "Username"}
           </span>
           <input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
             required
-            pattern="[a-zA-Z0-9._\-]{3,32}"
-            title="3–32 characters: letters, numbers, dot, underscore or hyphen"
+            {...(mode === "register"
+              ? {
+                  // Only when creating one. On sign-in this field also accepts
+                  // a verified email address, and the username pattern would
+                  // reject every one of them.
+                  pattern: "[a-zA-Z0-9._\\-]{3,32}",
+                  title:
+                    "3–32 characters: letters, numbers, dot, underscore or hyphen",
+                }
+              : {})}
             className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
           />
         </label>
+        )}
 
         {mode === "register" && (
           <label className="block space-y-1">
@@ -105,6 +161,27 @@ export function Login({
           </label>
         )}
 
+        {mode === "register" && (
+          <label className="block space-y-1">
+            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+              Email <span className="font-normal text-neutral-500">(optional)</span>
+            </span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              placeholder="you@example.com"
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+            />
+            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+              Adding one lets you reset your password. Without it, a forgotten
+              password cannot be recovered.
+            </span>
+          </label>
+        )}
+
+        {mode !== "forgot" && (
         <label className="block space-y-1">
           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Password
@@ -122,6 +199,14 @@ export function Login({
             At least 12 characters.
           </span>
         </label>
+        )}
+
+        {sent && (
+          <p className="rounded-md bg-neutral-100 px-3 py-2 text-sm text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+            If that address has a confirmed account, a reset link is on its way.
+            It works once and expires in 30 minutes.
+          </p>
+        )}
 
         {error && (
           <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
@@ -134,9 +219,44 @@ export function Login({
           disabled={busy}
           className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
         >
-          {busy ? "Working…" : mode === "login" ? "Sign in" : "Create account"}
+          {busy
+            ? "Working…"
+            : mode === "login"
+              ? "Sign in"
+              : mode === "register"
+                ? "Create account"
+                : "Send reset link"}
         </button>
 
+        {mode === "login" && (
+          <button
+            type="button"
+            onClick={() => {
+              setMode("forgot");
+              setError(null);
+              setSent(false);
+            }}
+            className="w-full text-xs text-neutral-500 underline-offset-2 hover:underline dark:text-neutral-400"
+          >
+            Forgotten your password?
+          </button>
+        )}
+
+        {mode === "forgot" && (
+          <button
+            type="button"
+            onClick={() => {
+              setMode("login");
+              setError(null);
+              setSent(false);
+            }}
+            className="w-full text-xs text-neutral-500 underline-offset-2 hover:underline dark:text-neutral-400"
+          >
+            Back to sign in
+          </button>
+        )}
+
+        {mode !== "forgot" && (
         <button
           type="button"
           onClick={() => {
@@ -149,6 +269,7 @@ export function Login({
             ? "Need an account? Create one"
             : "Already have an account? Sign in"}
         </button>
+        )}
       </form>
     </div>
   );

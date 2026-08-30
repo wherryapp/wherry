@@ -185,6 +185,8 @@ export function register(input: {
   displayName: string;
   password: string;
   device: DeviceDescriptor;
+  /** Optional. Without one, a forgotten password cannot be recovered. */
+  email?: string;
 }): Promise<AuthResult> {
   return request<AuthResult>(`${API}/auth/register`, {
     method: "POST",
@@ -541,6 +543,8 @@ function safeParse(raw: string): unknown {
 export type AccountSettings = {
   displayName: string;
   readReceiptsEnabled: boolean;
+  email: string | null;
+  emailVerified: boolean;
 };
 
 export type AccountDevice = {
@@ -641,4 +645,46 @@ export function blockUser(userId: string): Promise<void> {
 
 export function unblockUser(userId: string): Promise<void> {
   return request<void>(`${API}/friends/unblock`, { method: "POST", body: { userId } });
+}
+
+// ---------------------------------------------------------------------------
+// Email
+// ---------------------------------------------------------------------------
+
+/**
+ * Sets or changes the address, and triggers a verification email.
+ *
+ * 204 even when somebody else already uses that address -- the server mails
+ * *them* instead of telling this caller, so that this endpoint cannot be used
+ * to discover whether an address is registered. A client cannot distinguish
+ * the two cases and should not try to.
+ */
+export function setEmail(email: string): Promise<void> {
+  return request<void>(`${API}/account/email`, { method: "POST", body: { email } });
+}
+
+export function resendVerification(): Promise<void> {
+  return request<void>(`${API}/account/email/resend`, { method: "POST", body: {} });
+}
+
+export function verifyEmail(token: string): Promise<{ email: string }> {
+  return request(`${API}/auth/verify-email`, { method: "POST", body: { token } });
+}
+
+/** Always resolves, whether or not that address has an account. */
+export function requestPasswordReset(email: string): Promise<void> {
+  return request<void>(`${API}/auth/password-reset`, {
+    method: "POST",
+    body: { email },
+  });
+}
+
+export function confirmPasswordReset(
+  token: string,
+  newPassword: string,
+): Promise<void> {
+  return request<void>(`${API}/auth/password-reset/confirm`, {
+    method: "POST",
+    body: { token, newPassword },
+  });
 }

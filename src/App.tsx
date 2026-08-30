@@ -6,6 +6,11 @@ import { sync } from "./sync/engine";
 import { broadcast, subscribeToBroadcasts } from "./sync/leader";
 import { Chat } from "./ui/Chat";
 import { Login } from "./ui/Login";
+import {
+  ResetPassword,
+  VerifyEmail,
+  routeFromLocation,
+} from "./ui/EmailLanding";
 
 export default function App() {
   // Read synchronously so the first render already knows which screen to show.
@@ -14,6 +19,12 @@ export default function App() {
   const [session, setSession] = useState<StoredSession | null>(() =>
     loadSession(),
   );
+
+  // Read once at startup, from the URL. There is no router: the app is one
+  // screen with panels, and adding a routing library so that two emailed links
+  // can be opened would be more machinery than the thing it serves. Caddy
+  // already falls back to index.html for unknown paths, so both URLs load.
+  const [emailRoute, setEmailRoute] = useState(routeFromLocation);
 
   const signOutLocally = useCallback(async () => {
     sync.stop();
@@ -62,6 +73,30 @@ export default function App() {
     broadcast({ type: "signed-out" });
     await signOutLocally();
   }, [signOutLocally]);
+
+  // Ahead of the session check on purpose: both of these are reached from a
+  // link in an email and neither needs a session. Somebody confirming an
+  // address on the phone they read mail on is usually not signed in there.
+  if (emailRoute?.kind === "verify") {
+    return (
+      <VerifyEmail token={emailRoute.token} onDone={() => setEmailRoute(null)} />
+    );
+  }
+
+  if (emailRoute?.kind === "reset") {
+    return (
+      <ResetPassword
+        token={emailRoute.token}
+        onDone={() => {
+          // A reset signs out every device, this one included. Clearing the
+          // local session is what stops the app dropping back into a
+          // signed-in screen whose token the server has already revoked.
+          void signOutLocally();
+          setEmailRoute(null);
+        }}
+      />
+    );
+  }
 
   if (!session) return <Login onSignedIn={setSession} />;
   return <Chat session={session} onSignOut={signOut} />;
