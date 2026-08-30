@@ -35,7 +35,7 @@ import {
   downloadAttachment,
 } from "../api/client";
 import { decodeBase64, encodeBase64 } from "../api/base64";
-import { loadSession } from "../api/session";
+import { currentToken, loadSession } from "../api/session";
 import { decodeContent } from "../api/payload";
 import type { ArchiveEntry, InboxEnvelope } from "../api/types";
 import { e2e, E2EError } from "../crypto";
@@ -52,6 +52,7 @@ import {
 import { Backoff, sleep } from "./backoff";
 import { broadcast, runAsLeader, type LeaderHandle } from "./leader";
 import { mlsEnabled, mlsSync, type Identity } from "./mls";
+import { SocketManager } from "./socket";
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -67,6 +68,14 @@ const VISIBLE_INTERVAL_MS = 2_000;
 // nobody looking. Coming back to the foreground pokes immediately, so the
 // slower cadence is never what the user waits on.
 const HIDDEN_INTERVAL_MS = 15_000;
+
+// The cadence while the realtime socket is healthy, visible or not: pure
+// fallback, because a wake arrives over the socket the moment anything is
+// queued. Stretching the poll is the entire payoff of Phase 4 -- an idle
+// client goes from 30 requests/min to 2 -- and it is safe only because the
+// unhealthy transition pokes the loop, which re-picks the short cadence on
+// its next wait.
+const SOCKET_INTERVAL_MS = 30_000;
 
 // The server caps both at 500. Large pages matter for the backlog case -- a
 // client returning after a week should not drain it 100 at a time.
@@ -315,6 +324,13 @@ export class SyncEngine {
   };
   #backoff = new Backoff();
   #wake: (() => void) | null = null;
+  #socket: SocketManager | null = null;
+  // The latch behind poke(). #wake only exists while the loop is parked in
+  // #waitForNextTick; a poke landing mid-pass -- an envelope committed just
+  // after #drainInbox went by -- used to be dropped, which was invisible at
+  // a 2-second cadence and would be a 30-second stall at the socket cadence.
+  // Latched here, it makes the next wait return immediately instead.
+  #pokePending = false;
   #lastConversationRefresh = 0;
   #lastForwardSync = 0;
   #lastHistoryKeyRefresh = 0;
@@ -352,9 +368,21 @@ export class SyncEngine {
     this.#setStatus({ state: "stopped", error: null });
   }
 
-  /** Runs a sync now instead of waiting for the next tick. */
+  /**
+   * Runs a sync now instead of waiting for the next tick.
+   *
+   * Never lost: if the loop is mid-pass rather than waiting, the poke is
+   * latched and consumed at the top of the next wait. A poke can therefore
+   * only ever schedule a full pass in its fixed order -- it cannot jump into
+   * a running one, which is what keeps the outbox-before-inbox ordering safe
+   * from however many wakes the socket delivers.
+   */
   poke(): void {
-    this.#wake?.();
+    if (this.#wake) {
+      this.#wake();
+    } else {
+      this.#pokePending = true;
+    }
   }
 
   /**
@@ -429,6 +457,25 @@ export class SyncEngine {
   };
 
   async #runLoop(signal: AbortSignal): Promise<void> {
+    // The socket's lifetime is leadership's lifetime. Only the tab running
+    // this loop holds one, so a browser profile has exactly one socket
+    // however many tabs are open, and every way the loop ends -- abort on a
+    // leadership change, a fatal 401, a thrown bug -- runs the finally and
+    // closes it. The next leader's loop opens its own.
+    this.#socket = new SocketManager({
+      getToken: currentToken,
+      notify: () => this.poke(),
+    });
+    this.#socket.start();
+    try {
+      await this.#runLoopBody(signal);
+    } finally {
+      this.#socket.stop();
+      this.#socket = null;
+    }
+  }
+
+  async #runLoopBody(signal: AbortSignal): Promise<void> {
     try {
       // Keys before the walk: a new device's hydration reads v3 archive
       // rows, and decrypting them on the first pass beats storing them
@@ -560,14 +607,27 @@ export class SyncEngine {
    * least afford them. Waiting *after* the work settles cannot do that.
    */
   #waitForNextTick(signal: AbortSignal): Promise<void> {
-    const interval =
-      document.visibilityState === "visible"
+    // A healthy socket makes the poll a pure fallback; without one the old
+    // cadences apply unchanged. Re-evaluated every wait, so a socket dying
+    // mid-wait needs only the poke its unhealthy transition fires: the wait
+    // resolves, the pass runs, and this line picks 2 seconds again.
+    const interval = this.#socket?.isHealthy()
+      ? SOCKET_INTERVAL_MS
+      : document.visibilityState === "visible"
         ? VISIBLE_INTERVAL_MS
         : HIDDEN_INTERVAL_MS;
 
     return new Promise<void>((resolve, reject) => {
       if (signal.aborted) {
         reject(signal.reason);
+        return;
+      }
+
+      // A poke that arrived while the pass was running. Consuming it here,
+      // before arming the timer, is what makes poke() lossless.
+      if (this.#pokePending) {
+        this.#pokePending = false;
+        resolve();
         return;
       }
 
