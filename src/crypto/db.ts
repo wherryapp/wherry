@@ -16,8 +16,13 @@
 import { openDB, type IDBPDatabase } from "idb";
 
 const DB_NAME = "messenger-crypto";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const SECRETS = "secrets";
+// Unwrapped history keys, keyed [conversationId, generation]. Their own
+// store rather than composite string keys in `secrets`, because "the latest
+// generation for a conversation" is an ordered range read and "10" sorts
+// before "2" as a string.
+const HISTORY_KEYS = "historyKeys";
 // One record per conversation: the serialized MLS group state. Written only
 // inside the conversation's Web Lock -- see crypto/mls.ts.
 const MLS_GROUPS = "mlsGroups";
@@ -42,6 +47,9 @@ function db(): Promise<IDBPDatabase> {
       }
       if (!database.objectStoreNames.contains(MLS_KEY_PACKAGES)) {
         database.createObjectStore(MLS_KEY_PACKAGES, { autoIncrement: true });
+      }
+      if (!database.objectStoreNames.contains(HISTORY_KEYS)) {
+        database.createObjectStore(HISTORY_KEYS);
       }
     },
   });
@@ -152,6 +160,81 @@ export async function saveGroup(
 export async function deleteGroup(conversationId: string): Promise<void> {
   const database = await db();
   await database.delete(MLS_GROUPS, conversationId);
+}
+
+// ---------------------------------------------------------------------------
+// History keys (protocol v3)
+// ---------------------------------------------------------------------------
+//
+// One record per (conversation, generation): the unwrapped 32-byte history
+// key. Written by crypto/history.ts when a wrapped key is ingested or a
+// rotation minted locally; read at archive seal and open time. Same accepted
+// threat model as the account private key above.
+
+export async function saveHistoryKey(
+  conversationId: string,
+  generation: number,
+  key: Uint8Array,
+): Promise<void> {
+  const database = await db();
+  await database.put(HISTORY_KEYS, key, [conversationId, generation]);
+}
+
+export async function loadHistoryKey(
+  conversationId: string,
+  generation: number,
+): Promise<Uint8Array | null> {
+  const database = await db();
+  const key = (await database.get(HISTORY_KEYS, [conversationId, generation])) as
+    | Uint8Array
+    | undefined;
+  return key ?? null;
+}
+
+/** The highest cached generation for a conversation, or null. */
+export async function latestHistoryKey(
+  conversationId: string,
+): Promise<{ generation: number; key: Uint8Array } | null> {
+  const database = await db();
+  const tx = database.transaction(HISTORY_KEYS, "readonly");
+  // [conversationId, anything] sorts inside this bound; openCursor with
+  // "prev" lands on the highest generation without loading the rest.
+  const range = IDBKeyRange.bound(
+    [conversationId, 0],
+    [conversationId, Number.MAX_SAFE_INTEGER],
+  );
+  const cursor = await tx.store.openCursor(range, "prev");
+  const found = cursor
+    ? {
+        generation: (cursor.key as [string, number])[1],
+        key: cursor.value as Uint8Array,
+      }
+    : null;
+  await tx.done;
+  return found;
+}
+
+/** Every cached (conversation, generation) pair -- the ingest dedupe read. */
+export async function listHistoryKeyIds(): Promise<
+  { conversationId: string; generation: number }[]
+> {
+  const database = await db();
+  const keys = await database.getAllKeys(HISTORY_KEYS);
+  return keys.map((key) => {
+    const [conversationId, generation] = key as [string, number];
+    return { conversationId, generation };
+  });
+}
+
+/**
+ * Explicit-logout hygiene, beside clearAccountKeypair and for the same
+ * reason: the next person to sign in on this browser must not inherit keys
+ * to this account's history. (And with the same caveat: keys without a
+ * session and without ciphertext read nothing on their own.)
+ */
+export async function clearHistoryKeys(): Promise<void> {
+  const database = await db();
+  await database.clear(HISTORY_KEYS);
 }
 
 /**

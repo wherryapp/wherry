@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { logout } from "./api/client";
 import { clearSession, loadSession, type StoredSession } from "./api/session";
-import { clearAccountKeypair } from "./crypto/db";
+import { clearAccountKeypair, clearHistoryKeys } from "./crypto/db";
 import { requestPersistentStorage, store } from "./store";
 import { sync } from "./sync/engine";
 import { broadcast, subscribeToBroadcasts } from "./sync/leader";
@@ -79,6 +79,10 @@ export default function App() {
     // keeps it, so a password reset can be repaired without the recovery code
     // -- see clearAccountKeypair in crypto/db.ts for the reasoning.
     await clearAccountKeypair();
+    // History keys are account material too, and go the same way for the
+    // same reason. Recoverable: GET /history-keys re-serves the wrapped set
+    // to the next sign-in that unlocks the account key.
+    await clearHistoryKeys();
     await signOutLocally();
   }, [signOutLocally]);
 

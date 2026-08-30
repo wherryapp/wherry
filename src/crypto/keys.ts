@@ -68,6 +68,14 @@ const ARCHIVE_FORMAT_X25519 = 0x01;
 // it would encode a constant. A future format byte can choose differently.
 const X25519_ENC_BYTES = 32;
 
+// The symmetric sibling: a v3 archive payload is AEAD under the
+// conversation's history key rather than HPKE to one user. Distinct format
+// byte for the distinct seal; 0x01 stays HPKE forever, because v2 rows do.
+const ARCHIVE_FORMAT_HISTORY_AES256GCM = 0x02;
+
+const HISTORY_KEY_BYTES = 32;
+const HISTORY_NONCE_BYTES = 12;
+
 export class KeysError extends Error {
   readonly code: "WRONG_SECRET" | "UNSUPPORTED_FORMAT";
 
@@ -240,6 +248,79 @@ export async function openArchive(
     throw new KeysError(
       "WRONG_SECRET",
       "The archive payload could not be opened with this account key",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// History keys (protocol v3)
+// ---------------------------------------------------------------------------
+//
+// A history key is 32 random bytes per conversation per generation. The key
+// itself travels wrapped per member with sealForUser/openArchive above --
+// the same stateless HPKE, nothing new -- while archive payloads are sealed
+// under it symmetrically: 0x02 ‖ nonce(12) ‖ AES-256-GCM ciphertext.
+
+/** A fresh history key. Random bytes, never derived from anything. */
+export function generateHistoryKey(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(HISTORY_KEY_BYTES));
+}
+
+/** Seals an archive payload under a conversation's history key. */
+export async function sealWithHistoryKey(
+  key: Uint8Array,
+  plaintext: Uint8Array,
+): Promise<Uint8Array> {
+  const nonce = crypto.getRandomValues(new Uint8Array(HISTORY_NONCE_BYTES));
+  const aesKey = await crypto.subtle.importKey("raw", key as BufferSource, "AES-GCM", false, [
+    "encrypt",
+  ]);
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce as BufferSource },
+      aesKey,
+      plaintext as BufferSource,
+    ),
+  );
+
+  const sealed = new Uint8Array(1 + nonce.length + ciphertext.length);
+  sealed[0] = ARCHIVE_FORMAT_HISTORY_AES256GCM;
+  sealed.set(nonce, 1);
+  sealed.set(ciphertext, 1 + nonce.length);
+  return sealed;
+}
+
+/** Opens a v3 archive payload with the generation's history key. */
+export async function openWithHistoryKey(
+  key: Uint8Array,
+  sealed: Uint8Array,
+): Promise<Uint8Array> {
+  if (sealed[0] !== ARCHIVE_FORMAT_HISTORY_AES256GCM) {
+    throw new KeysError(
+      "UNSUPPORTED_FORMAT",
+      `History-key payload has format byte ${sealed[0] ?? "none"}, ` +
+        `and this build only reads ${ARCHIVE_FORMAT_HISTORY_AES256GCM}`,
+    );
+  }
+
+  const nonce = sealed.subarray(1, 1 + HISTORY_NONCE_BYTES);
+  const ciphertext = sealed.subarray(1 + HISTORY_NONCE_BYTES);
+  const aesKey = await crypto.subtle.importKey("raw", key as BufferSource, "AES-GCM", false, [
+    "decrypt",
+  ]);
+
+  try {
+    return new Uint8Array(
+      await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: nonce as BufferSource },
+        aesKey,
+        ciphertext as BufferSource,
+      ),
+    );
+  } catch {
+    throw new KeysError(
+      "WRONG_SECRET",
+      "The archive payload could not be opened with this history key",
     );
   }
 }

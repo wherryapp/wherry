@@ -13,7 +13,6 @@ import {
   PROTOCOL_PLAINTEXT,
   type AddMemberInput,
   type ArchivePayload,
-  type ArchiveRecipient,
   type DecryptInput,
   type E2EProvider,
   type InitSessionInput,
@@ -48,20 +47,15 @@ export class PassthroughE2EProvider implements E2EProvider {
   }
 
   /**
-   * "Sealing" under v1 is a copy per recipient, which is exactly what the
-   * server-side passthrough's encryptForArchive does today. Nothing calls
-   * this until the engine goes v2, but the passthrough stays a complete
-   * implementation of the interface either way.
+   * "Sealing" under v1 is a copy, and the generation is a fiction the wire
+   * shape requires. Nothing sends this against the v2 server anyway; the
+   * passthrough stays a complete implementation of the interface either way.
    */
   async encryptForArchive(
     _conversationId: string,
     plaintext: Uint8Array,
-    recipients: readonly ArchiveRecipient[],
-  ): Promise<ArchivePayload[]> {
-    return recipients.map((recipient) => ({
-      userId: recipient.userId,
-      payload: new Uint8Array(plaintext),
-    }));
+  ): Promise<ArchivePayload> {
+    return { generation: 1, payload: new Uint8Array(plaintext) };
   }
 
   async decrypt(input: DecryptInput): Promise<Uint8Array> {

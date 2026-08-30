@@ -134,17 +134,26 @@ export type OutboxEntry = {
   /** Set once at enqueue time by the E2E provider. A retry never changes it. */
   protocolVersion: number;
   /**
-   * The group epoch the payload was sealed under (v2 only). Named on the
-   * send request so the server can refuse a stale-roster message. The one
-   * field a retry MAY change: a 409 EPOCH_STALE re-encrypts from `content`
-   * under the new epoch, replacing payload, epoch and archive together --
-   * the sanctioned exception to encrypt-once, safe because the server
-   * created no message row for the refused send.
+   * The group epoch the payload was sealed under. Named on the send request
+   * so the server can refuse a stale-roster message. A retry MAY change it:
+   * a 409 EPOCH_STALE (or HISTORY_KEY_STALE) re-encrypts from `content`,
+   * replacing payload, epoch and the archive fields together -- the
+   * sanctioned exception to encrypt-once, safe because the server created
+   * no message row for the refused send.
    */
   epoch?: number;
   /**
-   * The archive payloads sealed at enqueue time, one per recipient user
-   * (v2 only). Sent alongside `payload`; re-produced only on EPOCH_STALE.
+   * The history-key generation `archivePayload` was sealed under (v3).
+   * Refused by the server when a rotation has advanced past it.
+   */
+  archiveGeneration?: number;
+  /** ONE archive payload for the whole message, sealed at enqueue time. */
+  archivePayload?: Uint8Array;
+  /**
+   * The v2-era shape: one payload per recipient user. Nothing writes this
+   * any more and the server refuses it; an entry still carrying it was
+   * queued before the v3 deploy, and the flush re-seals it from `content`
+   * instead of sending it.
    */
   archive?: { userId: string; payload: Uint8Array }[];
   /**

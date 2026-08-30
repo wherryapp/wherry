@@ -18,11 +18,18 @@ import {
   fetchRecipients,
   fetchWelcomes,
   postCommit,
+  postHistoryKeys,
   publishKeyPackages,
   ApiError,
 } from "../api/client";
+import type { RecipientsResponse } from "../api/types";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { E2EError, e2e } from "../crypto";
+import {
+  mintBackfill,
+  mintRotation,
+  saveRotatedKey,
+} from "../crypto/history";
 import { store } from "../store";
 
 /** Cached per conversation so enqueue can seal archive rows offline. */
@@ -189,11 +196,16 @@ export class MlsSync {
   }
 
   /**
-   * One conversation's sweep: catch up on commits, then make the group
-   * roster match the server's member × device record.
+   * One conversation's sweep: catch up on commits, make the group roster
+   * match the server's member × device record, then rotate the history key
+   * if user membership drifted under it.
    *
    * Also the repair path: the outbox flush calls this directly when a send
-   * bounces with EPOCH_STALE or ARCHIVE_INCOMPLETE.
+   * bounces with EPOCH_STALE or HISTORY_KEY_STALE.
+   *
+   * Deliberately kind-blind, like everything in this sweep: a direct
+   * conversation, a group, and any future hub channel reconcile and rotate
+   * identically. No `kind` check may appear here.
    */
   async reconcileConversation(
     conversationId: string,
@@ -202,10 +214,10 @@ export class MlsSync {
     const handshake = e2e.handshake!;
     const recipients = await fetchRecipients(conversationId);
 
-    // Cache what enqueue needs to seal archive rows without a network
-    // round trip. Members without account keys are cached as absent -- the
-    // send will fail ARCHIVE_INCOMPLETE against a v2 server, which is the
-    // honest outcome until that account re-registers post-cutover.
+    // Cache the roster's account keys. Since v3 the archive seal no longer
+    // reads these (one AEAD under the history key replaced the per-user
+    // fan-out), but the cache stays warm for anything that needs the roster
+    // offline. Members without account keys are cached as absent.
     await store.setMeta(
       META_RECIPIENTS_PREFIX + conversationId,
       recipients.members
@@ -298,6 +310,106 @@ export class MlsSync {
             welcomes: [],
           }),
       );
+    }
+
+    // The history key, last: it rotates on USER membership change -- an
+    // add, a re-add, a removal -- which is not the MLS epoch (a new phone
+    // advances the epoch and needs no new history key, because its user
+    // already holds them). The server computes staleness from the holder
+    // set, so this also bootstraps generation 1 for a conversation that has
+    // none -- which is what carried every existing conversation across the
+    // v2->v3 boundary, no wipe, no flag day.
+    if (recipients.historyKeyStale) {
+      await this.#rotateHistoryKey(conversationId, recipients);
+    }
+  }
+
+  /**
+   * Mints generation N+1 and seals it to every current member.
+   *
+   * First writer wins for the whole generation: on GENERATION_CONFLICT the
+   * minted key is dropped undisclosed, and the winner's copy arrives with
+   * the engine's next key refresh. The local cache records the new key only
+   * after the server accepts -- the same discipline commits keep.
+   */
+  async #rotateHistoryKey(
+    conversationId: string,
+    recipients: RecipientsResponse,
+  ): Promise<void> {
+    const sealable = recipients.members.filter(
+      (member) => member.accountPublicKey !== null,
+    );
+    if (sealable.length !== recipients.members.length) {
+      // A member with no account key cannot be sealed to, and a rotation
+      // that skipped them would be refused (exact cover). Post-cutover this
+      // should not exist; leave the conversation un-rotated and loud.
+      console.warn(
+        "history key rotation skipped: a member has no account key",
+        conversationId,
+      );
+      return;
+    }
+
+    const { key, wrapped } = await mintRotation(
+      sealable.map((member) => ({
+        userId: member.userId,
+        publicKey: decodeBase64(member.accountPublicKey!),
+      })),
+    );
+    const generation = recipients.historyGeneration + 1;
+
+    try {
+      await postHistoryKeys({
+        conversationId,
+        generation,
+        keys: wrapped.map((entry) => ({
+          userId: entry.userId,
+          wrappedKey: encodeBase64(entry.wrappedKey),
+        })),
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "GENERATION_CONFLICT") {
+        return;
+      }
+      throw error;
+    }
+
+    await saveRotatedKey(conversationId, generation, key);
+  }
+
+  /**
+   * The "share previous messages" backfill: seal every generation this
+   * device holds to each listed member and post them as additive backfills.
+   * Called by the UI after an add with sharing on. The honest limit: an
+   * adder can only share generations they hold, so somebody who joined late
+   * shares only from their own join point.
+   */
+  async shareHistory(
+    conversationId: string,
+    userIds: readonly string[],
+  ): Promise<void> {
+    const recipients = await fetchRecipients(conversationId);
+    const targets = recipients.members
+      .filter(
+        (member) =>
+          userIds.includes(member.userId) && member.accountPublicKey !== null,
+      )
+      .map((member) => ({
+        userId: member.userId,
+        publicKey: decodeBase64(member.accountPublicKey!),
+      }));
+    if (targets.length === 0) return;
+
+    const batches = await mintBackfill(conversationId, targets);
+    for (const batch of batches) {
+      await postHistoryKeys({
+        conversationId,
+        generation: batch.generation,
+        keys: batch.keys.map((entry) => ({
+          userId: entry.userId,
+          wrappedKey: encodeBase64(entry.wrappedKey),
+        })),
+      });
     }
   }
 

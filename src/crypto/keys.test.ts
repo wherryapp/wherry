@@ -17,10 +17,13 @@ import {
   KeysError,
   deriveKek,
   generateAccountKeypair,
+  generateHistoryKey,
   generateRecoveryCode,
   normalizeRecoveryCode,
   openArchive,
+  openWithHistoryKey,
   sealForUser,
+  sealWithHistoryKey,
   unwrapKey,
   wrapKey,
 } from "./keys.ts";
@@ -109,6 +112,52 @@ test("openArchive refuses an unknown format byte", async () => {
     openArchive(keypair.privateKey, sealed),
     (error: unknown) =>
       error instanceof KeysError && error.code === "UNSUPPORTED_FORMAT",
+  );
+});
+
+test("sealWithHistoryKey round-trips through openWithHistoryKey", async () => {
+  const key = generateHistoryKey();
+  const sealed = await sealWithHistoryKey(
+    key,
+    encoder.encode("one row per message now"),
+  );
+
+  const opened = await openWithHistoryKey(key, sealed);
+  assert.equal(decoder.decode(opened), "one row per message now");
+});
+
+test("the two archive seals use distinct format bytes", async () => {
+  const keypair = await generateAccountKeypair();
+  const hpkeSealed = await sealForUser(keypair.publicKey, encoder.encode("x"));
+  const aeadSealed = await sealWithHistoryKey(
+    generateHistoryKey(),
+    encoder.encode("x"),
+  );
+
+  assert.notEqual(hpkeSealed[0], aeadSealed[0]);
+  // And each opener refuses the other's format rather than misreading it.
+  await assert.rejects(
+    openWithHistoryKey(generateHistoryKey(), hpkeSealed),
+    (error: unknown) =>
+      error instanceof KeysError && error.code === "UNSUPPORTED_FORMAT",
+  );
+  await assert.rejects(
+    openArchive(keypair.privateKey, aeadSealed),
+    (error: unknown) =>
+      error instanceof KeysError && error.code === "UNSUPPORTED_FORMAT",
+  );
+});
+
+test("openWithHistoryKey with the wrong key throws WRONG_SECRET", async () => {
+  const sealed = await sealWithHistoryKey(
+    generateHistoryKey(),
+    encoder.encode("secret"),
+  );
+
+  await assert.rejects(
+    openWithHistoryKey(generateHistoryKey(), sealed),
+    (error: unknown) =>
+      error instanceof KeysError && error.code === "WRONG_SECRET",
   );
 });
 

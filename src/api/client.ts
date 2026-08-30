@@ -21,6 +21,7 @@ import type {
   Conversation,
   DeviceDescriptor,
   EventsPage,
+  HistoryKeyEntry,
   InboxEnvelope,
   MessagesPage,
   PasswordWrapWire,
@@ -276,10 +277,19 @@ export async function listConversations(): Promise<Conversation[]> {
 export function addMembers(input: {
   conversationId: string;
   memberUserIds: string[];
+  /** Recorded on the notice event; the key backfill itself is
+   * mlsSync.shareHistory, run by the adder's client after this succeeds. */
+  shareHistory?: boolean;
 }): Promise<Conversation> {
   return request<Conversation>(
     `${API}/conversations/${input.conversationId}/members`,
-    { method: "POST", body: { memberUserIds: input.memberUserIds } },
+    {
+      method: "POST",
+      body: {
+        memberUserIds: input.memberUserIds,
+        shareHistory: input.shareHistory ?? false,
+      },
+    },
   );
 }
 
@@ -322,10 +332,14 @@ export function sendMessage(input: {
   clientMessageId: string;
   /** base64. */
   payload: string;
-  /** v2 pair, together or not at all: the epoch the payload was sealed
-   * under, and one client-sealed archive payload per recipient user. */
+  /** The epoch the payload was sealed under (409 EPOCH_STALE otherwise). */
   epoch?: number;
-  archive?: { userId: string; payload: string }[];
+  /** v3 pair: the history-key generation the archive payload was sealed
+   * under (409 HISTORY_KEY_STALE otherwise), and ONE archive payload for the
+   * whole message -- the per-recipient array died with protocol v2's sends. */
+  archiveGeneration?: number;
+  /** base64. */
+  archivePayload?: string;
 }): Promise<SendResult> {
   return request<SendResult>(
     `${API}/conversations/${input.conversationId}/messages`,
@@ -334,8 +348,14 @@ export function sendMessage(input: {
       body: {
         clientMessageId: input.clientMessageId,
         payload: input.payload,
-        ...(input.epoch !== undefined && input.archive
-          ? { epoch: input.epoch, archive: input.archive }
+        ...(input.epoch !== undefined &&
+        input.archiveGeneration !== undefined &&
+        input.archivePayload
+          ? {
+              epoch: input.epoch,
+              archiveGeneration: input.archiveGeneration,
+              archivePayload: input.archivePayload,
+            }
           : {}),
       },
     },
@@ -407,6 +427,8 @@ export function fetchArchive(
     /** Ascending mode: entries after this message id, oldest first. The
      * forward gap-fill; mutually exclusive with cursor. */
     after?: string | undefined;
+    /** Restrict to one conversation -- what bounds the generation walk. */
+    conversationId?: string | undefined;
     limit?: number | undefined;
   } = {},
   options: { signal?: AbortSignal } = {},
@@ -414,6 +436,7 @@ export function fetchArchive(
   const params = new URLSearchParams();
   if (input.cursor) params.set("cursor", input.cursor);
   if (input.after) params.set("after", input.after);
+  if (input.conversationId) params.set("conversationId", input.conversationId);
   if (input.limit) params.set("limit", String(input.limit));
   const query = params.toString();
   return request<ArchivePage>(
@@ -476,6 +499,38 @@ export function postCommit(input: {
       payload: input.payload,
       welcomes: input.welcomes,
     },
+  });
+}
+
+/**
+ * Every wrapped history key addressed to this user, across all
+ * conversations. Bulk, because nothing can be decrypted until the keys are
+ * held; replayable, like the archive.
+ */
+export function fetchHistoryKeys(
+  options: { signal?: AbortSignal } = {},
+): Promise<{ keys: HistoryKeyEntry[] }> {
+  return request<{ keys: HistoryKeyEntry[] }>(
+    `${API}/history-keys`,
+    options.signal ? { signal: options.signal } : {},
+  );
+}
+
+/**
+ * Post wrapped history keys for one generation. generation = current + 1 is
+ * a rotation (must cover exactly the current members; 409
+ * GENERATION_CONFLICT means somebody else's rotation won -- drop the minted
+ * key and ingest theirs). generation <= current is a backfill (additive,
+ * subset fine).
+ */
+export function postHistoryKeys(input: {
+  conversationId: string;
+  generation: number;
+  keys: { userId: string; wrappedKey: string }[];
+}): Promise<{ generation: number }> {
+  return request(`${API}/conversations/${input.conversationId}/history-keys`, {
+    method: "POST",
+    body: { generation: input.generation, keys: input.keys },
   });
 }
 

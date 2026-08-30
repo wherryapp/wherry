@@ -34,6 +34,7 @@ import { store } from "../store";
 import type { StoredSession } from "../api/session";
 import type { StoredConversation, StoredEvent, StoredMessage } from "../store/types";
 import { sync } from "../sync/engine";
+import { mlsEnabled, mlsSync } from "../sync/mls";
 import {
   useConversations,
   useLatestMessages,
@@ -428,6 +429,9 @@ function GroupDetails({
   const [username, setUsername] = useState("");
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  // Default OFF: the adder is making this call on behalf of every other
+  // member's messages, not only their own.
+  const [shareHistory, setShareHistory] = useState(false);
 
   const memberIds = useMemo(
     () => new Set(conversation.members.map((m) => m.userId)),
@@ -492,7 +496,26 @@ function GroupDetails({
 
       if (newIds.length === 0) return;
 
-      await addMembers({ conversationId: conversation.id, memberUserIds: newIds });
+      await addMembers({
+        conversationId: conversation.id,
+        memberUserIds: newIds,
+        shareHistory,
+      });
+      if (shareHistory && mlsEnabled()) {
+        // The membership row is in; hand the new members the history-key
+        // generations this device holds. Additive and idempotent, so a
+        // failure here is retryable by re-adding with the box checked --
+        // and the notice line records the *choice* either way.
+        try {
+          await mlsSync.shareHistory(conversation.id, newIds);
+        } catch (caught) {
+          console.warn("history share failed", caught);
+        }
+      }
+      // Membership changed: nudge the conversation list now, and run the
+      // MLS sweep now rather than up to 30 seconds later -- it issues the
+      // Add/welcome and rotates the history key for the new roster.
+      mlsSync.invalidate();
       sync.invalidateConversations();
       setPicked(new Set());
       setUsername("");
@@ -609,6 +632,22 @@ function GroupDetails({
               placeholder="Or add by username"
               className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
+
+            <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
+              <input
+                type="checkbox"
+                checked={shareHistory}
+                onChange={(e) => setShareHistory(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0"
+              />
+              <span>
+                Share previous messages
+                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                  Everyone's earlier messages in this group, not only yours.
+                  The notice line will say you did.
+                </span>
+              </span>
+            </label>
 
             {addError && (
               <p className="text-xs text-red-600 dark:text-red-400">{addError}</p>

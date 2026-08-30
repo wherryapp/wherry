@@ -25,6 +25,7 @@ import {
   ackEnvelopes,
   fetchArchive,
   fetchEvents,
+  fetchHistoryKeys,
   fetchInbox,
   isUnauthorized,
   isUnreachable,
@@ -37,6 +38,8 @@ import { loadSession } from "../api/session";
 import { decodeContent } from "../api/payload";
 import type { ArchiveEntry, InboxEnvelope } from "../api/types";
 import { e2e, E2EError } from "../crypto";
+import { KeysError } from "../crypto/keys";
+import { ingestWrappedKeys } from "../crypto/history";
 import { BlobCryptoError, openAttachmentBytes } from "../crypto/blob";
 import { store } from "../store";
 import {
@@ -47,12 +50,7 @@ import {
 } from "../store/types";
 import { Backoff, sleep } from "./backoff";
 import { broadcast, runAsLeader, type LeaderHandle } from "./leader";
-import {
-  ensureRecipients,
-  mlsEnabled,
-  mlsSync,
-  type Identity,
-} from "./mls";
+import { mlsEnabled, mlsSync, type Identity } from "./mls";
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -85,6 +83,23 @@ const FORWARD_SYNC_INTERVAL_MS = 30_000;
 
 /** messageId -> conversationId of stored messages whose decrypt failed. */
 const META_PENDING_DECRYPT = "mls.pendingDecrypt";
+
+/**
+ * conversationId -> the generation walk's progress. A conversation lands
+ * here when a history-key generation this device has never held is
+ * unwrapped -- the one trigger that means archive rows may exist which no
+ * other path will ever fetch: historical messages produce no envelope, so
+ * neither `#hydrate` (one-shot, already complete) nor the forward sync
+ * (driven by envelope decrypt failures) knows they exist. Cursor persisted
+ * per page, so the walk is idempotent and resumable -- the reason this is
+ * not a `META_HYDRATION` reset.
+ */
+const META_HISTORY_WALK = "history.walk";
+
+type HistoryWalkState = Record<
+  string,
+  { cursor: string | null; done: boolean }
+>;
 
 // ---------------------------------------------------------------------------
 // Status
@@ -141,6 +156,7 @@ async function decryptForStorage(
   protocolVersion: number,
   wireBytes: Uint8Array,
   from: "envelope" | "archive",
+  keyGeneration: number | null,
 ): Promise<{ payload: Uint8Array; decryptFailed: boolean }> {
   try {
     const payload = await e2e.decrypt({
@@ -148,10 +164,15 @@ async function decryptForStorage(
       protocolVersion,
       payload: wireBytes,
       source: from,
+      keyGeneration,
     });
     return { payload, decryptFailed: false };
   } catch (error) {
-    if (error instanceof E2EError) {
+    // KeysError alongside E2EError: openArchive and openWithHistoryKey
+    // throw it, and one unopenable row must mark one message failed -- not
+    // escape the page's Promise.all and abort the whole fetch, which is
+    // what it did when only E2EError was caught here.
+    if (error instanceof E2EError || error instanceof KeysError) {
       return { payload: wireBytes, decryptFailed: true };
     }
     throw error;
@@ -169,6 +190,7 @@ async function toStored(
     source.protocolVersion,
     wireBytes,
     from,
+    "keyGeneration" in source ? source.keyGeneration : null,
   );
 
   return {
@@ -190,55 +212,52 @@ function uniqueConversations(messages: readonly StoredMessage[]): string[] {
 }
 
 /**
- * Everything a v2 send needs, sealed -- or null when it cannot be sealed
- * yet. Shared by enqueue (compose time) and the outbox flush (the retry
- * after `pendingEncryption`, and the re-encrypt after EPOCH_STALE).
+ * Everything a send needs, sealed -- or null when it cannot be sealed yet.
+ * Shared by enqueue (compose time) and the outbox flush (the retry after
+ * `pendingEncryption`, and the re-encrypt after EPOCH_STALE or
+ * HISTORY_KEY_STALE).
+ *
+ * Archive first, wire second, deliberately: encrypting advances the MLS
+ * ratchet, and a wire payload we then had to throw away because no history
+ * key is cached yet would consume a key for nothing. The archive seal is
+ * stateless, so this order wastes nothing either way.
  *
  * Under passthrough there is nothing that can fail and nothing to seal --
  * which is also why a passthrough build cannot talk to the v2 server: it
- * produces no epoch and no archive payloads. Dev instrument only.
+ * produces no epoch and no archive payload. Dev instrument only.
  */
 async function sealForOutbox(
   conversationId: string,
   plaintext: Uint8Array,
 ): Promise<Pick<
   OutboxEntry,
-  "protocolVersion" | "payload" | "epoch" | "archive"
+  "protocolVersion" | "payload" | "epoch" | "archiveGeneration" | "archivePayload"
 > | null> {
   if (!e2e.handshake) {
     const wire = await e2e.encrypt(conversationId, plaintext);
     return { protocolVersion: wire.protocolVersion, payload: wire.payload };
   }
 
-  // Recipient keys first, encryption second, deliberately: encrypting
-  // advances the ratchet, and a wire payload we then had to throw away
-  // because the archive could not be sealed would consume a key for
-  // nothing.
-  const recipients = await ensureRecipients(conversationId);
-  if (!recipients) return null;
-
   try {
+    const archive = await e2e.encryptForArchive(conversationId, plaintext);
     const wire = await e2e.encrypt(conversationId, plaintext);
-    const archive = await e2e.encryptForArchive(
-      conversationId,
-      plaintext,
-      recipients.map((recipient) => ({
-        userId: recipient.userId,
-        publicKey: decodeBase64(recipient.publicKey),
-      })),
-    );
 
     return {
       protocolVersion: wire.protocolVersion,
       payload: wire.payload,
       ...(wire.epoch !== undefined ? { epoch: wire.epoch } : {}),
-      archive: archive.map((row) => ({
-        userId: row.userId,
-        payload: row.payload,
-      })),
+      archiveGeneration: archive.generation,
+      archivePayload: archive.payload,
     };
   } catch (error) {
-    if (error instanceof E2EError && error.code === "NOT_IN_GROUP") {
+    // Two "not yet" states, not failures: no group state (not joined, or
+    // the group is being created) and no history key cached (the sweep has
+    // not bootstrapped or fetched one). Both resolve on a later tick, so
+    // the entry parks as pendingEncryption.
+    if (
+      error instanceof E2EError &&
+      (error.code === "NOT_IN_GROUP" || error.code === "HISTORY_KEY_UNAVAILABLE")
+    ) {
       return null;
     }
     throw error;
@@ -276,6 +295,7 @@ export class SyncEngine {
   #wake: (() => void) | null = null;
   #lastConversationRefresh = 0;
   #lastForwardSync = 0;
+  #lastHistoryKeyRefresh = 0;
   #onUnauthorized: (() => void) | null = null;
 
   // -- public surface ------------------------------------------------------
@@ -388,6 +408,17 @@ export class SyncEngine {
 
   async #runLoop(signal: AbortSignal): Promise<void> {
     try {
+      // Keys before the walk: a new device's hydration reads v3 archive
+      // rows, and decrypting them on the first pass beats storing them
+      // failed and healing later.
+      await this.#refreshHistoryKeys(signal, true);
+    } catch (error) {
+      if (signal.aborted) return;
+      if (this.#handleFatal(error)) return;
+      console.warn("history key refresh did not finish", error);
+    }
+
+    try {
       await this.#hydrate(signal);
     } catch (error) {
       if (signal.aborted) return;
@@ -425,9 +456,15 @@ export class SyncEngine {
           }
         }
 
+        // Keys before the flush and the drain: a send needs the current
+        // generation to seal, and a freshly delivered v3 row needs its
+        // generation to open.
+        await this.#refreshHistoryKeys(signal);
+
         await this.#flushOutbox(signal);
         await this.#drainInbox(signal);
         await this.#forwardArchiveSync(signal);
+        await this.#historyWalk(signal);
 
         this.#backoff.reset();
         this.#setStatus({
@@ -685,13 +722,17 @@ export class SyncEngine {
       if (entry.failedPermanently) continue;
       if (blocked.has(entry.conversationId)) continue;
 
-      if (entry.pendingEncryption) {
+      // `entry.archive` is the pre-v3 shape: an entry sealed before this
+      // deploy, carrying the per-recipient array the server no longer
+      // accepts. Re-sealed from the retained plaintext rather than sent
+      // as-is, where it would 400 and be parked as permanently failed.
+      if (entry.pendingEncryption || entry.archive) {
         const sealed = await sealForOutbox(entry.conversationId, entry.content);
         if (!sealed) {
           blocked.add(entry.conversationId);
           continue;
         }
-        const { pendingEncryption: _dropped, ...rest } = entry;
+        const { pendingEncryption: _dropped, archive: _legacy, ...rest } = entry;
         entry = { ...rest, ...sealed };
         await store.enqueueOutbox(entry);
       }
@@ -701,13 +742,13 @@ export class SyncEngine {
           conversationId: entry.conversationId,
           clientMessageId: entry.clientMessageId,
           payload: encodeBase64(entry.payload),
-          ...(entry.epoch !== undefined && entry.archive
+          ...(entry.epoch !== undefined &&
+          entry.archiveGeneration !== undefined &&
+          entry.archivePayload
             ? {
                 epoch: entry.epoch,
-                archive: entry.archive.map((row) => ({
-                  userId: row.userId,
-                  payload: encodeBase64(row.payload),
-                })),
+                archiveGeneration: entry.archiveGeneration,
+                archivePayload: encodeBase64(entry.archivePayload),
               }
             : {}),
         });
@@ -742,18 +783,26 @@ export class SyncEngine {
       } catch (error) {
         if (isUnauthorized(error)) throw error;
 
-        // The two v2 refusals that mean "repair and retry", not "give up":
-        // a commit advanced the group after this entry was sealed, or the
-        // member set changed under the archive list. Both are fixed by
-        // catching up and re-sealing from the retained plaintext -- the one
-        // sanctioned exception to encrypt-once, safe because the refused
-        // send created no message row.
+        // The refusals that mean "repair and retry", not "give up": a
+        // commit advanced the group after this entry was sealed
+        // (EPOCH_STALE), or a rotation advanced the history key
+        // (HISTORY_KEY_STALE; ARCHIVE_INCOMPLETE was its v2 sibling, kept
+        // here so a mid-deploy server refusing the old way repairs the same
+        // way). All are fixed by catching up and re-sealing from the
+        // retained plaintext -- the one sanctioned exception to
+        // encrypt-once, safe because the refused send created no message
+        // row.
         if (
           e2e.handshake &&
           error instanceof ApiError &&
-          (error.code === "EPOCH_STALE" || error.code === "ARCHIVE_INCOMPLETE")
+          (error.code === "EPOCH_STALE" ||
+            error.code === "HISTORY_KEY_STALE" ||
+            error.code === "ARCHIVE_INCOMPLETE")
         ) {
           try {
+            // Keys first: the fresh generation may already exist server-side
+            // (somebody else rotated), in which case fetching beats minting.
+            await this.#refreshHistoryKeys(signal, true);
             await mlsSync.reconcileConversation(entry.conversationId, {
               userId: session.user.id,
               deviceId: session.device.id,
@@ -1020,6 +1069,111 @@ export class SyncEngine {
       const conversationIds = [...healedConversations];
       this.#emit({ type: "messages", conversationIds });
       broadcast({ type: "messages", conversationIds });
+    }
+  }
+
+  /**
+   * Fetches this user's wrapped history keys and unwraps what is new.
+   *
+   * On the conversation-refresh cadence, not the poll cadence -- keys change
+   * exactly as often as membership does. `force` bypasses the throttle for
+   * the moments that cannot wait a cycle: startup before hydration, and the
+   * HISTORY_KEY_STALE repair path.
+   *
+   * A newly-seen (conversation, generation) pair marks that conversation for
+   * the generation walk below. That trigger is the whole feature for a
+   * member added with shared history: their historical messages produced no
+   * envelope, so no other path will ever fetch them.
+   */
+  async #refreshHistoryKeys(signal: AbortSignal, force = false): Promise<void> {
+    if (!e2e.handshake) return;
+
+    const now = Date.now();
+    if (!force && now - this.#lastHistoryKeyRefresh < CONVERSATION_REFRESH_MS) {
+      return;
+    }
+    if (signal.aborted) return;
+
+    const { keys } = await fetchHistoryKeys({ signal });
+    this.#lastHistoryKeyRefresh = now;
+
+    const fresh = await ingestWrappedKeys(
+      keys.map((key) => ({
+        conversationId: key.conversationId,
+        generation: key.generation,
+        wrappedKey: decodeBase64(key.wrappedKey),
+      })),
+    );
+    if (fresh.length === 0) return;
+
+    // Any newly-held generation restarts its conversation's walk from the
+    // top: rows sealed under it can sit anywhere in that history --
+    // generations arrive out of order when a backfill follows a rotation.
+    const walk =
+      (await store.getMeta<HistoryWalkState>(META_HISTORY_WALK)) ?? {};
+    for (const pair of fresh) {
+      walk[pair.conversationId] = { cursor: null, done: false };
+    }
+    await store.setMeta(META_HISTORY_WALK, walk);
+  }
+
+  /**
+   * The generation walk: pages one conversation's archive after its history
+   * keys changed, storing what decrypts.
+   *
+   * `putMessages` makes this idempotent and healing-only -- a successful
+   * decrypt replaces a failed record, never the reverse -- so re-reading
+   * rows this device already holds is a cheap upsert, and rows that still
+   * miss their key are recorded for the forward sync like any other failed
+   * decrypt. Bounded pages per tick, cursor persisted per page, exactly the
+   * discipline of `#hydrate` -- which cannot be reused here because its
+   * completion flag is one-shot for the device, not per conversation.
+   */
+  async #historyWalk(signal: AbortSignal): Promise<void> {
+    const walk = await store.getMeta<HistoryWalkState>(META_HISTORY_WALK);
+    if (!walk) return;
+
+    const pendingIds = Object.keys(walk).filter((id) => !walk[id]!.done);
+    if (pendingIds.length === 0) return;
+
+    let budget = 5;
+    for (const conversationId of pendingIds) {
+      while (budget > 0) {
+        if (signal.aborted) return;
+
+        const state = walk[conversationId]!;
+        const page = await fetchArchive(
+          {
+            conversationId,
+            ...(state.cursor ? { cursor: state.cursor } : {}),
+            limit: ARCHIVE_PAGE,
+          },
+          { signal },
+        );
+        budget -= 1;
+
+        const messages = await Promise.all(
+          page.entries.map((entry) => toStored(entry, "archive")),
+        );
+        await store.putMessages(messages);
+        await this.#recordPendingDecrypts(messages);
+
+        // Progress is durable before the next page, so an interrupted walk
+        // resumes rather than restarting.
+        walk[conversationId] = {
+          cursor: page.nextCursor,
+          done: page.nextCursor === null,
+        };
+        await store.setMeta(META_HISTORY_WALK, walk);
+
+        if (messages.length > 0) {
+          this.#emit({ type: "messages", conversationIds: [conversationId] });
+          broadcast({ type: "messages", conversationIds: [conversationId] });
+        }
+
+        if (page.nextCursor === null) break;
+      }
+      if (budget <= 0) return;
     }
   }
 

@@ -76,6 +76,11 @@ export type PasswordWrapWire = {
 /** GET /conversations/:id/recipients — the roster authority. */
 export type RecipientsResponse = {
   epoch: number;
+  /** The current history-key generation; 0 when none has been minted yet. */
+  historyGeneration: number;
+  /** True when this client should rotate: no generation exists, or user
+   * membership changed since the current one was minted. */
+  historyKeyStale: boolean;
   members: {
     userId: string;
     /** base64, or null for an account that predates v2. */
@@ -213,8 +218,18 @@ export type ArchiveEntry = {
   senderUserId: string;
   senderDeviceId: string;
   protocolVersion: number;
+  /** v3 rows only: which history-key generation sealed the payload. */
+  keyGeneration: number | null;
   payload: string;
   sentAt: string;
+};
+
+/** One row of GET /history-keys: a wrapped key addressed to this user. */
+export type HistoryKeyEntry = {
+  conversationId: string;
+  generation: number;
+  /** base64 HPKE ciphertext, sealed to this account's public key. */
+  wrappedKey: string;
 };
 
 export type ArchivePage = {

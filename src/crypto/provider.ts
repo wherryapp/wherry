@@ -19,8 +19,15 @@
 
 export const PROTOCOL_PLAINTEXT = 1;
 export const PROTOCOL_MLS = 2;
+// v3 is an archive-row format only: AEAD under the per-conversation history
+// key. Envelopes are untouched -- live delivery stays MLS ciphertext stamped
+// PROTOCOL_MLS. Mirrors server/src/protocol.ts.
+export const PROTOCOL_HISTORY_KEY = 3;
 
-export type ProtocolVersion = typeof PROTOCOL_PLAINTEXT | typeof PROTOCOL_MLS;
+export type ProtocolVersion =
+  | typeof PROTOCOL_PLAINTEXT
+  | typeof PROTOCOL_MLS
+  | typeof PROTOCOL_HISTORY_KEY;
 
 /** What actually crosses the wire, and what the local store persists. */
 export type WirePayload = {
@@ -59,9 +66,16 @@ export type DecryptInput = {
    * Which of the two content tables the bytes came from. The same
    * protocol_version means two different seals: an envelope is MLS
    * ciphertext for the group, an archive row is HPKE sealed to the account
-   * key. Passthrough ignores this, because under v1 both are plaintext.
+   * key (v2) or AEAD under a history key (v3). Passthrough ignores this,
+   * because under v1 both are plaintext.
    */
   source: "envelope" | "archive";
+  /**
+   * v3 archive rows only: which history-key generation sealed the payload,
+   * read straight off the row like protocolVersion above. Null/absent for
+   * everything else.
+   */
+  keyGeneration?: number | null;
 };
 
 export type E2EErrorCode =
@@ -73,7 +87,11 @@ export type E2EErrorCode =
    * (commits not yet processed) or behind (ratchet key already consumed). */
   | "EPOCH_UNAVAILABLE"
   /** The account private key is not unlocked on this device. */
-  | "NO_ACCOUNT_KEY";
+  | "NO_ACCOUNT_KEY"
+  /** The history-key generation that sealed this payload is not cached on
+   * this device yet -- or, on encrypt, no generation is cached at all. The
+   * poll loop's key refresh and the generation walk are what heal it. */
+  | "HISTORY_KEY_UNAVAILABLE";
 
 /** Same shape as the server's E2EError: a code, never anything HTTP-shaped. */
 export class E2EError extends Error {
@@ -86,15 +104,20 @@ export class E2EError extends Error {
   }
 }
 
-/** What `encryptForArchive` seals to: one recipient user's published key. */
+/**
+ * One recipient user's published account key -- what history keys are
+ * *wrapped* to (crypto/history.ts). The archive payload itself stopped being
+ * sealed per recipient at protocol v3.
+ */
 export type ArchiveRecipient = {
   userId: string;
   /** The account public key from GET /conversations/:id/recipients. */
   publicKey: Uint8Array;
 };
 
+/** One archive seal: the whole message under one history-key generation. */
 export type ArchivePayload = {
-  userId: string;
+  generation: number;
   payload: Uint8Array;
 };
 
@@ -208,16 +231,17 @@ export interface E2EProvider {
   addMember(input: AddMemberInput): Promise<void>;
 
   /**
-   * Seal the archive copies: one payload per recipient user, sealed to that
-   * user's account public key -- the sender's own included, which is how
-   * their future devices recover sent history. Under passthrough the
-   * "sealing" is a copy per recipient.
+   * Seal the archive copy: ONE payload for the whole message, AEAD under the
+   * conversation's current history key (protocol v3). The per-recipient
+   * signature this replaced was shaped for exactly the fan-out v3 removed --
+   * who may read the archive is now decided by who holds the key, not by
+   * whom the payload was sealed to. Throws HISTORY_KEY_UNAVAILABLE when no
+   * generation is cached yet; the reconciliation sweep bootstraps one.
    */
   encryptForArchive(
     conversationId: string,
     plaintext: Uint8Array,
-    recipients: readonly ArchiveRecipient[],
-  ): Promise<ArchivePayload[]>;
+  ): Promise<ArchivePayload>;
 
   /**
    * Turn outgoing content bytes into what gets sent on the wire and kept in

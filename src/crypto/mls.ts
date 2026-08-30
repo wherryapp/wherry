@@ -68,22 +68,24 @@ import { defaultClientConfig } from "ts-mls/clientConfig.js";
 import {
   deleteGroup,
   deleteKeyPackage,
+  latestHistoryKey,
   listKeyPackages,
   loadAccountKeypair,
   loadGroup,
+  loadHistoryKey,
   loadMlsIdentity,
   saveGroup,
   saveKeyPackages,
   saveMlsIdentity,
 } from "./db";
-import { openArchive, sealForUser } from "./keys";
+import { openArchive, openWithHistoryKey, sealWithHistoryKey } from "./keys";
 import {
   E2EError,
+  PROTOCOL_HISTORY_KEY,
   PROTOCOL_MLS,
   PROTOCOL_PLAINTEXT,
   type AddMemberInput,
   type ArchivePayload,
-  type ArchiveRecipient,
   type DecryptInput,
   type E2EProvider,
   type HandshakeOps,
@@ -538,16 +540,24 @@ export class MlsE2EProvider implements E2EProvider {
   }
 
   async encryptForArchive(
-    _conversationId: string,
+    conversationId: string,
     plaintext: Uint8Array,
-    recipients: readonly ArchiveRecipient[],
-  ): Promise<ArchivePayload[]> {
-    return await Promise.all(
-      recipients.map(async (recipient) => ({
-        userId: recipient.userId,
-        payload: await sealForUser(recipient.publicKey, plaintext),
-      })),
-    );
+  ): Promise<ArchivePayload> {
+    // One seal under the newest cached history key -- the v3 replacement for
+    // the per-recipient HPKE fan-out. The cache can be behind the server; a
+    // send sealed under a stale generation bounces HISTORY_KEY_STALE and the
+    // outbox repair re-seals, the same loop EPOCH_STALE already runs.
+    const latest = await latestHistoryKey(conversationId);
+    if (!latest) {
+      throw new E2EError(
+        "HISTORY_KEY_UNAVAILABLE",
+        "No history key cached for this conversation yet",
+      );
+    }
+    return {
+      generation: latest.generation,
+      payload: await sealWithHistoryKey(latest.key, plaintext),
+    };
   }
 
   async decrypt(input: DecryptInput): Promise<Uint8Array> {
@@ -558,16 +568,42 @@ export class MlsE2EProvider implements E2EProvider {
       // refusing to read a message this device already had.
       return new Uint8Array(input.payload);
     }
+    if (input.protocolVersion === PROTOCOL_HISTORY_KEY) {
+      // v3 exists only in the archive: one row per message, AEAD under the
+      // history-key generation the row names. An envelope claiming v3 is
+      // nonsense -- live delivery is MLS, and stays version 2.
+      if (input.source !== "archive" || input.keyGeneration == null) {
+        throw new E2EError(
+          "UNSUPPORTED_PROTOCOL_VERSION",
+          "Protocol version 3 is an archive-row format only",
+        );
+      }
+      const key = await loadHistoryKey(input.conversationId, input.keyGeneration);
+      if (!key) {
+        // Not an error state, a not-yet state: the key refresh or the
+        // generation walk delivers it, and the row heals like any other
+        // decryptFailed message.
+        throw new E2EError(
+          "HISTORY_KEY_UNAVAILABLE",
+          `History key generation ${input.keyGeneration} is not cached ` +
+            `for this conversation`,
+        );
+      }
+      return await openWithHistoryKey(key, input.payload);
+    }
     if (input.protocolVersion !== PROTOCOL_MLS) {
       throw new E2EError(
         "UNSUPPORTED_PROTOCOL_VERSION",
-        `Message is protocol version ${input.protocolVersion}, ` +
-          `and this provider reads ${PROTOCOL_PLAINTEXT} and ${PROTOCOL_MLS}`,
+        `Message is protocol version ${input.protocolVersion}, and this ` +
+          `provider reads ${PROTOCOL_PLAINTEXT}, ${PROTOCOL_MLS} and ` +
+          `${PROTOCOL_HISTORY_KEY}`,
       );
     }
 
     // The two sources are two different seals under one version number.
     if (input.source === "archive") {
+      // A v2 archive row: HPKE to the account key. Every row written before
+      // the v3 send path is one of these, forever.
       const keypair = await loadAccountKeypair();
       if (!keypair) {
         throw new E2EError(
