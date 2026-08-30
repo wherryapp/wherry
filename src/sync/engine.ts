@@ -1060,7 +1060,12 @@ export class SyncEngine {
     // provider would force.
     const refs = messages
       .filter((message) => !message.decryptFailed)
-      .flatMap((message) => decodeContent(message.payload).attachments);
+      .flatMap((message) => {
+        // An unsupported payload kind may well carry attachments, but this
+        // build cannot know where they are in it. Nothing to prefetch.
+        const content = decodeContent(message.payload);
+        return content === "unsupported" ? [] : content.attachments;
+      });
 
     // One at a time. A burst of parallel photo downloads competes with the
     // poll loop for the same connection, and nothing here is urgent -- the

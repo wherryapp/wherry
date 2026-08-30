@@ -11,9 +11,9 @@ import { Settings } from "./Settings";
 import { Friends } from "./Friends";
 import {
   decodeContent,
+  type DecodedContent,
   encodeContent,
   type AttachmentRef,
-  type MessageContent,
 } from "../api/payload";
 import { prepareForUpload } from "./media";
 import {
@@ -63,9 +63,11 @@ import {
  * Null is kept distinct from empty content on purpose: a payload whose
  * decrypt failed is ciphertext this device holds no key for (yet), which is
  * a different thing to say than a message with no text, and the two look
- * identical if they share a return value.
+ * identical if they share a return value. `"unsupported"` is a third state
+ * for the same reason -- a payload kind from a newer client is fixed by
+ * updating, not by waiting for keys.
  */
-function messageContent(message: StoredMessage): MessageContent | null {
+function messageContent(message: StoredMessage): DecodedContent | null {
   // The explicit flag, not the version number: under v2 most version-2
   // messages are readable and a few are not (sealed to an epoch this device
   // never held), and only decrypt-at-ingest knew which. The forward archive
@@ -985,11 +987,15 @@ function ConversationList({
         {conversations.map((conversation) => {
           const preview = latest.get(conversation.id);
           const previewContent = preview ? messageContent(preview) : null;
-          // A photo with no caption still has to say something in the list.
-          const text = previewContent
-            ? previewContent.text ||
-              (previewContent.attachments.length > 0 ? "Photo" : "")
-            : null;
+          // A photo with no caption still has to say something in the list,
+          // and so does a message kind this build cannot render.
+          const text =
+            previewContent === "unsupported"
+              ? "Needs a newer version"
+              : previewContent
+                ? previewContent.text ||
+                  (previewContent.attachments.length > 0 ? "Photo" : "")
+                : null;
           const count = unread.get(conversation.id) ?? 0;
           const isGroup = conversation.members.length > 2;
 
@@ -1070,8 +1076,11 @@ function Bubble({
   receipt,
 }: {
   mine: boolean;
-  /** Null when this build cannot display the payload at all. */
-  content: MessageContent | null;
+  /**
+   * Null when the payload cannot be read yet (no keys); `"unsupported"` when
+   * it decoded fine but this build does not know the kind.
+   */
+  content: DecodedContent | null;
   meta: string;
   muted?: boolean;
   /**
@@ -1107,6 +1116,10 @@ function Bubble({
         {content === null ? (
           <span className="text-sm italic opacity-70">
             Encrypted message — waiting for keys
+          </span>
+        ) : content === "unsupported" ? (
+          <span className="text-sm italic opacity-70">
+            This message needs a newer version of the app
           </span>
         ) : (
           <>

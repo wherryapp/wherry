@@ -59,6 +59,23 @@ export type MessageContent = {
   attachments: AttachmentRef[];
 };
 
+/**
+ * What decoding produces: content, or the fact that this build cannot
+ * represent it.
+ *
+ * A structured payload may carry a `kind` field naming what it is. Absent
+ * means `"text"` -- the shape that existed before the field did, and the only
+ * kind this build knows. Anything else (a reaction, a reply, a voice note --
+ * kinds that do not exist yet) decodes to `"unsupported"`, which the UI
+ * renders as "needs a newer version" rather than as an empty message.
+ *
+ * The distinction is the whole point: a client without this code shows an
+ * unknown kind as a blank bubble and nobody can tell why. This ships before
+ * any new kind does, precisely because it only protects clients that already
+ * have it.
+ */
+export type DecodedContent = MessageContent | "unsupported";
+
 /** Encodes content, choosing the smallest representation that carries it. */
 export function encodeContent(content: MessageContent): Uint8Array {
   // Text with no attachments stays in the old format. Not for compatibility
@@ -85,12 +102,13 @@ export function encodeContent(content: MessageContent): Uint8Array {
 /**
  * Decodes a payload of either format.
  *
- * Never throws. A payload this build cannot make sense of -- a future format,
- * or something corrupt -- comes back as empty content rather than an
+ * Never throws. Corrupt bytes come back as empty content rather than an
  * exception, because the alternative is one bad message taking down the
- * timeline it appears in.
+ * timeline it appears in. A well-formed payload of a kind this build does
+ * not know comes back as `"unsupported"` -- corruption and the future are
+ * different things, and only the latter is fixed by updating.
  */
-export function decodeContent(payload: Uint8Array): MessageContent {
+export function decodeContent(payload: Uint8Array): DecodedContent {
   if (payload.length === 0) return { text: "", attachments: [] };
 
   if (payload[0] !== STRUCTURED) {
@@ -106,7 +124,17 @@ export function decodeContent(payload: Uint8Array): MessageContent {
       return { text: "", attachments: [] };
     }
 
-    const shape = parsed as { text?: unknown; attachments?: unknown };
+    const shape = parsed as {
+      kind?: unknown;
+      text?: unknown;
+      attachments?: unknown;
+    };
+
+    // Absent means "text". Present-but-unrecognised -- including a kind that
+    // is not even a string -- is a payload from a newer client, not garbage.
+    if (shape.kind !== undefined && shape.kind !== "text") {
+      return "unsupported";
+    }
 
     return {
       text: typeof shape.text === "string" ? shape.text : "",
