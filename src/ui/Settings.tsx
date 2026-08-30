@@ -29,31 +29,7 @@ import {
   type PushState,
 } from "../sync/push";
 import { useAnnouncements } from "./hooks";
-import { Button, ErrorText, Input, Note, Panel } from "./kit";
-
-function Section({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="border-b border-neutral-200 px-4 py-5 dark:border-neutral-800">
-      <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-        {title}
-      </h2>
-      {description && (
-        <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
-          {description}
-        </p>
-      )}
-      <div className="mt-3">{children}</div>
-    </section>
-  );
-}
+import { Button, ErrorText, Input, Note, Panel, PanelSection } from "./kit";
 
 /**
  * Stamped at build time the same way BUILD_COMMIT is (see sync/engine.ts) --
@@ -221,7 +197,7 @@ export function Settings({
             <Note className="px-4 py-2">{note}</Note>
           ))}
 
-        <Section title="Display name" description={`Signed in as ${session.user.username}`}>
+        <PanelSection title="Display name" description={`Signed in as ${session.user.username}`}>
           <form onSubmit={submitName} className="flex gap-2">
             <Input
               value={displayName}
@@ -236,9 +212,9 @@ export function Settings({
               Save
             </Button>
           </form>
-        </Section>
+        </PanelSection>
 
-        <Section
+        <PanelSection
           title="Email"
           description="Used to sign in and to reset your password. Nothing else."
         >
@@ -279,11 +255,11 @@ export function Settings({
               Confirmed.
             </p>
           )}
-        </Section>
+        </PanelSection>
 
         <PasswordSection onDone={setNote} onError={setError} />
 
-        <Section
+        <PanelSection
           title="Read receipts"
           description="When off, other people cannot see how far you have read. You can still see theirs."
         >
@@ -297,16 +273,16 @@ export function Settings({
             />
             Let others see when I have read their messages
           </label>
-        </Section>
+        </PanelSection>
 
-        <Section
+        <PanelSection
           title="Notifications"
           description={`This device: ${session.device.displayName}.`}
         >
           <NotificationSetting />
-        </Section>
+        </PanelSection>
 
-        <Section
+        <PanelSection
           title="Devices"
           description="Revoking a device signs it out and stops it receiving new messages."
         >
@@ -348,10 +324,10 @@ export function Settings({
               ))}
             </ul>
           )}
-        </Section>
+        </PanelSection>
 
         {usage && (
-          <Section
+          <PanelSection
             title="Storage"
             description={`Attachments are deleted after ${usage.retentionDays} days.`}
           >
@@ -359,24 +335,31 @@ export function Settings({
               {bytes(usage.usedBytes)} of {bytes(usage.quotaBytes)} used ·{" "}
               {bytes(usage.maxBytes)} per file
             </p>
-          </Section>
+          </PanelSection>
         )}
 
         {announcements.length > 0 && (
-          <Section title="What's new">
-            <ul className="space-y-4">
+          <PanelSection title="What's new">
+            <ul className="space-y-5">
               {announcements.map((entry) => (
                 <li key={entry.id}>
-                  <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                    {entry.title}
-                    {entry.version && (
-                      <span className="ml-2 text-xs font-normal text-neutral-500 dark:text-neutral-400">
-                        {entry.version}
-                      </span>
-                    )}
+                  <p className="flex items-center gap-2">
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                        entry.kind === "release"
+                          ? "bg-accent-50 text-accent-700 dark:bg-accent-950 dark:text-accent-100"
+                          : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                      }`}
+                    >
+                      {entry.kind === "release" ? "Release" : "News"}
+                    </span>
+                    <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                      {entry.title}
+                    </span>
                   </p>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
                     {new Date(entry.publishedAt).toLocaleDateString()}
+                    {entry.version && ` · ${entry.version}`}
                   </p>
                   {/* The body is markdown by contract, shown as plain text
                       for now -- whether it deserves real rendering (and the
@@ -387,11 +370,11 @@ export function Settings({
                 </li>
               ))}
             </ul>
-          </Section>
+          </PanelSection>
         )}
 
         {TIP_URL && tipJarEnabled && (
-          <Section title="Support the project">
+          <PanelSection title="Support the project">
             <a
               href={TIP_URL}
               target="_blank"
@@ -400,7 +383,7 @@ export function Settings({
             >
               Open tip jar ↗
             </a>
-          </Section>
+          </PanelSection>
         )}
 
         {/* Last, where every app keeps it. It used to be a header link on the
@@ -460,7 +443,7 @@ function PasswordSection({
   }
 
   return (
-    <Section
+    <PanelSection
       title="Password"
       description="Changing it signs out every other device."
     >
@@ -487,7 +470,7 @@ function PasswordSection({
           {busy ? "…" : "Change password"}
         </Button>
       </form>
-    </Section>
+    </PanelSection>
   );
 }
 

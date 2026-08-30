@@ -310,6 +310,39 @@ export function Panel({
   );
 }
 
+/**
+ * A titled block inside a Panel's scrolling body -- Settings, Friends and
+ * GroupDetails had each built this separately (Settings' `Section`,
+ * Friends' `Group`, GroupDetails' inline `<section>`s), agreeing on the
+ * shape but drifting on the details (border side, padding, heading case).
+ * Settings' version is what survives here. A row count or similar belongs
+ * in the title string itself (e.g. `"Contacts (3)"`) rather than a second
+ * prop -- the caller already has the number.
+ */
+export function PanelSection({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="border-b border-neutral-200 px-4 py-5 dark:border-neutral-800">
+      <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+        {title}
+      </h2>
+      {description && (
+        <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+          {description}
+        </p>
+      )}
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Identity
 // ---------------------------------------------------------------------------

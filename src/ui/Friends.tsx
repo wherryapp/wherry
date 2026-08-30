@@ -18,7 +18,7 @@ import {
   type FriendLists,
 } from "../api/client";
 import { sync } from "../sync/engine";
-import { Button, ErrorText, Input, Note, Panel } from "./kit";
+import { Avatar, Button, ErrorText, Input, Note, Panel, PanelSection } from "./kit";
 
 // Block is the one action here with no kit equivalent -- a plain-text button
 // but red, and the kit's ghost variant carries no color. See kit.tsx.
@@ -36,13 +36,16 @@ function Person({
 }) {
   return (
     <li className="flex items-center justify-between gap-2 py-2">
-      <span className="min-w-0">
-        <span className="block truncate text-sm text-neutral-900 dark:text-neutral-100">
-          {person.displayName}
-        </span>
-        <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">
-          @{person.username}
-          {detail ? ` · ${detail}` : ""}
+      <span className="flex min-w-0 items-center gap-2">
+        <Avatar size="sm" name={person.displayName} userId={person.userId} />
+        <span className="min-w-0">
+          <span className="block truncate text-sm text-neutral-900 dark:text-neutral-100">
+            {person.displayName}
+          </span>
+          <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">
+            @{person.username}
+            {detail ? ` · ${detail}` : ""}
+          </span>
         </span>
       </span>
       <span className="flex shrink-0 gap-1">{children}</span>
@@ -147,8 +150,8 @@ export function Friends({
 
   return (
     <Panel title="Contacts" onClose={onClose}>
-      <div className="px-4">
-        <form onSubmit={add} className="flex gap-2 py-4">
+      <div>
+        <form onSubmit={add} className="flex gap-2 px-4 py-4">
           <Input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -166,155 +169,137 @@ export function Friends({
 
         {(note || error) &&
           (error ? (
-            <ErrorText className="pb-3">{error}</ErrorText>
+            <ErrorText className="px-4 pb-3">{error}</ErrorText>
           ) : (
-            <Note className="pb-3">{note}</Note>
+            <Note className="px-4 pb-3">{note}</Note>
           ))}
 
         {lists === null ? (
-          <p className="text-xs text-neutral-500">Loading…</p>
+          <p className="px-4 text-xs text-neutral-500">Loading…</p>
         ) : (
           <>
             {lists.incoming.length > 0 && (
-              <Group title={`Requests (${lists.incoming.length})`}>
-                {lists.incoming.map((person) => (
-                  <Person key={person.userId} person={person}>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="px-2 py-1"
-                      onClick={() =>
-                        void act(
-                          () => acceptFriend(person.userId),
-                          `You and ${person.displayName} are now contacts.`,
-                        )
-                      }
-                    >
-                      Accept
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="px-2 py-1"
-                      onClick={() => void act(() => removeFriend(person.userId))}
-                    >
-                      Decline
-                    </Button>
-                  </Person>
-                ))}
-              </Group>
+              <PanelSection title={`Requests (${lists.incoming.length})`}>
+                <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                  {lists.incoming.map((person) => (
+                    <Person key={person.userId} person={person}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-2 py-1"
+                        onClick={() =>
+                          void act(
+                            () => acceptFriend(person.userId),
+                            `You and ${person.displayName} are now contacts.`,
+                          )
+                        }
+                      >
+                        Accept
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-2 py-1"
+                        onClick={() => void act(() => removeFriend(person.userId))}
+                      >
+                        Decline
+                      </Button>
+                    </Person>
+                  ))}
+                </ul>
+              </PanelSection>
             )}
 
-            <Group title="Contacts">
+            <PanelSection title={`Contacts (${lists.friends.length})`}>
               {lists.friends.length === 0 ? (
-                <p className="py-2 text-xs text-neutral-500 dark:text-neutral-400">
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
                   Nobody yet. Add somebody by their username above.
                 </p>
               ) : (
-                lists.friends.map((person) => (
-                  <Person key={person.userId} person={person}>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="px-2 py-1"
-                      onClick={() => void message(person)}
-                    >
-                      Message
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="px-2 py-1"
-                      onClick={() => void act(() => removeFriend(person.userId))}
-                    >
-                      Remove
-                    </Button>
-                    <button
-                      className={blockClass}
-                      onClick={() =>
-                        void act(
-                          () => blockUser(person.userId),
-                          `${person.displayName} is blocked.`,
-                        )
-                      }
-                    >
-                      Block
-                    </button>
-                  </Person>
-                ))
+                <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                  {lists.friends.map((person) => (
+                    <Person key={person.userId} person={person}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-2 py-1"
+                        onClick={() => void message(person)}
+                      >
+                        Message
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-2 py-1"
+                        onClick={() => void act(() => removeFriend(person.userId))}
+                      >
+                        Remove
+                      </Button>
+                      <button
+                        className={blockClass}
+                        onClick={() =>
+                          void act(
+                            () => blockUser(person.userId),
+                            `${person.displayName} is blocked.`,
+                          )
+                        }
+                      >
+                        Block
+                      </button>
+                    </Person>
+                  ))}
+                </ul>
               )}
-            </Group>
+            </PanelSection>
 
             {lists.outgoing.length > 0 && (
-              <Group title="Sent">
-                {lists.outgoing.map((person) => (
-                  <Person key={person.userId} person={person} detail="waiting">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="px-2 py-1"
-                      onClick={() => void act(() => removeFriend(person.userId))}
-                    >
-                      Cancel
-                    </Button>
-                  </Person>
-                ))}
-              </Group>
+              <PanelSection title="Sent">
+                <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                  {lists.outgoing.map((person) => (
+                    <Person key={person.userId} person={person} detail="waiting">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-2 py-1"
+                        onClick={() => void act(() => removeFriend(person.userId))}
+                      >
+                        Cancel
+                      </Button>
+                    </Person>
+                  ))}
+                </ul>
+              </PanelSection>
             )}
 
             {lists.blocked.length > 0 && (
-              <Group
+              <PanelSection
                 title="Blocked"
                 description="They cannot message you, find you, or tell that you blocked them."
               >
-                {lists.blocked.map((person) => (
-                  <Person key={person.userId} person={person}>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="px-2 py-1"
-                      onClick={() =>
-                        void act(
-                          () => unblockUser(person.userId),
-                          `${person.displayName} is unblocked. You are not contacts any more.`,
-                        )
-                      }
-                    >
-                      Unblock
-                    </Button>
-                  </Person>
-                ))}
-              </Group>
+                <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                  {lists.blocked.map((person) => (
+                    <Person key={person.userId} person={person}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-2 py-1"
+                        onClick={() =>
+                          void act(
+                            () => unblockUser(person.userId),
+                            `${person.displayName} is unblocked. You are not contacts any more.`,
+                          )
+                        }
+                      >
+                        Unblock
+                      </Button>
+                    </Person>
+                  ))}
+                </ul>
+              </PanelSection>
             )}
           </>
         )}
       </div>
     </Panel>
-  );
-}
-
-function Group({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-        {title}
-      </h2>
-      {description && (
-        <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
-          {description}
-        </p>
-      )}
-      <ul className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
-        {children}
-      </ul>
-    </section>
   );
 }

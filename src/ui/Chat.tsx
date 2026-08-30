@@ -58,6 +58,7 @@ import {
   IconButton,
   Input,
   Panel,
+  PanelSection,
   PlusIcon,
   SendIcon,
   UsersIcon,
@@ -313,6 +314,39 @@ function UpdateBanner() {
 // ---------------------------------------------------------------------------
 
 /**
+ * A contact row with a checkbox, used by both the new-conversation picker
+ * and GroupDetails' add-people picker -- they were built as two copies of
+ * the same label, which is exactly the drift kit.tsx exists to prevent.
+ */
+function ContactCheckboxRow({
+  contact,
+  checked,
+  onToggle,
+}: {
+  contact: Friend;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm text-neutral-800 hover:bg-neutral-50 dark:text-neutral-100 dark:hover:bg-neutral-800">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onToggle}
+        className="h-4 w-4 shrink-0"
+      />
+      <Avatar size="sm" name={contact.displayName} userId={contact.userId} />
+      <span className="min-w-0 truncate">
+        {contact.displayName}
+        <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
+          @{contact.username}
+        </span>
+      </span>
+    </label>
+  );
+}
+
+/**
  * Username in, conversation out.
  *
  * Two calls, because `POST /conversations` takes ids and a person types names.
@@ -440,23 +474,12 @@ function NewConversation({
       {contacts !== null && contacts.length > 0 && (
         <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
           {contacts.map((contact) => (
-            <label
+            <ContactCheckboxRow
               key={contact.userId}
-              className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm text-neutral-800 hover:bg-neutral-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
-            >
-              <input
-                type="checkbox"
-                checked={picked.has(contact.userId)}
-                onChange={() => toggle(contact.userId)}
-                className="h-4 w-4 shrink-0"
-              />
-              <span className="min-w-0 truncate">
-                {contact.displayName}
-                <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
-                  @{contact.username}
-                </span>
-              </span>
-            </label>
+              contact={contact}
+              checked={picked.has(contact.userId)}
+              onToggle={() => toggle(contact.userId)}
+            />
           ))}
         </div>
       )}
@@ -677,12 +700,9 @@ function GroupDetails({
 
   return (
     <Panel title="Group details" onClose={onClose}>
-      <div className="px-4">
-        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-            Name
-          </h2>
-          <form onSubmit={saveTitle} className="mt-2 flex gap-2">
+      <div>
+        <PanelSection title="Name">
+          <form onSubmit={saveTitle} className="flex gap-2">
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -694,25 +714,29 @@ function GroupDetails({
             </Button>
           </form>
           {titleError && <ErrorText className="mt-1">{titleError}</ErrorText>}
-        </section>
+        </PanelSection>
 
-        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-            Members ({conversation.members.length})
-          </h2>
-          <ul className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
+        <PanelSection title={`Members (${conversation.members.length})`}>
+          <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {conversation.members.map((member) => (
               <li
                 key={member.userId}
                 className="flex items-center justify-between gap-2 py-2 text-sm text-neutral-900 dark:text-neutral-100"
               >
-                <span>
-                  {member.displayName || member.username}
-                  {member.userId === selfUserId && (
-                    <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
-                      (you)
-                    </span>
-                  )}
+                <span className="flex min-w-0 items-center gap-2">
+                  <Avatar
+                    size="sm"
+                    name={member.displayName || member.username}
+                    userId={member.userId}
+                  />
+                  <span className="truncate">
+                    {member.displayName || member.username}
+                    {member.userId === selfUserId && (
+                      <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
+                        (you)
+                      </span>
+                    )}
+                  </span>
                 </span>
                 {member.userId !== selfUserId && (
                   <button
@@ -727,9 +751,9 @@ function GroupDetails({
             ))}
           </ul>
           {removeError && <ErrorText className="mt-1">{removeError}</ErrorText>}
-        </section>
+        </PanelSection>
 
-        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
+        <div className="border-b border-neutral-200 px-4 py-5 dark:border-neutral-800">
           <Button
             variant="danger"
             size="sm"
@@ -740,33 +764,19 @@ function GroupDetails({
             {leaveBusy ? "…" : "Leave group"}
           </Button>
           {leaveError && <ErrorText className="mt-1">{leaveError}</ErrorText>}
-        </section>
+        </div>
 
-        <section className="border-t border-neutral-200 py-3 dark:border-neutral-800">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-            Add people
-          </h2>
-          <form onSubmit={addPicked} className="mt-2 space-y-2">
+        <PanelSection title="Add people">
+          <form onSubmit={addPicked} className="space-y-2">
             {addable.length > 0 && (
               <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
                 {addable.map((contact) => (
-                  <label
+                  <ContactCheckboxRow
                     key={contact.userId}
-                    className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm text-neutral-800 hover:bg-neutral-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={picked.has(contact.userId)}
-                      onChange={() => toggle(contact.userId)}
-                      className="h-4 w-4 shrink-0"
-                    />
-                    <span className="min-w-0 truncate">
-                      {contact.displayName}
-                      <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
-                        @{contact.username}
-                      </span>
-                    </span>
-                  </label>
+                    contact={contact}
+                    checked={picked.has(contact.userId)}
+                    onToggle={() => toggle(contact.userId)}
+                  />
                 ))}
               </div>
             )}
@@ -804,7 +814,7 @@ function GroupDetails({
               {addBusy ? "…" : "Add"}
             </Button>
           </form>
-        </section>
+        </PanelSection>
       </div>
     </Panel>
   );
