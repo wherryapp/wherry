@@ -23,6 +23,46 @@
   --color-accent-700: oklch(0.488 0.243 264.376);
   --color-accent-900: oklch(0.379 0.146 265.522);
   --color-accent-950: oklch(0.282 0.091 267.935);
+
+  /* Motion. Three movements, all confirmations of something that already
+     happened -- a message landing, a panel opening, a line appearing --
+     never decoration. Every use site applies these behind `motion-safe:`,
+     so prefers-reduced-motion gets the end state instantly; that guard is
+     part of the animation, not a retrofit (docs/ui-reform-plan.md, rule 6
+     of the reform prompt). Durations are short on purpose: motion in a
+     messenger should be felt, not watched. */
+  --animate-message-in: message-in 0.18s ease-out;
+  --animate-panel-in: panel-in 0.16s ease-out;
+  --animate-fade-in: fade-in 0.15s ease-out;
+
+  @keyframes message-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes panel-in {
+    from {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
 }
 
 :root {

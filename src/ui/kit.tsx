@@ -149,7 +149,12 @@ export function Button({
     <button
       type={type}
       className={cx(
-        "rounded-md text-sm font-medium transition-colors",
+        // The press scale is the touch feedback a native button has and a
+        // web one lacks; motion-safe so reduced-motion gets color-only
+        // feedback. Ghost buttons skip it -- text that shrinks reads as a
+        // glitch, not a press.
+        "rounded-md text-sm font-medium transition",
+        variant !== "ghost" && "motion-safe:active:scale-[0.97]",
         // Ghost buttons are text, not boxes; padding would misalign them
         // with the labels they sit beside.
         variant !== "ghost" && (size === "md" ? "px-3 py-2" : "px-3 py-1.5"),
@@ -181,7 +186,7 @@ export function IconButton({
       type="button"
       aria-label={label}
       className={cx(
-        "rounded p-1.5 text-neutral-500 transition-colors hover:text-neutral-900 dark:hover:text-neutral-100",
+        "rounded p-1.5 text-neutral-500 transition hover:text-neutral-900 motion-safe:active:scale-90 dark:hover:text-neutral-100",
         className,
       )}
       {...rest}
@@ -297,7 +302,10 @@ export function Panel({
   }, [onClose]);
 
   return (
-    <div className="flex h-full flex-col bg-white dark:bg-neutral-900">
+    // Entrance only; the unmount model has no exit frame to animate, and a
+    // mount-state helper to fake one is machinery the plan defers until an
+    // animation actually needs it.
+    <div className="flex h-full flex-col bg-white motion-safe:animate-panel-in dark:bg-neutral-900">
       <header className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
         <BackButton onClick={onClose} />
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">

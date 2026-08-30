@@ -297,7 +297,7 @@ function UpdateBanner() {
   if (!status.updateAvailable) return null;
 
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-blue-200 bg-blue-50 px-4 py-1.5 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-200">
+    <div className="flex items-center justify-between gap-2 border-b border-accent-100 bg-accent-50 px-4 py-1.5 text-xs text-accent-900 motion-safe:animate-fade-in dark:border-accent-900 dark:bg-accent-950 dark:text-accent-100">
       <span>A new version is available.</span>
       <button
         onClick={() => window.location.reload()}
@@ -1238,6 +1238,12 @@ function Timeline({
     return () => viewport.removeEventListener("resize", pin);
   }, []);
 
+  // What separates a message *arriving* from a message being *loaded*: the
+  // moment this conversation was opened. Only things newer than that animate
+  // in -- fifty stored messages sliding up together on open would be the
+  // decoration the motion rules forbid, and it would run on every switch.
+  const openedAt = useMemo(() => Date.now(), [conversationId]);
+
   // The newest message you sent, which is the ONE that shows a receipt.
   // Per-message receipts were noise stacked on noise: "Read" under the last
   // message already says everything above it was read too (markers are
@@ -1277,10 +1283,15 @@ function Timeline({
         const self = session.user.id;
         const first = !sameRun(items[index - 1], item, self);
         const last = !sameRun(item, items[index + 1], self);
+        const live = (runIdentity(item, self)?.at ?? 0) > openedAt - 1_000;
+        const entrance = live ? " motion-safe:animate-message-in" : "";
 
         if (item.kind === "sent") {
           return (
-            <div key={item.message.messageId} className={first ? "mt-3" : "mt-0.5"}>
+            <div
+              key={item.message.messageId}
+              className={(first ? "mt-3" : "mt-0.5") + entrance}
+            >
               <Bubble
                 mine={item.message.senderUserId === session.user.id}
                 first={first}
@@ -1313,7 +1324,10 @@ function Timeline({
           );
         }
         return (
-          <div key={item.entry.clientMessageId} className={first ? "mt-3" : "mt-0.5"}>
+          <div
+            key={item.entry.clientMessageId}
+            className={(first ? "mt-3" : "mt-0.5") + entrance}
+          >
             <Bubble
               mine
               muted
@@ -1385,7 +1399,13 @@ function TypingLine({
 
   return (
     <div className="h-5 shrink-0 px-4 text-xs italic text-neutral-500 dark:text-neutral-400">
-      {text}
+      {/* The height never moves (see above); only the words fade in. Keyed
+          so a change of who is typing re-runs the fade. */}
+      {text && (
+        <span key={text} className="motion-safe:animate-fade-in">
+          {text}
+        </span>
+      )}
     </div>
   );
 }
@@ -1577,7 +1597,7 @@ function Composer({ conversationId }: { conversationId: string }) {
           type="submit"
           aria-label="Send"
           disabled={busy || (text.trim().length === 0 && pending.length === 0)}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-600 text-white transition-colors hover:bg-accent-700 disabled:bg-neutral-300 dark:disabled:bg-neutral-700"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-600 text-white transition hover:bg-accent-700 disabled:bg-neutral-300 motion-safe:active:scale-90 dark:disabled:bg-neutral-700"
         >
           <SendIcon className="h-4.5 w-4.5" />
         </button>
@@ -1732,7 +1752,7 @@ export function Chat({
         )}
 
         {showThread && (
-          <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-neutral-900">
+          <main className="flex min-w-0 flex-1 flex-col bg-white motion-safe:animate-panel-in dark:bg-neutral-900">
             {selected !== null ? (
               <>
                 <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
