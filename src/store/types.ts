@@ -38,13 +38,21 @@ export type StoredMessage = {
   /** 1 is plaintext, 2 will be ciphertext. Never assume. */
   protocolVersion: number;
   /**
-   * The message content as bytes.
+   * The message content as bytes, already decrypted by `E2EProvider.decrypt`
+   * (crypto/provider.ts) at ingest time -- not the wire payload.
    *
-   * Bytes rather than a decoded string, deliberately. Under version 2 this is
-   * ciphertext and there is no string to store; keeping it as bytes now means
-   * the store does not change shape then. IndexedDB persists typed arrays
-   * natively through structured clone, so this costs nothing over base64 and
-   * is smaller on disk.
+   * Decrypted once and stored, rather than decrypted again on every render,
+   * because a ratcheting protocol may no longer hold the key for an old epoch
+   * by the time something is displayed. Bytes rather than a decoded string,
+   * because `decodeContent` (api/payload.ts) still has to run on it and a
+   * string would have to be re-encoded first for no reason. IndexedDB
+   * persists typed arrays natively through structured clone, so this costs
+   * nothing over base64 and is smaller on disk.
+   *
+   * If decrypt failed -- a protocol version this build's provider does not
+   * understand -- this holds the raw undecrypted wire bytes instead, and
+   * `protocolVersion` is what says not to read them. See `toStored` in
+   * sync/engine.ts.
    */
   payload: Uint8Array;
   /** ISO-8601, from the server. Display ordering uses messageId, not this. */
@@ -91,7 +99,23 @@ export type OutboxEntry = {
   /** Generated once per composed message and reused on every retry. */
   clientMessageId: string;
   conversationId: string;
+  /** Set once at enqueue time by the E2E provider. A retry never changes it. */
+  protocolVersion: number;
+  /**
+   * Already encrypted -- see `E2EProvider.encrypt` in crypto/provider.ts.
+   * This is what a retry resends: fixed once at enqueue time, never
+   * recomputed from `content`.
+   */
   payload: Uint8Array;
+  /**
+   * The plaintext `encrypt` was called with, kept only for rendering the
+   * pending bubble before the server confirms the send. Nothing else reads
+   * this -- the moment the send succeeds, the confirmed `StoredMessage` takes
+   * over and carries its own decrypted content, produced the same way an
+   * inbound message's is. See `toStored` and `#flushOutbox` in
+   * sync/engine.ts.
+   */
+  content: Uint8Array;
   /** Local clock, for ordering pending messages after delivered ones. */
   createdAt: string;
   attempts: number;

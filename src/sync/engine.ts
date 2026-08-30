@@ -33,9 +33,9 @@ import {
 } from "../api/client";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { loadSession } from "../api/session";
-import { PROTOCOL_PLAINTEXT } from "../api/types";
 import { decodeContent } from "../api/payload";
 import type { ArchiveEntry, InboxEnvelope } from "../api/types";
+import { e2e, E2EError, PROTOCOL_PLAINTEXT } from "../crypto";
 import { store } from "../store";
 import {
   META_HYDRATION,
@@ -111,17 +111,62 @@ type Listener = (event: SyncEvent) => void;
  * why storing the same message from both sources is a no-op rather than a
  * duplicate.
  */
-function toStored(source: InboxEnvelope | ArchiveEntry): StoredMessage {
+/**
+ * Decrypts wire bytes for storage, falling back to the wire bytes themselves
+ * on a version this build's provider does not understand.
+ *
+ * Decryption happens once, at ingest, rather than at render time -- see the
+ * note on `E2EProvider.decrypt` in crypto/provider.ts. Shared between
+ * messages arriving through the inbox/archive and a device's own message
+ * being written back after a successful send, so both paths store the same
+ * thing: content bytes, not wire bytes.
+ *
+ * A version this build cannot decrypt is still stored as-is: bytes are
+ * bytes, and it is the render layer (Chat.tsx) that decides it cannot
+ * display them, the same way it always has.
+ */
+async function decryptForStorage(
+  conversationId: string,
+  protocolVersion: number,
+  wireBytes: Uint8Array,
+): Promise<Uint8Array> {
+  try {
+    return await e2e.decrypt({
+      conversationId,
+      protocolVersion,
+      payload: wireBytes,
+    });
+  } catch (error) {
+    if (error instanceof E2EError) {
+      // Left as the undecrypted wire bytes. `protocolVersion` still says what
+      // they are, and nothing downstream reads `payload` for a message whose
+      // version it does not recognise -- see Chat.tsx's own version check.
+      return wireBytes;
+    }
+    throw error;
+  }
+}
+
+/** Turns one inbox envelope or archive entry into the record the store keeps. */
+async function toStored(
+  source: InboxEnvelope | ArchiveEntry,
+): Promise<StoredMessage> {
+  const wireBytes = decodeBase64(source.payload);
+  const payload = await decryptForStorage(
+    source.conversationId,
+    source.protocolVersion,
+    wireBytes,
+  );
+
   return {
     messageId: source.messageId,
     conversationId: source.conversationId,
     senderUserId: source.senderUserId,
     senderDeviceId: source.senderDeviceId,
-    // Carried through, never assumed. A version this build does not understand
-    // is still stored -- bytes are bytes -- and it is the render layer that
-    // decides it cannot display them.
+    // Carried through, never assumed. What decrypt did or did not manage is
+    // recorded here, not inferred from the bytes.
     protocolVersion: source.protocolVersion,
-    payload: decodeBase64(source.payload),
+    payload,
     sentAt: source.sentAt,
   };
 }
@@ -210,14 +255,25 @@ export class SyncEngine {
    * Any tab may call this -- sends are idempotent on clientMessageId, so a
    * race is harmless. The retry belongs to the leader, like everything else on
    * a schedule.
+   *
+   * Encryption happens here, once, rather than inside the retry loop. A retry
+   * resends the same wire bytes; re-encrypting on every attempt would be
+   * wasted work today and, under a real ratcheting protocol, would consume a
+   * fresh key on every retry of what is supposed to be the same message.
    */
-  async enqueue(conversationId: string, payload: Uint8Array): Promise<void> {
+  async enqueue(conversationId: string, plaintext: Uint8Array): Promise<void> {
+    const wire = await e2e.encrypt(conversationId, plaintext);
+
     const entry: OutboxEntry = {
       // Generated once here and reused on every retry. A fresh id per attempt
       // is what turns one message into several; see docs/api.md.
       clientMessageId: crypto.randomUUID(),
       conversationId,
-      payload,
+      protocolVersion: wire.protocolVersion,
+      payload: wire.payload,
+      // Kept alongside the encrypted payload purely so the pending bubble has
+      // something to render -- see the field's comment in store/types.ts.
+      content: plaintext,
       createdAt: new Date().toISOString(),
       attempts: 0,
     };
@@ -415,7 +471,7 @@ export class SyncEngine {
         { signal },
       );
 
-      const messages = page.entries.map(toStored);
+      const messages = await Promise.all(page.entries.map(toStored));
       await store.putMessages(messages);
 
       // Written after the messages are durable, so a crash between the two
@@ -453,7 +509,7 @@ export class SyncEngine {
       const envelopes = await fetchInbox({ limit: INBOX_PAGE, signal });
       if (envelopes.length === 0) return;
 
-      const messages = envelopes.map(toStored);
+      const messages = await Promise.all(envelopes.map(toStored));
 
       // Resolves on commit. Everything below depends on that.
       await store.putMessages(messages);
@@ -515,13 +571,18 @@ export class SyncEngine {
         //
         // `deduplicated: true` lands here too, which is the point of retrying:
         // the message exists, so this is a success.
+        //
+        // `entry.content` rather than decrypting `entry.payload` back --
+        // `enqueue` already has the plaintext, and asking the provider to
+        // decrypt what it just encrypted moments ago would be a wasted round
+        // trip that risks disagreeing with itself.
         await store.resolveOutbox(entry.clientMessageId, {
           messageId: result.id,
           conversationId: result.conversationId,
           senderUserId: session.user.id,
           senderDeviceId: session.device.id,
-          protocolVersion: PROTOCOL_PLAINTEXT,
-          payload: entry.payload,
+          protocolVersion: entry.protocolVersion,
+          payload: entry.content,
           sentAt: result.createdAt,
         });
 
@@ -606,6 +667,11 @@ export class SyncEngine {
     ).connection;
     if (connection?.saveData) return;
 
+    // v1-only scaffolding, same as Chat.tsx's own version check: this filters
+    // "decryptable" by checking for exactly PROTOCOL_PLAINTEXT, which is
+    // correct only because that is the only version decrypt ever succeeds
+    // for today. A real second provider needs this to mean "decrypt
+    // succeeded" rather than "is this specific version".
     const refs = messages
       .filter((message) => message.protocolVersion === PROTOCOL_PLAINTEXT)
       .flatMap((message) => decodeContent(message.payload).attachments);

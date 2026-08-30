@@ -835,7 +835,7 @@ function Timeline({
             key={item.entry.clientMessageId}
             mine
             muted
-            content={decodeContent(item.entry.payload)}
+            content={decodeContent(item.entry.content)}
             meta={
               item.entry.failedPermanently
                 ? `Failed — ${item.entry.lastError ?? "not sent"}`
