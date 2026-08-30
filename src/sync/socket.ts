@@ -94,6 +94,24 @@ export class SocketManager {
     return this.#healthy;
   }
 
+  /**
+   * Sends an ephemeral frame -- typing, a presence ask -- when the socket is
+   * healthy, and reports whether it was. False means the frame is gone, and
+   * that is the contract: everything sent this way must mean nothing when
+   * absent. Nothing here queues, retries, or waits for a reconnect.
+   */
+  send(frame: string): boolean {
+    if (!this.#healthy || this.#socket === null) return false;
+    try {
+      this.#socket.send(frame);
+      return true;
+    } catch {
+      // A socket dying between the health check and the send. The close
+      // handler owns the state transition; the frame is simply lost.
+      return false;
+    }
+  }
+
   start(): void {
     if (this.#stopped) return;
     this.#connect();

@@ -48,6 +48,18 @@ function useSyncEvents(handler: (event: SyncEvent) => void): void {
           type: "receipts",
           conversationId: message.conversationId,
         });
+      } else if (message.type === "typing") {
+        ref.current({
+          type: "typing",
+          conversationId: message.conversationId,
+          byUserId: message.byUserId,
+        });
+      } else if (message.type === "presence") {
+        ref.current({
+          type: "presence",
+          conversationId: message.conversationId,
+          online: message.online,
+        });
       }
     });
     return () => {
@@ -267,6 +279,107 @@ export function useLatestMessages(
   });
 
   return latest;
+}
+
+/** How long a typing signal lives without renewal. Comfortably above the
+ *  sender's 3s resend floor, so continuous typing renders continuously. */
+const TYPING_TTL_MS = 6_000;
+
+/**
+ * Who is typing in a conversation right now, as user ids.
+ *
+ * Ephemeral by design -- this is the one kind of state that deliberately
+ * does NOT live in IndexedDB: a typing signal five seconds old is already
+ * stale, so there is nothing worth re-reading. State is a map of user id to
+ * expiry deadline, renewed by each frame and pruned on a short timer;
+ * silence is "stopped typing", because there is no stop frame. A message
+ * arriving in the conversation clears its typers -- the composed thing
+ * showed up, which is better information than the signal.
+ */
+export function useTyping(conversationId: string | null): string[] {
+  const [typing, setTyping] = useState<string[]>([]);
+  const deadlines = useRef(new Map<string, number>());
+
+  // Reset when switching conversations; the map is per-conversation state.
+  useEffect(() => {
+    deadlines.current.clear();
+    setTyping([]);
+  }, [conversationId]);
+
+  useSyncEvents((event) => {
+    if (conversationId === null) return;
+    if (event.type === "typing" && event.conversationId === conversationId) {
+      deadlines.current.set(event.byUserId, Date.now() + TYPING_TTL_MS);
+      setTyping([...deadlines.current.keys()]);
+    } else if (
+      event.type === "messages" &&
+      event.conversationIds.includes(conversationId)
+    ) {
+      if (deadlines.current.size === 0) return;
+      deadlines.current.clear();
+      setTyping([]);
+    }
+  });
+
+  // Prune expired entries. The timer only runs while somebody is typing,
+  // and this is component state expiring, not data being polled for.
+  useEffect(() => {
+    if (typing.length === 0) return;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      let changed = false;
+      for (const [userId, deadline] of deadlines.current) {
+        if (deadline <= now) {
+          deadlines.current.delete(userId);
+          changed = true;
+        }
+      }
+      if (changed) setTyping([...deadlines.current.keys()]);
+    }, 1_000);
+    return () => clearInterval(timer);
+  }, [typing.length]);
+
+  return typing;
+}
+
+/** How often an open thread re-asks who is connected. Presence is a
+ *  snapshot, not a subscription, so staleness between asks is the deal. */
+const PRESENCE_REFRESH_MS = 60_000;
+
+/**
+ * Which other members of a conversation are connected, as user ids -- or
+ * null while no answer has arrived, which means "unknown", never "nobody".
+ *
+ * Asks on mount and on a slow interval. The interval is a request for
+ * ephemeral socket state, not a data fetch -- the rendering model's
+ * "components never poll the API" rule guards IndexedDB-backed data, and
+ * presence deliberately has no stored form to poll for.
+ */
+export function usePresence(conversationId: string | null): string[] | null {
+  const [online, setOnline] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    setOnline(null);
+    if (conversationId === null) return;
+    sync.requestPresence(conversationId);
+    const timer = setInterval(
+      () => sync.requestPresence(conversationId),
+      PRESENCE_REFRESH_MS,
+    );
+    return () => clearInterval(timer);
+  }, [conversationId]);
+
+  useSyncEvents((event) => {
+    if (
+      event.type === "presence" &&
+      conversationId !== null &&
+      event.conversationId === conversationId
+    ) {
+      setOnline(event.online);
+    }
+  });
+
+  return online;
 }
 
 /**

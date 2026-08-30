@@ -235,6 +235,12 @@ export type SyncBroadcast =
   | { type: "conversations" }
   | { type: "announcements" }
   | { type: "receipts"; conversationId: string }
+  /** Ephemeral relays between tabs: what the leader's socket heard... */
+  | { type: "typing"; conversationId: string; byUserId: string }
+  | { type: "presence"; conversationId: string; online: string[] }
+  /** ...and what a follower wants the leader's socket to say. */
+  | { type: "typing-intent"; conversationId: string }
+  | { type: "presence-intent"; conversationId: string }
   | { type: "signed-out" }
   /** The leader saying it is still running. See the watchdog in runAsLeader. */
   | { type: "leader-alive" };

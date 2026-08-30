@@ -42,8 +42,10 @@ import {
   useConversations,
   useDeliveredMarks,
   useLatestMessages,
+  usePresence,
   useSyncStatus,
   useTimeline,
+  useTyping,
   useUnread,
   type TimelineItem,
 } from "./hooks";
@@ -1304,6 +1306,61 @@ function Timeline({
   );
 }
 
+/**
+ * "Online", quietly, under the conversation title. Null while no presence
+ * answer has arrived -- unknown is rendered as nothing, never as offline,
+ * because the absence of an answer carries no information (see usePresence).
+ * The reform owns this surface's real design; this is the honest minimum.
+ */
+function Presence({
+  conversationId,
+  conversation,
+}: {
+  conversationId: string;
+  conversation: StoredConversation | undefined;
+}) {
+  const online = usePresence(conversationId);
+  if (online === null || online.length === 0) return null;
+
+  const isGroup = (conversation?.members.length ?? 0) > 2;
+  return (
+    <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+      {isGroup ? `${online.length} online` : "Online"}
+    </span>
+  );
+}
+
+/**
+ * The typing indicator, in the slot between timeline and composer.
+ *
+ * The line reserves its height whether or not anyone is typing: appearing
+ * and disappearing at typing speed would bounce the composer up and down
+ * under the user's thumbs, the exact flicker StatusLine's comment warns
+ * about.
+ */
+function TypingLine({
+  conversationId,
+  conversation,
+}: {
+  conversationId: string;
+  conversation: StoredConversation | undefined;
+}) {
+  const typing = useTyping(conversationId);
+
+  let text = "";
+  if (typing.length === 1 && conversation) {
+    text = `${memberName(conversation, typing[0]!)} is typing…`;
+  } else if (typing.length > 1) {
+    text = "Several people are typing…";
+  }
+
+  return (
+    <div className="h-5 shrink-0 px-4 text-xs italic text-neutral-500 dark:text-neutral-400">
+      {text}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Composer
 // ---------------------------------------------------------------------------
@@ -1475,7 +1532,13 @@ function Composer({ conversationId }: { conversationId: string }) {
         </button>
         <input
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            // The typing signal, on input rather than on a timer. The
+            // engine floors this to one frame per few seconds, so calling
+            // it per keystroke is the debounce, not a violation of one.
+            if (e.target.value.length > 0) sync.sendTyping(conversationId);
+          }}
           placeholder="Message"
           className="flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
         />
@@ -1645,10 +1708,16 @@ export function Chat({
                       ←
                     </button>
                   )}
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                    {current
-                      ? conversationTitle(current, session.user.id)
-                      : "Conversation"}
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="block truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                      {current
+                        ? conversationTitle(current, session.user.id)
+                        : "Conversation"}
+                    </span>
+                    <Presence
+                      conversationId={selected}
+                      conversation={current}
+                    />
                   </span>
                   {current?.kind === "group" && (
                     <button
@@ -1662,6 +1731,10 @@ export function Chat({
                 <Timeline
                   conversationId={selected}
                   session={session}
+                  conversation={current}
+                />
+                <TypingLine
+                  conversationId={selected}
                   conversation={current}
                 />
                 <Composer conversationId={selected} />

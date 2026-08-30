@@ -54,7 +54,12 @@ import {
   type StoredMessage,
 } from "../store/types";
 import { Backoff, sleep } from "./backoff";
-import { broadcast, runAsLeader, type LeaderHandle } from "./leader";
+import {
+  broadcast,
+  runAsLeader,
+  subscribeToBroadcasts,
+  type LeaderHandle,
+} from "./leader";
 import { mlsEnabled, mlsSync, type Identity } from "./mls";
 import { SocketManager } from "./socket";
 
@@ -89,6 +94,12 @@ const ARCHIVE_PAGE = 200;
 // Conversation metadata changes rarely; there is no reason to re-read it on
 // every 2-second tick.
 const CONVERSATION_REFRESH_MS = 30_000;
+
+// Outgoing typing frames, per conversation. Above the server's 1s floor and
+// below the receiver's expiry window (TYPING_TTL_MS in ui/hooks.ts), so a
+// continuously typing person renders as continuously typing with the fewest
+// frames that can say so.
+const TYPING_SEND_MS = 3_000;
 
 // Stamped at build time by client/Dockerfile via the bare VITE_COMMIT_SHA
 // env var Vite embeds automatically -- no custom `define` needed, the same
@@ -156,7 +167,12 @@ export type SyncEvent =
   | { type: "messages"; conversationIds: string[] }
   | { type: "conversations" }
   | { type: "announcements" }
-  | { type: "receipts"; conversationId: string };
+  | { type: "receipts"; conversationId: string }
+  /** Ephemeral, straight off the socket -- never stored, expires on the
+   *  receiver's clock. Components hold these in their own state; there is
+   *  deliberately nothing to re-read from IndexedDB. */
+  | { type: "typing"; conversationId: string; byUserId: string }
+  | { type: "presence"; conversationId: string; online: string[] };
 
 type Listener = (event: SyncEvent) => void;
 
@@ -341,6 +357,9 @@ export class SyncEngine {
   #lastForwardSync = 0;
   #lastHistoryKeyRefresh = 0;
   #onUnauthorized: (() => void) | null = null;
+  /** Per-conversation floor on outgoing typing frames; see sendTyping. */
+  #lastTypingSent = new Map<string, number>();
+  #unsubscribeBroadcasts: (() => void) | null = null;
 
   // -- public surface ------------------------------------------------------
 
@@ -364,14 +383,72 @@ export class SyncEngine {
     );
 
     document.addEventListener("visibilitychange", this.#onVisibility);
+
+    // The path a follower tab's ephemeral frames take to the one socket:
+    // its engine broadcasts an intent, and whichever tab is leading (and so
+    // holds the socket -- the check below is what makes this leader-only)
+    // forwards it. The sender's own broadcast never loops back to itself;
+    // a leader sends directly and never broadcasts an intent at all.
+    this.#unsubscribeBroadcasts = subscribeToBroadcasts((message) => {
+      if (message.type === "typing-intent") {
+        this.#socket?.send(
+          JSON.stringify({
+            type: "typing",
+            conversationId: message.conversationId,
+          }),
+        );
+      } else if (message.type === "presence-intent") {
+        this.#socket?.send(
+          JSON.stringify({
+            type: "presence",
+            conversationId: message.conversationId,
+          }),
+        );
+      }
+    });
   }
 
   stop(): void {
     document.removeEventListener("visibilitychange", this.#onVisibility);
+    this.#unsubscribeBroadcasts?.();
+    this.#unsubscribeBroadcasts = null;
     this.#leader?.stop();
     this.#leader = null;
     this.#wake = null;
     this.#setStatus({ state: "stopped", error: null });
+  }
+
+  /**
+   * "I am typing here." Floored to one frame per few seconds per
+   * conversation -- the receiver's indicator outlives the gap, so anything
+   * faster says nothing new -- and routed to the socket wherever it lives:
+   * sent directly when this tab leads, broadcast as an intent for the
+   * leader otherwise. Fire-and-forget end to end; a lost frame is silence,
+   * which is what not typing looks like anyway.
+   */
+  sendTyping(conversationId: string): void {
+    const now = Date.now();
+    if (now - (this.#lastTypingSent.get(conversationId) ?? 0) < TYPING_SEND_MS) {
+      return;
+    }
+    this.#lastTypingSent.set(conversationId, now);
+
+    const sent = this.#socket?.send(
+      JSON.stringify({ type: "typing", conversationId }),
+    );
+    if (!sent) broadcast({ type: "typing-intent", conversationId });
+  }
+
+  /**
+   * Asks who in this conversation is connected. The answer arrives as a
+   * presence event (or never, if no socket is healthy anywhere -- callers
+   * must treat no-answer as no-information, not as everyone-offline).
+   */
+  requestPresence(conversationId: string): void {
+    const sent = this.#socket?.send(
+      JSON.stringify({ type: "presence", conversationId }),
+    );
+    if (!sent) broadcast({ type: "presence-intent", conversationId });
   }
 
   /**
@@ -1009,6 +1086,35 @@ export class SyncEngine {
   async #onSignalFrame(
     frame: { type: string } & Record<string, unknown>,
   ): Promise<void> {
+    // The two ephemeral kinds: validated, re-emitted, forgotten. No store
+    // write on purpose -- these expire on the receiver's clock, and the
+    // components that render them hold their own state.
+    if (frame.type === "typing") {
+      const conversationId = frame["conversationId"];
+      const byUserId = frame["byUserId"];
+      if (typeof conversationId !== "string" || typeof byUserId !== "string") {
+        return;
+      }
+      this.#emit({ type: "typing", conversationId, byUserId });
+      broadcast({ type: "typing", conversationId, byUserId });
+      return;
+    }
+
+    if (frame.type === "presence") {
+      const conversationId = frame["conversationId"];
+      const online = frame["online"];
+      if (
+        typeof conversationId !== "string" ||
+        !Array.isArray(online) ||
+        !online.every((entry) => typeof entry === "string")
+      ) {
+        return;
+      }
+      this.#emit({ type: "presence", conversationId, online });
+      broadcast({ type: "presence", conversationId, online });
+      return;
+    }
+
     if (frame.type !== "delivered") return;
     const conversationId = frame["conversationId"];
     const byUserId = frame["byUserId"];
