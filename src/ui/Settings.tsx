@@ -88,6 +88,10 @@ export function Settings({
   const [usage, setUsage] = useState<AttachmentUsage | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Starts hidden rather than shown: this is a server-side flag specifically
+  // so it can be turned off for people who should not see it, and defaulting
+  // to visible until the fetch resolves would flash it at exactly them.
+  const [tipJarEnabled, setTipJarEnabled] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -104,6 +108,7 @@ export function Settings({
         setEmailVerified(settings.emailVerified);
         setDevices(deviceList.devices);
         setUsage(attachmentUsage);
+        setTipJarEnabled(settings.features.tipJar);
       } catch {
         setError("Could not load your settings.");
       }
@@ -352,7 +357,7 @@ export function Settings({
           </Section>
         )}
 
-        {TIP_URL && (
+        {TIP_URL && tipJarEnabled && (
           <Section title="Support the project">
             <a
               href={TIP_URL}

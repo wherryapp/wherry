@@ -796,6 +796,12 @@ export type AccountSettings = {
   readReceiptsEnabled: boolean;
   email: string | null;
   emailVerified: boolean;
+  /**
+   * Server-side feature flags (server/src/services/flags.ts), fetched fresh
+   * every time Settings opens rather than cached -- toggling one takes
+   * effect on the next open, no reload or rebuild needed.
+   */
+  features: { tipJar: boolean };
 };
 
 export type AccountDevice = {
