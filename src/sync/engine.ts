@@ -36,6 +36,7 @@ import { loadSession } from "../api/session";
 import { decodeContent } from "../api/payload";
 import type { ArchiveEntry, InboxEnvelope } from "../api/types";
 import { e2e, E2EError } from "../crypto";
+import { BlobCryptoError, openAttachmentBytes } from "../crypto/blob";
 import { store } from "../store";
 import {
   META_HYDRATION,
@@ -862,12 +863,22 @@ export class SyncEngine {
         await store.putBlob(
           ref.id,
           fetched.state === "ok"
-            ? { state: "ok", mediaType: ref.mediaType, bytes: fetched.bytes }
+            ? {
+                state: "ok",
+                mediaType: ref.mediaType,
+                // Decrypted (or passed through, for a plaintext-era ref)
+                // before caching: the blobs store holds content, never
+                // ciphertext. A decrypt failure throws into the catch.
+                bytes: await openAttachmentBytes(ref, fetched.bytes),
+              }
             : { state: fetched.state },
         );
-      } catch {
-        // Left unrecorded so it is tried again, unlike the terminal states
-        // above. A network failure is not a verdict about the attachment.
+      } catch (error) {
+        // One undecryptable blob must not stall the refs behind it; a
+        // network failure ends the pass, since everything after would fail
+        // the same way. Both are left unrecorded so they are tried again --
+        // neither is a verdict about the attachment.
+        if (error instanceof BlobCryptoError) continue;
         return;
       }
     }

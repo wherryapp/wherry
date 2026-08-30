@@ -41,6 +41,17 @@ export type AttachmentRef = {
   /** Pixel dimensions, so a placeholder can hold the right shape while loading. */
   width?: number;
   height?: number;
+  /**
+   * Present together on an encrypted attachment: the single-use AES-256-GCM
+   * key and nonce the blob was sealed with, and a SHA-256 digest of the
+   * ciphertext, all base64. They live here because the payload is the one
+   * place already sealed to exactly the message's audience -- the key
+   * reaches whoever the message does and nobody else, the server included.
+   * A reference without them is a plaintext-era blob and is read as-is.
+   */
+  key?: string;
+  nonce?: string;
+  digest?: string;
 };
 
 export type MessageContent = {
@@ -118,6 +129,16 @@ export function decodeContent(payload: Uint8Array): MessageContent {
 function isAttachmentRef(value: unknown): value is AttachmentRef {
   if (typeof value !== "object" || value === null) return false;
   const ref = value as Record<string, unknown>;
+
+  // The crypto fields come as a set or not at all. A reference with a key
+  // but no nonce is not "partially encrypted", it is malformed, and letting
+  // it through would surface as a baffling decrypt error later.
+  const cryptoFields = [ref["key"], ref["nonce"], ref["digest"]];
+  const cryptoCount = cryptoFields.filter(
+    (field) => typeof field === "string",
+  ).length;
+  if (cryptoCount !== 0 && cryptoCount !== 3) return false;
+
   return (
     typeof ref["id"] === "string" &&
     typeof ref["mediaType"] === "string" &&

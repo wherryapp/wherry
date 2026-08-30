@@ -10,7 +10,10 @@ WORKDIR /app
 RUN corepack enable
 
 # Dependencies first, so a source-only change does not reinstall them.
-COPY package.json pnpm-lock.yaml* ./
+# pnpm-workspace.yaml rides along because it carries the allowBuilds entry
+# for esbuild -- without it pnpm 11 refuses the build script and the
+# install fails, which is exactly what took deploy #514 down.
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
 RUN pnpm install --frozen-lockfile || pnpm install
 
 COPY tsconfig*.json vite.config.ts index.html ./

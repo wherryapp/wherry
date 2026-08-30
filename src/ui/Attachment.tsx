@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { downloadAttachment } from "../api/client";
 import type { AttachmentRef } from "../api/payload";
+import { openAttachmentBytes } from "../crypto/blob";
 import { store } from "../store";
 import type { StoredBlob } from "../store/types";
 
@@ -52,12 +53,18 @@ export function Attachment({ attachment }: { attachment: AttachmentRef }) {
       try {
         const fetched = await downloadAttachment(attachment.id);
 
+        // A reference carrying a key is an encrypted blob: verify the
+        // digest, decrypt, and cache the *plaintext* -- the cache is this
+        // device's copy of content it was sent, not a mirror of the
+        // server's ciphertext. Decrypt failure throws into the catch below:
+        // recorded as nothing, retried on the next look, because "the bytes
+        // are wrong" should stay visible rather than be cached as a verdict.
         const blob: StoredBlob =
           fetched.state === "ok"
             ? {
                 state: "ok",
                 mediaType: attachment.mediaType,
-                bytes: fetched.bytes,
+                bytes: await openAttachmentBytes(attachment, fetched.bytes),
               }
             : { state: fetched.state };
 

@@ -26,6 +26,8 @@ import {
   uploadAttachment,
   type Friend,
 } from "../api/client";
+import { e2e } from "../crypto";
+import { encryptBlob } from "../crypto/blob";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
 import type { StoredConversation, StoredMessage } from "../store/types";
@@ -927,7 +929,17 @@ function Composer({ conversationId }: { conversationId: string }) {
           return;
         }
 
-        const uploaded = await uploadAttachment(conversationId, prepared.bytes);
+        // Under MLS the blob is sealed before it leaves this device, with a
+        // fresh single-use key that rides inside the message payload -- the
+        // one place already encrypted to exactly this conversation's
+        // readers. See crypto/blob.ts. The passthrough build keeps
+        // uploading plaintext, same as the messages around it.
+        const sealed = e2e.handshake ? await encryptBlob(prepared.bytes) : null;
+
+        const uploaded = await uploadAttachment(
+          conversationId,
+          sealed ? sealed.ciphertext : prepared.bytes,
+        );
 
         attachments.push({
           id: uploaded.id,
@@ -935,6 +947,7 @@ function Composer({ conversationId }: { conversationId: string }) {
           byteSize: uploaded.byteSize,
           ...(prepared.width ? { width: prepared.width } : {}),
           ...(prepared.height ? { height: prepared.height } : {}),
+          ...(sealed ? sealed.ref : {}),
         });
       }
 
