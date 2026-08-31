@@ -460,6 +460,10 @@ class MlsHandshake implements HandshakeOps {
       const message = decodeWire(welcome, "mls_welcome");
       if (message.wireformat !== "mls_welcome") throw new Error("unreachable");
 
+      // What this device already has, if anything -- the guard below needs
+      // it, and reading it once outside the loop keeps the hot path cheap.
+      const existing = await loadGroup(conversationId);
+
       // The welcome names one of our published key packages by hash. Rather
       // than reimplementing the ref computation, try each stored private in
       // turn -- there are at most a couple of dozen, and a mismatch fails
@@ -484,14 +488,26 @@ class MlsHandshake implements HandshakeOps {
             suite,
           );
 
-          // A re-add after removal or a redelivered welcome both land here
-          // with state already present; the welcome's state is the current
-          // one, so it wins.
+          const welcomeEpoch = Number(state.groupContext.epoch);
+
+          // Never roll backwards. A welcome used to be the newest thing that
+          // could arrive with state already present (a re-add, or a
+          // redelivery), so it always won. External commits broke that: this
+          // device can join itself at epoch N+1 while a welcome for epoch N
+          // is still queued, and persisting the older state would strand it
+          // one epoch behind a commit it can never apply -- its own. The
+          // package is still consumed and the welcome still acked; the only
+          // change is that the newer state stays.
+          if (existing && existing.epoch >= welcomeEpoch) {
+            await deleteKeyPackage(candidate.id);
+            return { epoch: existing.epoch };
+          }
+
           await persistState(conversationId, state);
           // Consumed: the server hands a key package out once, so no other
           // welcome will ever reference this one.
           await deleteKeyPackage(candidate.id);
-          return { epoch: Number(state.groupContext.epoch) };
+          return { epoch: welcomeEpoch };
         } catch {
           // Not ours, or not this package. Try the next.
         }

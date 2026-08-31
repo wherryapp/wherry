@@ -33,6 +33,7 @@ import {
   saveRotatedKey,
 } from "../crypto/history";
 import { store } from "../store";
+import { planJoin } from "./join-plan";
 
 /** Cached per conversation so enqueue can seal archive rows offline. */
 export type CachedRecipient = { userId: string; publicKey: string };
@@ -256,36 +257,34 @@ export class MlsSync {
     // bottom does not publish a second copy on top of it.
     let publishedThisPass = false;
 
-    // Nobody has made the group yet, per the server. One device must, and
-    // exactly one: the member device with the smallest id -- a total order
-    // every member computes identically from the same roster. Everyone
-    // else waits for a welcome.
+    // No local state: join what exists, make it if it does not, or wait --
+    // see planJoin for which and why.
     if (localEpoch === null) {
-      if (recipients.epoch > 0) {
-        // The group exists and this device is not in it. The old answer was
-        // to wait for some member device's sweep to add us -- a wait with
-        // no upper bound when every other device is asleep. With a current
-        // GroupInfo published, this device joins by external commit
-        // instead; without one (legacy committers, or nobody published
-        // yet), the wait-for-welcome fallback still stands.
-        if (recipients.groupInfoEpoch !== recipients.epoch) return;
+      const plan = planJoin({
+        serverEpoch: recipients.epoch,
+        groupInfoEpoch: recipients.groupInfoEpoch,
+        myDeviceId: me.deviceId,
+        memberDeviceIds: recipients.members.flatMap((member) =>
+          member.devices.map((device) => device.deviceId),
+        ),
+      });
+
+      if (plan.action === "wait") return;
+
+      if (plan.action === "external-join") {
         const joined = await this.#tryExternalJoin(
           conversationId,
           me,
-          recipients.epoch,
+          plan.epoch,
         );
         if (joined === null) return;
         localEpoch = joined;
         publishedThisPass = true;
       } else {
-        const deviceIds = recipients.members
-          .flatMap((member) => member.devices.map((device) => device.deviceId))
-          .sort();
-        if (deviceIds[0] !== me.deviceId) return;
         await handshake.createGroup(conversationId, me);
         localEpoch = 0;
-        // Published at epoch 0, deliberately: it lets every other member
-        // device -- ours and theirs -- join this brand-new group by
+        // Published at epoch 0, deliberately: it is what lets every other
+        // member device -- ours and theirs -- join this brand-new group by
         // external commit instead of waiting for this device's next sweep
         // to add them one by one.
         await this.#publishGroupInfo(conversationId);
