@@ -423,6 +423,14 @@ export function HubDetails({
               ? "Public hub — anyone with an account can join, and messages here are stored readable by the server so search and moderation can work."
               : "Private hub — invitation only, and every channel is end-to-end encrypted like a group chat."}
           </Note>
+          {detail.visibility === "public" && (
+            <Note className="mt-1">
+              Share this ID so people can join:{" "}
+              <span className="select-all break-all font-mono text-[11px]">
+                {detail.id}
+              </span>
+            </Note>
+          )}
           {manages(myRole) ? (
             <form onSubmit={saveName} className="mt-2 flex gap-2">
               <Input

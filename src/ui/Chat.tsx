@@ -1788,8 +1788,13 @@ function Timeline({
   };
 
   // Names by user id, so attribution is a lookup rather than a scan per
-  // message. Only built for groups, since a 1:1 never shows them.
-  const isGroup = (conversation?.members.length ?? 0) > 2;
+  // message. Only built for groups and channels, since a 1:1 never shows
+  // them. A channel shows senders at ANY size -- unlike a group, its
+  // membership can grow past whoever is in the room right now, so "who
+  // said this" is always information.
+  const isGroup =
+    conversation?.kind === "channel" ||
+    (conversation?.members.length ?? 0) > 2;
   // Everybody but you. Used to decide whether "Read" means everyone.
   const others = Math.max(0, (conversation?.members.length ?? 1) - 1);
 
@@ -2069,7 +2074,9 @@ function Presence({
   const online = usePresence(conversationId);
   if (online === null || online.length === 0) return null;
 
-  const isGroup = (conversation?.members.length ?? 0) > 2;
+  const isGroup =
+    conversation?.kind === "channel" ||
+    (conversation?.members.length ?? 0) > 2;
   return (
     <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
       {isGroup ? `${online.length} online` : "Online"}
