@@ -35,7 +35,9 @@ export function HubsSection({
   if (hubs.length === 0 && !canCreate) return null;
 
   return (
-    <div className="border-b border-neutral-200 p-3 dark:border-neutral-800">
+    // The Sidebar's wrapper owns the section's border and scrolling; this
+    // root is padding only, so the section works inside either container.
+    <div className="p-3">
       {canCreate && <NewHub onOpened={onSelect} />}
       {hubs.map((hub) => (
         <div key={hub.id} className={canCreate || hub.id !== hubs[0]?.id ? "mt-3" : ""}>

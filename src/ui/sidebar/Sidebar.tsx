@@ -1,4 +1,12 @@
 // The conversation list: the sidebar's main body, with hubs nested above it.
+//
+// Desktop and mobile get different structures, not different classes: on
+// desktop the hubs section and the DM list are two independent scroll
+// containers separated by a height budget (auto until the divider ships, then
+// user-set), because both lists must stay reachable no matter how long the
+// other grows. Below md the sidebar is the whole screen and an inner
+// scrollbar inside an outer one is exactly what a phone must not have -- so
+// there it is one scroll surface, hubs above DMs.
 
 import type { StoredSession } from "../../api/session";
 import {
@@ -10,6 +18,7 @@ import {
   useUnread,
 } from "../hooks";
 import { avatarSeed, conversationTitle, listTime, memberName } from "../format";
+import { useIsDesktop } from "../viewport";
 import { Avatar, Badge, BellOffIcon } from "../kit";
 import { HubsSection } from "./HubsSection";
 import { NewConversation } from "./NewConversation";
@@ -40,32 +49,33 @@ export function ConversationList({
   const directsAndGroups = conversations.filter(
     (conversation) => conversation.kind !== "channel",
   );
+  const isDesktop = useIsDesktop();
 
-  return (
-    <aside className="flex w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800">
-      <div className="border-b border-neutral-200 p-3 dark:border-neutral-800">
-        <NewConversation session={session} onOpened={onSelect} />
-      </div>
+  // Hoisted from HubsSection's own null-return so the bordered wrapper the
+  // scroll containers need does not render as a stray rule around nothing.
+  const showHubs = hubs.length > 0 || features.hubs;
+  const hubsSection = (
+    <HubsSection
+      hubs={hubs}
+      canCreate={features.hubs}
+      unread={unread}
+      mentions={mentions}
+      muted={muted}
+      selected={selected}
+      onSelect={onSelect}
+      onOpenHub={onOpenHub}
+    />
+  );
 
-      <HubsSection
-        hubs={hubs}
-        canCreate={features.hubs}
-        unread={unread}
-        mentions={mentions}
-        muted={muted}
-        selected={selected}
-        onSelect={onSelect}
-        onOpenHub={onOpenHub}
-      />
+  const dmRows = (
+    <>
+      {directsAndGroups.length === 0 && (
+        <p className="p-4 text-sm text-neutral-500 dark:text-neutral-400">
+          No conversations yet.
+        </p>
+      )}
 
-      <div className="flex-1 overflow-y-auto">
-        {directsAndGroups.length === 0 && (
-          <p className="p-4 text-sm text-neutral-500 dark:text-neutral-400">
-            No conversations yet.
-          </p>
-        )}
-
-        {directsAndGroups.map((conversation) => {
+      {directsAndGroups.map((conversation) => {
           const preview = latest.get(conversation.id);
           // A photo with no caption still has to say something in the list,
           // and so does a message kind this build cannot render. A retracted
@@ -156,8 +166,43 @@ export function ConversationList({
             </button>
           );
         })}
+    </>
+  );
+
+  if (!isDesktop) {
+    return (
+      <aside className="flex min-h-0 w-full shrink-0 flex-col bg-white dark:bg-neutral-900">
+        <div className="shrink-0 border-b border-neutral-200 p-3 dark:border-neutral-800">
+          <NewConversation session={session} onOpened={onSelect} />
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {showHubs && (
+            <div className="border-b border-neutral-200 dark:border-neutral-800">
+              {hubsSection}
+            </div>
+          )}
+          {dmRows}
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="flex min-h-0 w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800">
+      <div className="shrink-0 border-b border-neutral-200 p-3 dark:border-neutral-800">
+        <NewConversation session={session} onOpened={onSelect} />
       </div>
 
+      {showHubs && (
+        <div
+          className="min-h-0 shrink-0 overflow-y-auto border-b border-neutral-200 dark:border-neutral-800"
+          style={{ maxHeight: "45%" }}
+        >
+          {hubsSection}
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">{dmRows}</div>
     </aside>
   );
 }
