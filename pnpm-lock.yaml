@@ -6,6 +6,7 @@ settings:
 
 patchedDependencies:
   '@hpke/common@1.10.1': 432a30f7c8f38af137f7c986db55fee6335a4970ecafc2a2da1f02904972a506
+  ts-mls@1.6.4: e80c32e34a665d73055f4e2732d83588fa3252a391d96bd71ec793b8d153f7a9
 
 importers:
 
@@ -40,7 +41,7 @@ importers:
         version: 4.3.3
       ts-mls:
         specifier: ^1.6.4
-        version: 1.6.4(@noble/ciphers@2.1.1)
+        version: 1.6.4(patch_hash=e80c32e34a665d73055f4e2732d83588fa3252a391d96bd71ec793b8d153f7a9)(@noble/ciphers@2.1.1)
     devDependencies:
       '@types/node':
         specifier: ^24.13.3
@@ -1475,7 +1476,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
 
-  ts-mls@1.6.4(@noble/ciphers@2.1.1):
+  ts-mls@1.6.4(patch_hash=e80c32e34a665d73055f4e2732d83588fa3252a391d96bd71ec793b8d153f7a9)(@noble/ciphers@2.1.1):
     dependencies:
       '@hpke/core': 1.9.0
       '@noble/ciphers': 2.1.1

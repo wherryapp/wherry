@@ -711,6 +711,13 @@ export class SyncEngine {
         if (signal.aborted) return;
         if (this.#handleFatal(error)) return;
 
+        // Logged as well as bannered. The Safari freeze diagnosis cost a
+        // debugger breakpoint purely because this catch used to swallow the
+        // error object -- the banner shows error.message and nothing ever
+        // printed the stack. Never remove this line to reduce noise; a
+        // failing sync pass IS the noise.
+        console.error("sync pass failed", error);
+
         const delay = this.#delayAfter(error);
         this.#setStatus({
           state: "offline",

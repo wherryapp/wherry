@@ -16,8 +16,23 @@ void registerServiceWorker();
 const root = document.getElementById("root");
 if (!root) throw new Error("#root is missing from index.html");
 
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+function render(): void {
+  createRoot(root!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
+
+// Dev-only diagnostics (crypto tracing, dev auto-login), loaded before the
+// first render so a traced sign-in captures everything from the first
+// crypto call. The guarded dynamic import means production bundles contain
+// none of it. See devtools.ts.
+if (import.meta.env.DEV) {
+  void import("./devtools")
+    .then((devtools) => devtools.installDevtools())
+    .catch((error: unknown) => console.error("devtools failed", error))
+    .then(render);
+} else {
+  render();
+}

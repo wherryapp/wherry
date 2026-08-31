@@ -4,3 +4,4 @@ allowBuilds:
   esbuild: true
 patchedDependencies:
   '@hpke/common@1.10.1': patches/@hpke__common@1.10.1.patch
+  ts-mls@1.6.4: patches/ts-mls@1.6.4.patch

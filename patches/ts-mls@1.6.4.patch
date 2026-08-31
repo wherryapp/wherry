@@ -1,0 +1,31 @@
+diff --git a/dist/src/crypto/implementation/default/makeDhKem.js b/dist/src/crypto/implementation/default/makeDhKem.js
+index b06cd58f39f1a20fccc2eb49858d3ed3cf1b23d6..2e212345d7a2d7e298a5e8de8e922c936433a41e 100644
+--- a/dist/src/crypto/implementation/default/makeDhKem.js
++++ b/dist/src/crypto/implementation/default/makeDhKem.js
+@@ -4,8 +4,24 @@ export async function makeDhKem(kemAlg) {
+     switch (kemAlg) {
+         case "DHKEM-P256-HKDF-SHA256":
+             return new DhkemP256HkdfSha256();
+-        case "DHKEM-X25519-HKDF-SHA256":
+-            return new DhkemX25519HkdfSha256();
++        case "DHKEM-X25519-HKDF-SHA256": {
++            // Patched (messenger): prefer the pure-JS X25519 KEM. @hpke/core's
++            // DhkemX25519HkdfSha256 uses WebCrypto's "X25519" algorithm, which
++            // Safari (18.x, macOS and iOS) does not implement -- generateKey
++            // rejects with NotSupportedError, which is the crypto freeze in
++            // docs/changelog.md. @hpke/dhkem-x25519 is the same DHKEM over
++            // @noble/curves, interoperable on the wire, and is already the
++            // KEM this app uses for its own account keys. Same optional-
++            // import pattern as the X448/ML-KEM cases below; falls back to
++            // the native class only if the package is somehow absent.
++            try {
++                const { DhkemX25519HkdfSha256: NobleDhkemX25519 } = await import("@hpke/dhkem-x25519");
++                return new NobleDhkemX25519();
++            }
++            catch (err) {
++                return new DhkemX25519HkdfSha256();
++            }
++        }
+         case "DHKEM-X448-HKDF-SHA512": {
+             try {
+                 const { DhkemX448HkdfSha512 } = await import("@hpke/dhkem-x448");
