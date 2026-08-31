@@ -64,6 +64,7 @@ import {
   Input,
   Panel,
   PanelSection,
+  PencilIcon,
   PlusIcon,
   ReplyIcon,
   SendIcon,
@@ -1067,6 +1068,18 @@ type ReplyDraft = {
   senderName: string;
 };
 
+/**
+ * An edit being composed: the composer becomes the edit surface, prefilled
+ * with the message's current text -- the messengers people know converge on
+ * this over an in-bubble editor, and it reuses the context-bar slot the
+ * reply already fills. `text` is the effective current text (a prior edit
+ * included), because editing an edited message starts from what it says now.
+ */
+type EditDraft = {
+  messageId: string;
+  text: string;
+};
+
 /** The quoted line a reply shows: the text, or what stands in for it. */
 function excerptOf(content: { text: string; attachments: unknown[] }): string {
   return (
@@ -1155,6 +1168,7 @@ function Bubble({
         /** This user's current reaction, so the bar can show the toggle. */
         current: string | null;
         onReply?: (() => void) | undefined;
+        onEdit?: (() => void) | undefined;
         onDelete?: (() => void) | undefined;
       }
     | undefined;
@@ -1212,6 +1226,16 @@ function Bubble({
               className="rounded-full p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
             >
               <ReplyIcon className="h-4 w-4" />
+            </button>
+          )}
+          {actions.onEdit && (
+            <button
+              type="button"
+              onClick={actions.onEdit}
+              aria-label="Edit message"
+              className="rounded-full p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+            >
+              <PencilIcon className="h-4 w-4" />
             </button>
           )}
           {actions.onDelete && (
@@ -1374,6 +1398,7 @@ function Timeline({
   session,
   conversation,
   onReply,
+  onEdit,
 }: {
   conversationId: string;
   session: StoredSession;
@@ -1381,6 +1406,8 @@ function Timeline({
   conversation: StoredConversation | undefined;
   /** Hands a reply draft up to the shell, which owns the composer's bar. */
   onReply: (draft: ReplyDraft) => void;
+  /** Same shape for an edit: the composer is the edit surface. */
+  onEdit: (draft: EditDraft) => void;
 }) {
   const { items, hasMore, loadOlder } = useTimeline(
     conversationId,
@@ -1621,6 +1648,17 @@ function Timeline({
                                 "Someone"),
                           })
                       : undefined,
+                  // Editing starts from what the message says NOW -- a
+                  // prior edit included -- and only your own text is yours
+                  // to change.
+                  onEdit:
+                    mine && content !== null && content !== "unsupported"
+                      ? () =>
+                          onEdit({
+                            messageId: item.message.messageId,
+                            text: item.marks?.editedText ?? content.text,
+                          })
+                      : undefined,
                   onDelete: mine
                     ? () => retractMessage(item.message.messageId)
                     : undefined,
@@ -1752,17 +1790,34 @@ function Composer({
   conversationId,
   reply,
   onClearReply,
+  edit,
+  onClearEdit,
 }: {
   conversationId: string;
   /** The reply being composed, owned by the shell so Timeline can set it. */
   reply: ReplyDraft | null;
   onClearReply: () => void;
+  /** The edit being composed. The shell keeps this and `reply` exclusive. */
+  edit: EditDraft | null;
+  onClearEdit: () => void;
 }) {
   const [text, setText] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // Entering edit mode loads the message's current text over whatever was
+  // being typed; leaving it (cancel or save, both of which clear `edit`
+  // explicitly alongside the text) never runs this.
+  useEffect(() => {
+    if (edit) setText(edit.text);
+  }, [edit]);
+
+  const cancelEdit = (): void => {
+    onClearEdit();
+    setText("");
+  };
 
   // Revoke preview URLs when they stop being used, or every photo somebody
   // picks and reconsiders is held in memory until the page is reloaded.
@@ -1798,8 +1853,25 @@ function Composer({
     event.preventDefault();
 
     const trimmed = text.trim();
-    if (trimmed.length === 0 && pending.length === 0) return;
     if (busy) return;
+
+    // Edit mode: the send button saves the edit -- a silent op, aggregated
+    // like any other, so the bubble re-renders from the outbox before the
+    // round trip. Emptying the text is not a retraction; Delete is, and
+    // conflating them would make a slip of the keyboard destructive.
+    if (edit) {
+      if (trimmed.length === 0) return;
+      const target = edit.messageId;
+      cancelEdit();
+      await sync.enqueue(
+        conversationId,
+        encodeOp({ kind: "edit", target, text: trimmed }),
+        { silent: true },
+      );
+      return;
+    }
+
+    if (trimmed.length === 0 && pending.length === 0) return;
 
     setBusy(true);
     setError(null);
@@ -1911,7 +1983,7 @@ function Composer({
           reserved for it. Height comes and goes with the reply -- that is a
           deliberate act by the user, not the ambient flicker the typing
           line's fixed height guards against. */}
-      {reply && (
+      {reply && !edit && (
         <div className="mb-2 flex items-center gap-2 rounded-md border-l-2 border-accent-400 bg-neutral-100 px-2 py-1 motion-safe:animate-fade-in dark:bg-neutral-800">
           <span className="min-w-0 flex-1 text-xs text-neutral-600 dark:text-neutral-300">
             <span className="block font-medium">
@@ -1922,6 +1994,22 @@ function Composer({
           <IconButton
             label="Cancel reply"
             onClick={onClearReply}
+            className="shrink-0"
+          >
+            <XIcon className="h-4 w-4" />
+          </IconButton>
+        </div>
+      )}
+
+      {edit && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border-l-2 border-accent-400 bg-neutral-100 px-2 py-1 motion-safe:animate-fade-in dark:bg-neutral-800">
+          <span className="min-w-0 flex-1 text-xs text-neutral-600 dark:text-neutral-300">
+            <span className="block font-medium">Editing message</span>
+            <span className="block truncate">{edit.text}</span>
+          </span>
+          <IconButton
+            label="Cancel edit"
+            onClick={cancelEdit}
             className="shrink-0"
           >
             <XIcon className="h-4 w-4" />
@@ -1945,13 +2033,17 @@ function Composer({
           onInput={choose}
           className="hidden"
         />
-        <IconButton
-          label="Attach a photo"
-          onClick={() => fileInput.current?.click()}
-          className="rounded-full"
-        >
-          <PlusIcon />
-        </IconButton>
+        {/* No attach while editing: an edit replaces text only, and the
+            target's attachments stay exactly as sent. */}
+        {!edit && (
+          <IconButton
+            label="Attach a photo"
+            onClick={() => fileInput.current?.click()}
+            className="rounded-full"
+          >
+            <PlusIcon />
+          </IconButton>
+        )}
         <input
           value={text}
           onChange={(e) => {
@@ -1997,7 +2089,13 @@ export function Chat({
   // composer renders and consumes it. Reset on switching conversations --
   // a reply drafted in one thread must not attach to another.
   const [replyDraft, setReplyDraft] = useState<ReplyDraft | null>(null);
-  useEffect(() => setReplyDraft(null), [selected]);
+  // Edit shares the composer's context-bar slot, so the two are exclusive:
+  // starting either clears the other.
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
+  useEffect(() => {
+    setReplyDraft(null);
+    setEditDraft(null);
+  }, [selected]);
   const [muteBusy, setMuteBusy] = useState(false);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
@@ -2201,7 +2299,14 @@ export function Chat({
                   conversationId={selected}
                   session={session}
                   conversation={current}
-                  onReply={setReplyDraft}
+                  onReply={(draft) => {
+                    setEditDraft(null);
+                    setReplyDraft(draft);
+                  }}
+                  onEdit={(draft) => {
+                    setReplyDraft(null);
+                    setEditDraft(draft);
+                  }}
                 />
                 <TypingLine
                   conversationId={selected}
@@ -2211,6 +2316,8 @@ export function Chat({
                   conversationId={selected}
                   reply={replyDraft}
                   onClearReply={() => setReplyDraft(null)}
+                  edit={editDraft}
+                  onClearEdit={() => setEditDraft(null)}
                 />
               </>
             ) : (

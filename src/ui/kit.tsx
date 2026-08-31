@@ -156,6 +156,25 @@ export function TrashIcon({ className }: IconProps) {
   );
 }
 
+/** Edit, in a bubble's action bar on your own messages. */
+export function PencilIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="m12.2 4.3 3.5 3.5L7 16.5l-4 .9.9-4Z" />
+      <path d="m11 5.5 3.5 3.5" />
+    </svg>
+  );
+}
+
 /** Reply, in a bubble's action bar and the composer's context bar. */
 export function ReplyIcon({ className }: IconProps) {
   return (
