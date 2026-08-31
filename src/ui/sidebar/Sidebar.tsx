@@ -8,7 +8,7 @@
 // scrollbar inside an outer one is exactly what a phone must not have -- so
 // there it is one scroll surface, hubs above DMs.
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { StoredSession } from "../../api/session";
 import {
   useConversations,
@@ -25,6 +25,7 @@ import { HubsSection } from "./HubsSection";
 import { NewConversation } from "./NewConversation";
 import { ResizeHandle } from "./ResizeHandle";
 import { useSidebarPrefs } from "./prefs";
+import { rankConversations, recencyRanker } from "./rank";
 
 export function ConversationList({
   session,
@@ -49,8 +50,18 @@ export function ConversationList({
   const muted = new Set(
     conversations.filter((c) => c.muted).map((c) => c.id),
   );
-  const directsAndGroups = conversations.filter(
-    (conversation) => conversation.kind !== "channel",
+  // Most-recent activity first -- the latest renderable message's time, or
+  // creation time for a conversation with no preview yet. The previews land
+  // in one state commit, so the order flips at most once as they hydrate.
+  // A different metric later is a new ranker factory in rank.ts, not a
+  // change here.
+  const directsAndGroups = useMemo(
+    () =>
+      rankConversations(
+        conversations.filter((conversation) => conversation.kind !== "channel"),
+        recencyRanker(latest),
+      ),
+    [conversations, latest],
   );
   const isDesktop = useIsDesktop();
   const { prefs, update } = useSidebarPrefs();
