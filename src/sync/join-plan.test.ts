@@ -17,7 +17,7 @@ const OTHER = "01a05352-0000-7000-8000-000000000002";
 const LATER = "01a059ff-0000-7000-8000-000000000003";
 
 /** Defaults for the cases where the creation grace is not what is under test. */
-const FRESH = { msWaitingForCreation: 0 };
+const FRESH = { msWaitingForCreation: 0, hasPendingSend: false };
 
 test("a brand-new group with GroupInfo at epoch 0 is externally joinable", () => {
   // The regression. A conversation created moments ago has no commits, so
@@ -77,6 +77,7 @@ test("a committed group with no GroupInfo at all falls back to waiting", () => {
       myDeviceId: ME,
       memberDeviceIds: [OTHER, ME],
       msWaitingForCreation: CREATION_GRACE_MS * 10,
+      hasPendingSend: false,
     }),
     { action: "wait" },
   );
@@ -129,6 +130,7 @@ test("the creation grace expires so a dormant nominee cannot deadlock a conversa
     groupInfoEpoch: null,
     myDeviceId: ME,
     memberDeviceIds: [OTHER, ME, LATER], // OTHER sorts first, and is asleep
+    hasPendingSend: false,
   };
 
   assert.deepEqual(
@@ -138,6 +140,52 @@ test("the creation grace expires so a dormant nominee cannot deadlock a conversa
   assert.deepEqual(
     planJoin({ ...args, msWaitingForCreation: CREATION_GRACE_MS }),
     { action: "create" },
+  );
+});
+
+test("a queued message creates the group now rather than serving out the grace", () => {
+  // The reported experience: make a hub, type immediately, watch it say
+  // "sending" for a full minute. Deferring is a background courtesy; once a
+  // person is waiting on their own message it stops being one.
+  assert.deepEqual(
+    planJoin({
+      serverEpoch: 0,
+      groupInfoEpoch: null,
+      myDeviceId: ME,
+      memberDeviceIds: [OTHER, ME], // OTHER sorts first
+      msWaitingForCreation: 0,
+      hasPendingSend: true,
+    }),
+    { action: "create" },
+  );
+});
+
+test("a queued message still never duplicates a group that exists", () => {
+  // Urgency changes when this device creates, never whether it should.
+  assert.deepEqual(
+    planJoin({
+      serverEpoch: 3,
+      groupInfoEpoch: 3,
+      myDeviceId: ME,
+      memberDeviceIds: [OTHER, ME],
+      msWaitingForCreation: 0,
+      hasPendingSend: true,
+    }),
+    { action: "external-join", epoch: 3 },
+  );
+
+  // ...and with a group that exists but no usable GroupInfo, a pending send
+  // must not tempt this device into forking it.
+  assert.deepEqual(
+    planJoin({
+      serverEpoch: 3,
+      groupInfoEpoch: null,
+      myDeviceId: ME,
+      memberDeviceIds: [OTHER, ME],
+      msWaitingForCreation: CREATION_GRACE_MS * 10,
+      hasPendingSend: true,
+    }),
+    { action: "wait" },
   );
 });
 
@@ -151,6 +199,7 @@ test("the grace never overrides a group that does exist", () => {
       myDeviceId: ME,
       memberDeviceIds: [OTHER, ME],
       msWaitingForCreation: CREATION_GRACE_MS * 10,
+      hasPendingSend: false,
     }),
     { action: "external-join", epoch: 0 },
   );

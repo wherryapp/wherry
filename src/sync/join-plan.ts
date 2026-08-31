@@ -63,6 +63,12 @@ export function planJoin(input: {
    * designated creator -- see that constant for why.
    */
   msWaitingForCreation: number;
+  /**
+   * This device has a message queued for this conversation that cannot be
+   * sealed until the group exists -- so the deference is not a background
+   * detail, it is a person watching their own message say "sending".
+   */
+  hasPendingSend: boolean;
 }): JoinPlan {
   // A GroupInfo naming the current epoch means a group exists and can be
   // joined with nobody else awake. Checked first, because a
@@ -88,7 +94,16 @@ export function planJoin(input: {
   const smallest = [...input.memberDeviceIds].sort()[0];
   if (smallest === input.myDeviceId) return { action: "create" };
 
-  // ...but the nominee may not exist in any meaningful sense -- an old
+  // Somebody is waiting on this. Deferring politely is right for a device
+  // syncing in the background, but the moment this device holds a message it
+  // cannot seal, the wait has a person attached to it -- a brand-new hub
+  // whose first message reads "sending" for a full minute is the whole
+  // complaint, and the nominee being awake would not have made it fast, only
+  // eventually correct. Creating now costs at worst a race that heals
+  // itself; waiting costs the only impression the feature gets.
+  if (input.hasPendingSend) return { action: "create" };
+
+  // ...and the nominee may not exist in any meaningful sense -- an old
   // browser profile that is never opened still holds its device id. Deferring
   // forever is how a brand-new conversation ends up permanently unsendable
   // for every other device, so the deference expires.

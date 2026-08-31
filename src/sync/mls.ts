@@ -111,6 +111,14 @@ export class MlsSync {
    * already rare, and it is not worth a store write on every sweep.
    */
   #missingGroupSince = new Map<string, number>();
+  /**
+   * Conversations the server no longer serves to us -- deleted, or we are
+   * no longer a member. Their local rows survive (a removed member keeps
+   * their history, by design), but reconciling them can only 404 forever,
+   * so the sweep stops asking. Session-scoped: a restart re-asks once,
+   * which is the right cadence for a fact that changes this rarely.
+   */
+  #goneConversations = new Set<string>();
 
   /** Forces the next tick to run the full sweep. */
   invalidate(): void {
@@ -142,17 +150,42 @@ export class MlsSync {
     if (now - this.#lastReconcile >= RECONCILE_INTERVAL_MS) {
       this.#lastReconcile = now;
       const conversations = await store.listConversations();
+
+      // Which conversations have something queued that cannot be sealed
+      // until a group exists. Read once for the whole sweep rather than per
+      // conversation: it decides whether creating the group is a background
+      // courtesy or the thing standing between a person and their message.
+      const pending = new Set(
+        (await store.listOutbox())
+          .filter((entry) => entry.pendingEncryption && !entry.failedPermanently)
+          .map((entry) => entry.conversationId),
+      );
+
       for (const conversation of conversations) {
         if (signal.aborted) break;
+        if (this.#goneConversations.has(conversation.id)) continue;
         const cooldown = this.#reconcileCooldownUntil.get(conversation.id);
         if (cooldown !== undefined && now < cooldown) continue;
         try {
-          await this.reconcileConversation(conversation.id, me);
+          await this.reconcileConversation(conversation.id, me, {
+            hasPendingSend: pending.has(conversation.id),
+          });
           this.#reconcileCooldownUntil.delete(conversation.id);
         } catch (error) {
           // One conversation's trouble must not stop the sweep. Typical
           // causes are transient (a commit race, a device mid-publish).
           console.warn("mls reconcile failed", conversation.id, error);
+
+          // 404 is not transient: the server no longer serves this
+          // conversation to us -- deleted, or we were removed. Retrying
+          // cannot help, and anything queued for it can never be sent, so
+          // say so rather than leaving it reading "sending" forever.
+          if (error instanceof ApiError && error.status === 404) {
+            this.#goneConversations.add(conversation.id);
+            await this.#failPendingSends(conversation.id);
+            continue;
+          }
+
           if (error instanceof ApiError && error.retryAfterSeconds) {
             this.#reconcileCooldownUntil.set(
               conversation.id,
@@ -164,6 +197,29 @@ export class MlsSync {
     }
 
     return joined;
+  }
+
+  /**
+   * Marks everything queued for a conversation the server will not serve us
+   * as permanently failed, so the UI shows an error the person can act on
+   * instead of a spinner that never resolves. The messages stay in the
+   * outbox, retryable by hand, exactly like any other permanent failure.
+   */
+  async #failPendingSends(conversationId: string): Promise<void> {
+    try {
+      const entries = await store.listOutbox();
+      for (const entry of entries) {
+        if (entry.conversationId !== conversationId) continue;
+        if (entry.failedPermanently) continue;
+        await store.recordOutboxFailure(
+          entry.clientMessageId,
+          "This conversation is no longer available",
+          true,
+        );
+      }
+    } catch (error) {
+      console.warn("could not fail sends for a gone conversation", error);
+    }
   }
 
   /**
@@ -240,6 +296,14 @@ export class MlsSync {
   async reconcileConversation(
     conversationId: string,
     me: Identity,
+    options: {
+      /**
+       * A send is parked on this conversation's group existing. Defaults
+       * false for the outbox repair path, which calls this while already
+       * holding group state.
+       */
+      hasPendingSend?: boolean;
+    } = {},
   ): Promise<void> {
     const handshake = e2e.handshake!;
     const recipients = await fetchRecipients(conversationId);
@@ -280,6 +344,7 @@ export class MlsSync {
           member.devices.map((device) => device.deviceId),
         ),
         msWaitingForCreation: now - since,
+        hasPendingSend: options.hasPendingSend ?? false,
       });
 
       if (plan.action === "wait") return;
