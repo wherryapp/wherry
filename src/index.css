@@ -8,23 +8,25 @@
    `accent` rather than `blue` because the point is that components stop
    choosing colours -- they say "accent" and this file decides what that
    means, once. The values were Tailwind's blue scale at first ship (the
-   unread badge had already picked blue-600 before this existed) and are
-   Tailwind's indigo scale since 2026-08-31 -- literal iMessage blue read as
-   the wrong product, and indigo needed no other change. Changing the app's
-   accent is editing these seven lines, not a find-and-replace.
+   unread badge had already picked blue-600 before this existed), Tailwind's
+   indigo scale from 2026-08-31 -- literal iMessage blue read as the wrong
+   product -- and a hand-tuned, less-saturated, slightly darker periwinkle
+   from 2026-08-31 (2nd): indigo's full chroma at 600 read as Facebook
+   Messenger blue, the other wrong product. Changing the app's accent is
+   editing these seven lines, not a find-and-replace.
 
    The neutral scale is deliberately NOT re-tokenised: ui/kit.tsx constrains
    how neutrals are used by owning the components that use them, which is
    the enforcement that matters. A parallel "surface" palette would just be
    a second name for the same eleven grays. */
 @theme {
-  --color-accent-50: oklch(0.962 0.018 272.314);
-  --color-accent-100: oklch(0.93 0.034 272.788);
-  --color-accent-500: oklch(0.585 0.233 277.117);
-  --color-accent-600: oklch(0.511 0.262 276.966);
-  --color-accent-700: oklch(0.457 0.24 277.023);
-  --color-accent-900: oklch(0.359 0.144 278.697);
-  --color-accent-950: oklch(0.257 0.09 281.288);
+  --color-accent-50: oklch(0.965 0.014 284);
+  --color-accent-100: oklch(0.93 0.03 284);
+  --color-accent-500: oklch(0.72 0.145 283);
+  --color-accent-600: oklch(0.64 0.16 284);
+  --color-accent-700: oklch(0.56 0.16 284);
+  --color-accent-900: oklch(0.37 0.11 285);
+  --color-accent-950: oklch(0.27 0.07 286);
 
   /* Motion. Three movements, all confirmations of something that already
      happened -- a message landing, a panel opening, a line appearing --

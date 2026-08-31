@@ -1919,7 +1919,7 @@ function Bubble({
         {(last || receipt) && (
           <span
             className={`mt-1 block text-[10px] ${
-              mine ? "text-white/70" : "opacity-60"
+              mine ? "text-white/90" : "opacity-60"
             }`}
           >
             {meta}
@@ -2243,7 +2243,7 @@ function Timeline({
 
   return (
     <div
-      className="flex-1 overflow-y-auto p-4"
+      className="flex-1 overflow-y-auto bg-neutral-50 p-4 dark:bg-transparent"
       onClick={(event) => {
         // A tap inside a message's own press-bounded wrapper already
         // toggled that message's bar via Bubble's onPress (and toggling
