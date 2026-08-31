@@ -2215,9 +2215,22 @@ export function Chat({
   // Desktop only. On a phone the two panes are two screens, and pre-selecting
   // means opening the app *inside* a thread with a back button as the only
   // clue that a list exists.
+  //
+  // Fires once per MOUNT, not once per isDesktop-becomes-true: `isDesktop` is
+  // a width media query, and an iPhone in landscape is wider than `md`, so
+  // without the ref below this effect re-ran on every rotation past the
+  // breakpoint and wrote `selected` again. Rotating back to portrait then
+  // left that selection standing -- the phone landed inside a thread it
+  // never opened. The ref latches only once the selection actually happens
+  // (conversations can still be loading when this first runs), so a genuine
+  // first desktop load still works.
+  const autoSelectedRef = useRef(false);
   useEffect(() => {
+    if (autoSelectedRef.current) return;
     if (!isDesktop) return;
-    if (selected === null && conversations[0]) setSelected(conversations[0].id);
+    if (selected !== null || !conversations[0]) return;
+    autoSelectedRef.current = true;
+    setSelected(conversations[0].id);
   }, [conversations, selected, isDesktop]);
 
   const current = conversations.find((c) => c.id === selected);
