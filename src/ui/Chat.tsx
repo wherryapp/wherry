@@ -83,6 +83,7 @@ import {
   PencilIcon,
   PinIcon,
   PlusIcon,
+  PublicPill,
   ReplyIcon,
   SendIcon,
   TrashIcon,
@@ -2615,13 +2616,7 @@ export function Chat({
                           ? conversationTitle(current, session.user.id)
                           : "Conversation"}
                       </span>
-                      {/* The standing public-class label -- every surface a
-                          public channel has, per the rule-1/9 amendment. */}
-                      {current?.hubVisibility === "public" && (
-                        <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-                          Public
-                        </span>
-                      )}
+                      {current?.hubVisibility === "public" && <PublicPill />}
                     </span>
                     {channelInfo?.topic && (
                       <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">

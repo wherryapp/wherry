@@ -725,6 +725,19 @@ export function Avatar({
   );
 }
 
+/**
+ * The standing public-class label -- every surface a public hub channel has,
+ * per the rule-1/9 amendment, pasted identically in the thread header and
+ * the hub sidebar row before this.
+ */
+export function PublicPill() {
+  return (
+    <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+      Public
+    </span>
+  );
+}
+
 /** The unread-count pill. */
 export function Badge({
   count,

@@ -2,7 +2,14 @@
 
 import { Fragment, useRef, useState } from "react";
 import type { HubSummary } from "../../api/types";
-import { Avatar, Badge, BellOffIcon, ChevronLeftIcon, LockIcon } from "../kit";
+import {
+  Avatar,
+  Badge,
+  BellOffIcon,
+  ChevronLeftIcon,
+  LockIcon,
+  PublicPill,
+} from "../kit";
 import { NewHub } from "./NewHub";
 import { useSidebarPrefs } from "./prefs";
 import { moveItem } from "./rank";
@@ -242,11 +249,7 @@ export function HubsSection({
                 <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
                   {hub.name}
                 </span>
-                {hub.visibility === "public" && (
-                  <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-                    Public
-                  </span>
-                )}
+                {hub.visibility === "public" && <PublicPill />}
               </button>
               {collapsed && agg.mentioned && (
                 <span
