@@ -5,7 +5,13 @@ import {
   register,
   requestPasswordReset,
 } from "../api/client";
-import { defaultDeviceName, deviceDescriptor, saveSession } from "../api/session";
+import {
+  defaultDeviceName,
+  deviceDescriptor,
+  forgetDevice,
+  saveSession,
+} from "../api/session";
+import { clearDeviceCrypto } from "../crypto/db";
 import type { StoredSession } from "../api/session";
 import {
   persistKeypair,
@@ -97,7 +103,31 @@ export function Login({
         return;
       }
 
-      const result = await login({ username, password, device });
+      // UNKNOWN_DEVICE means the server has no row for the id this browser
+      // has been carrying -- it was revoked from the device list, or belongs
+      // to an account that no longer has it. There is nothing for the person
+      // to do about that and nothing to preserve, so recover rather than
+      // report: forget the dead id and the crypto built for it, and sign in
+      // as the new device this now is. Before, this path showed "Clearing
+      // site data will fix it", which is advice with no button behind it in
+      // a desktop app -- revoking a device bricked its app permanently.
+      let result;
+      try {
+        result = await login({ username, password, device });
+      } catch (caught) {
+        if (!(caught instanceof ApiError) || caught.code !== "UNKNOWN_DEVICE") {
+          throw caught;
+        }
+        forgetDevice();
+        await clearDeviceCrypto();
+        // Retried once, with no id at all, so the server issues a fresh
+        // device. Not a loop: the second attempt cannot fail the same way.
+        result = await login({
+          username,
+          password,
+          device: deviceDescriptor(defaultDeviceName()),
+        });
+      }
       const session = saveSession(result);
 
       // While the password is still in hand. Never kept beyond this.
@@ -120,7 +150,11 @@ export function Login({
               : caught.code === "RATE_LIMITED"
                 ? "Too many attempts. Wait a few minutes and try again."
                 : caught.code === "UNKNOWN_DEVICE"
-                  ? "This device is no longer recognised. Clearing site data will fix it."
+                  ? // Reached only if the retry above *also* came back
+                    // UNKNOWN_DEVICE, which it cannot for a revoked device --
+                    // that attempt sends no id at all. Kept as a truthful
+                    // fallback rather than advice that may not apply.
+                    "Could not register this device. Try again in a moment."
                   : caught.message,
         );
       } else {

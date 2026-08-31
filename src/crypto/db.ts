@@ -162,6 +162,33 @@ export async function deleteGroup(conversationId: string): Promise<void> {
   await database.delete(MLS_GROUPS, conversationId);
 }
 
+/**
+ * Everything that belongs to *this device* rather than to the account: every
+ * group's ratchet state, the unconsumed key packages, and the MLS signature
+ * identity.
+ *
+ * For the `UNKNOWN_DEVICE` recovery, where the server has revoked the device
+ * this state was built for. None of it can be carried into the replacement:
+ * a group's state names the old device's leaf, the published key packages
+ * hang off a device row that is gone, and the identity key is the thing
+ * other members verify that leaf against. Reusing any of it would put a
+ * device in a group under an identity the roster no longer lists.
+ *
+ * Deliberately NOT touched: the account keypair and the history keys. Both
+ * are account-scoped -- the account key is what a password unlocks and the
+ * history keys are wrapped to it -- so a device change is not a reason to
+ * lose either, and clearing them is what would push somebody towards their
+ * recovery code for no reason.
+ */
+export async function clearDeviceCrypto(): Promise<void> {
+  const database = await db();
+  const tx = database.transaction([MLS_GROUPS, MLS_KEY_PACKAGES, SECRETS], "readwrite");
+  await tx.objectStore(MLS_GROUPS).clear();
+  await tx.objectStore(MLS_KEY_PACKAGES).clear();
+  await tx.objectStore(SECRETS).delete(MLS_IDENTITY);
+  await tx.done;
+}
+
 // ---------------------------------------------------------------------------
 // History keys (protocol v3)
 // ---------------------------------------------------------------------------

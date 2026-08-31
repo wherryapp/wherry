@@ -172,6 +172,26 @@ export function storedDeviceId(): string | null {
 }
 
 /**
+ * Forgets the device id. The one caller is the `UNKNOWN_DEVICE` recovery in
+ * Login.tsx, and the narrowness is the point.
+ *
+ * The rule this looks like it breaks -- only the user clearing site data may
+ * clear the device id, or an account accumulates a device per sign-in -- is
+ * about ids the server still honours. `UNKNOWN_DEVICE` is the server saying
+ * this id is *gone*: revoked from the device list, or belonging to an account
+ * that no longer has it. Keeping it then buys no dedupe, because there is no
+ * row left to reuse; it only makes the id unusable forever.
+ *
+ * Which is what it did. Revoking a device from Settings left that device's
+ * app showing "This device is no longer recognised. Clearing site data will
+ * fix it." on every sign-in attempt -- advice with no button behind it in a
+ * desktop app, so revoking a device bricked it permanently.
+ */
+export function forgetDevice(): void {
+  removeKey(DEVICE_KEY);
+}
+
+/**
  * The descriptor to send with register or login.
  *
  * The id is included only when we have one. `undefined` rather than null: the
