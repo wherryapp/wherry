@@ -42,6 +42,20 @@ export function trackVisualViewport(): void {
     // value (or the CSS fallback) in place and wait for a real measurement.
     if (viewport.height <= 0) return;
 
+    // Pinch-zoom resizes the visual viewport exactly like the keyboard does
+    // -- `scale` is the only thing that tells them apart. Publishing through
+    // while zoomed would size the fixed shell to the zoomed-in height and the
+    // layout comes apart under it. Skipping the publish leaves the last
+    // unzoomed values in place, which is what makes zoom harmless: the shell
+    // stays put (now visually cropped by the browser's own zoom, the normal
+    // and expected result of zooming a fixed-position page) rather than
+    // resizing itself into a broken layout. It is not what makes zoom
+    // *usable* -- an in-app text-size control is the real answer to that
+    // (roadmap's backlog intake, tier 4) -- only what stops it from breaking
+    // the shell. The resize that returns to scale 1 republishes normally,
+    // since it is not skipped by this guard.
+    if (viewport.scale !== 1) return;
+
     // Undo the document scroll, which is the actual displacement.
     //
     // iOS reveals a focused input by scrolling the *document*, and it does
