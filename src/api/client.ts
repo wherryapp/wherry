@@ -402,6 +402,9 @@ export function sendMessage(input: {
   archiveGeneration?: number;
   /** base64. */
   archivePayload?: string;
+  /** Ask the server to skip push for this send (operation payloads). The
+   * socket wake is never skipped; see docs/api.md for the disclosure. */
+  silent?: boolean;
 }): Promise<SendResult> {
   return request<SendResult>(
     `${API}/conversations/${input.conversationId}/messages`,
@@ -410,6 +413,7 @@ export function sendMessage(input: {
       body: {
         clientMessageId: input.clientMessageId,
         payload: input.payload,
+        ...(input.silent ? { silent: true } : {}),
         ...(input.epoch !== undefined &&
         input.archiveGeneration !== undefined &&
         input.archivePayload

@@ -38,7 +38,7 @@ import {
 } from "../api/client";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { currentToken, loadSession } from "../api/session";
-import { decodeContent } from "../api/payload";
+import { decodeContent, isMessageOp } from "../api/payload";
 import type { ArchiveEntry, InboxEnvelope } from "../api/types";
 import { e2e, E2EError } from "../crypto";
 import { KeysError } from "../crypto/keys";
@@ -503,7 +503,15 @@ export class SyncEngine {
    * wasted work today and, under a real ratcheting protocol, would consume a
    * fresh key on every retry of what is supposed to be the same message.
    */
-  async enqueue(conversationId: string, plaintext: Uint8Array): Promise<void> {
+  async enqueue(
+    conversationId: string,
+    plaintext: Uint8Array,
+    options: {
+      /** For operation payloads: ask the server not to push. See
+       *  OutboxEntry.silent -- the wake is unaffected either way. */
+      silent?: boolean;
+    } = {},
+  ): Promise<void> {
     const base = {
       // Generated once here and reused on every retry. A fresh id per attempt
       // is what turns one message into several; see docs/api.md.
@@ -514,6 +522,7 @@ export class SyncEngine {
       content: plaintext,
       createdAt: new Date().toISOString(),
       attempts: 0,
+      ...(options.silent ? { silent: true as const } : {}),
     };
 
     const sealed = await sealForOutbox(conversationId, plaintext);
@@ -926,6 +935,7 @@ export class SyncEngine {
           conversationId: entry.conversationId,
           clientMessageId: entry.clientMessageId,
           payload: encodeBase64(entry.payload),
+          ...(entry.silent ? { silent: true } : {}),
           ...(entry.epoch !== undefined &&
           entry.archiveGeneration !== undefined &&
           entry.archivePayload
@@ -1288,9 +1298,12 @@ export class SyncEngine {
       .filter((message) => !message.decryptFailed)
       .flatMap((message) => {
         // An unsupported payload kind may well carry attachments, but this
-        // build cannot know where they are in it. Nothing to prefetch.
+        // build cannot know where they are in it -- and an operation payload
+        // carries none by definition. Nothing to prefetch either way.
         const content = decodeContent(message.payload);
-        return content === "unsupported" ? [] : content.attachments;
+        return content === "unsupported" || isMessageOp(content)
+          ? []
+          : content.attachments;
       });
 
     // One at a time. A burst of parallel photo downloads competes with the

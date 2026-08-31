@@ -54,45 +54,123 @@ export type AttachmentRef = {
   digest?: string;
 };
 
+/**
+ * Quote context on a reply, copied into the payload at send time.
+ *
+ * The excerpt is a *copy*, not a lookup: the target message may simply not be
+ * on the receiving device (a member added later, a cleared browser), and a
+ * reply that renders only when its target happens to be local is a reply that
+ * usually renders as nothing. Denormalising the excerpt is the boring fix.
+ *
+ * Reply is deliberately an additive field on the text shape rather than a new
+ * `kind`: a client without this code renders the reply's text and merely
+ * misses the quote, which degrades strictly better than the "needs a newer
+ * version" placeholder a new kind would force. New kinds are reserved for
+ * payloads an old rendering would get *wrong*, not merely poorer.
+ */
+export type ReplyContext = {
+  messageId: string;
+  excerpt: string;
+  senderUserId: string;
+};
+
 export type MessageContent = {
   text: string;
   attachments: AttachmentRef[];
+  replyTo?: ReplyContext;
 };
+
+// ---------------------------------------------------------------------------
+// Operation payloads -- messages about other messages
+// ---------------------------------------------------------------------------
+//
+// A reaction, an edit and a retraction are ordinary messages whose content
+// *targets* another message by id. They are stored, synced, archived and
+// encrypted exactly like text -- the server cannot tell a reaction from a
+// novel -- and the timeline aggregates them onto their targets at render
+// time. Per (target, reactor) the latest reaction wins; per target the
+// latest edit wins; a retraction beats everything. "Latest" is uuidv7 order,
+// the same order the timeline already sorts by.
+
+export type ReactionOp = {
+  kind: "reaction";
+  target: string;
+  /** The emoji to show, or null to remove this sender's reaction. */
+  emoji: string | null;
+};
+
+export type EditOp = {
+  kind: "edit";
+  target: string;
+  /** Replacement text. Attachments are not editable; the target's remain. */
+  text: string;
+};
+
+export type RetractOp = {
+  kind: "retract";
+  target: string;
+};
+
+export type MessageOp = ReactionOp | EditOp | RetractOp;
 
 /**
  * What decoding produces: content, or the fact that this build cannot
  * represent it.
  *
  * A structured payload may carry a `kind` field naming what it is. Absent
- * means `"text"` -- the shape that existed before the field did, and the only
- * kind this build knows. Anything else (a reaction, a reply, a voice note --
- * kinds that do not exist yet) decodes to `"unsupported"`, which the UI
- * renders as "needs a newer version" rather than as an empty message.
+ * means `"text"` -- the shape that existed before the field did. This build
+ * also knows the operation kinds (`reaction`, `edit`, `retract`), which are
+ * not rendered as messages but aggregated onto their targets. Anything else
+ * (a voice note -- kinds that do not exist yet) decodes to `"unsupported"`,
+ * which the UI renders as "needs a newer version" rather than as an empty
+ * message.
  *
  * The distinction is the whole point: a client without this code shows an
  * unknown kind as a blank bubble and nobody can tell why. This ships before
  * any new kind does, precisely because it only protects clients that already
  * have it.
  */
-export type DecodedContent = MessageContent | "unsupported";
+/** What the timeline can put in a bubble: everything decode produces except
+ * an operation, which is aggregated onto its target instead of rendered. */
+export type RenderableContent = MessageContent | "unsupported";
+
+export type DecodedContent = RenderableContent | MessageOp;
+
+/**
+ * Discriminates an operation from renderable content. `MessageContent` never
+ * carries a `kind` property -- the decoder strips it -- so the check is exact.
+ */
+export function isMessageOp(decoded: DecodedContent): decoded is MessageOp {
+  return typeof decoded === "object" && "kind" in decoded;
+}
 
 /** Encodes content, choosing the smallest representation that carries it. */
 export function encodeContent(content: MessageContent): Uint8Array {
-  // Text with no attachments stays in the old format. Not for compatibility
-  // with old *clients* -- there are none in the wild that would choke -- but
-  // because the overwhelming majority of messages are plain text, and wrapping
-  // every one of them in JSON costs bytes in two tables and a parse on every
-  // render, forever, to express nothing.
-  if (content.attachments.length === 0) {
+  // Text with no attachments and no reply context stays in the old format.
+  // Not for compatibility with old *clients* -- there are none in the wild
+  // that would choke -- but because the overwhelming majority of messages are
+  // plain text, and wrapping every one of them in JSON costs bytes in two
+  // tables and a parse on every render, forever, to express nothing.
+  if (content.attachments.length === 0 && content.replyTo === undefined) {
     return new TextEncoder().encode(content.text);
   }
 
   const json = JSON.stringify({
     text: content.text,
     attachments: content.attachments,
+    ...(content.replyTo !== undefined && { replyTo: content.replyTo }),
   });
 
   const body = new TextEncoder().encode(json);
+  const out = new Uint8Array(body.length + 1);
+  out[0] = STRUCTURED;
+  out.set(body, 1);
+  return out;
+}
+
+/** Encodes an operation. Always structured -- an op has no legacy form. */
+export function encodeOp(op: MessageOp): Uint8Array {
+  const body = new TextEncoder().encode(JSON.stringify(op));
   const out = new Uint8Array(body.length + 1);
   out[0] = STRUCTURED;
   out.set(body, 1);
@@ -128,23 +206,76 @@ export function decodeContent(payload: Uint8Array): DecodedContent {
       kind?: unknown;
       text?: unknown;
       attachments?: unknown;
+      replyTo?: unknown;
+      target?: unknown;
+      emoji?: unknown;
     };
 
-    // Absent means "text". Present-but-unrecognised -- including a kind that
-    // is not even a string -- is a payload from a newer client, not garbage.
+    // Absent means "text". A recognised kind whose required fields do not
+    // check out is also "unsupported" -- a newer client wanting different
+    // semantics for an op must pick a new kind name, so a known name with an
+    // unknown shape is by definition something this build cannot represent.
+    // Present-but-unrecognised -- including a kind that is not even a string
+    // -- is a payload from a newer client, not garbage.
     if (shape.kind !== undefined && shape.kind !== "text") {
-      return "unsupported";
+      return decodeOp(shape) ?? "unsupported";
     }
 
-    return {
+    const content: MessageContent = {
       text: typeof shape.text === "string" ? shape.text : "",
       attachments: Array.isArray(shape.attachments)
         ? shape.attachments.filter(isAttachmentRef)
         : [],
     };
+    // A malformed replyTo is dropped rather than failing the message: the
+    // text still renders, which is exactly how a client predating the field
+    // degrades.
+    if (isReplyContext(shape.replyTo)) content.replyTo = shape.replyTo;
+    return content;
   } catch {
     return { text: "", attachments: [] };
   }
+}
+
+/** The op kinds this build knows. Anything else is the caller's "unsupported". */
+function decodeOp(shape: {
+  kind?: unknown;
+  target?: unknown;
+  text?: unknown;
+  emoji?: unknown;
+}): MessageOp | null {
+  if (typeof shape.target !== "string") return null;
+
+  switch (shape.kind) {
+    case "reaction":
+      // The length cap is defensive: a chip renders whatever this string is,
+      // and 32 UTF-16 units is room for any real emoji sequence (the longest
+      // ZWJ families are ~11) without letting a paragraph through.
+      if (shape.emoji === null) {
+        return { kind: "reaction", target: shape.target, emoji: null };
+      }
+      if (typeof shape.emoji === "string" && shape.emoji.length <= 32) {
+        return { kind: "reaction", target: shape.target, emoji: shape.emoji };
+      }
+      return null;
+    case "edit":
+      if (typeof shape.text !== "string") return null;
+      return { kind: "edit", target: shape.target, text: shape.text };
+    case "retract":
+      return { kind: "retract", target: shape.target };
+    default:
+      return null;
+  }
+}
+
+function isReplyContext(value: unknown): value is ReplyContext {
+  if (typeof value !== "object" || value === null) return false;
+  const ref = value as Record<string, unknown>;
+  return (
+    typeof ref["messageId"] === "string" &&
+    typeof ref["excerpt"] === "string" &&
+    typeof ref["senderUserId"] === "string"
+  );
 }
 
 /**

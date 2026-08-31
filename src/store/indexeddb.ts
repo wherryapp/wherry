@@ -8,6 +8,7 @@
 // a query language -- it is the same API with promises.
 
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
+import { decodeContent, isMessageOp } from "../api/payload";
 import type {
   ConversationPageOptions,
   MessageStore,
@@ -285,7 +286,20 @@ export class IndexedDbMessageStore implements MessageStore {
 
     let unread = 0;
     while (cursor && unread < cap) {
-      if (cursor.value.senderUserId !== excludeSenderUserId) unread += 1;
+      const message = cursor.value;
+      // Operation payloads (reactions, edits, retractions) are messages in
+      // storage but not to a person -- "3 unread" where two are reactions is
+      // a badge that lies. The codec import is a deliberate crack in the
+      // store's storage-only posture, matching the one countUnread already
+      // has (it knows what "unread" means); the SQLite implementation in
+      // Phase 5 must apply the same filter. Undecrypted rows count: an
+      // unreadable message is still news.
+      if (
+        message.senderUserId !== excludeSenderUserId &&
+        (message.decryptFailed || !isMessageOp(decodeContent(message.payload)))
+      ) {
+        unread += 1;
+      }
       cursor = await cursor.continue();
     }
 

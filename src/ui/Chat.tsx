@@ -10,10 +10,10 @@ import { Attachment } from "./Attachment";
 import { Settings } from "./Settings";
 import { Friends } from "./Friends";
 import {
-  decodeContent,
-  type DecodedContent,
   encodeContent,
+  encodeOp,
   type AttachmentRef,
+  type RenderableContent,
 } from "../api/payload";
 import { prepareForUpload } from "./media";
 import {
@@ -36,7 +36,7 @@ import { e2e } from "../crypto";
 import { encryptBlob } from "../crypto/blob";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
-import type { StoredConversation, StoredEvent, StoredMessage } from "../store/types";
+import type { StoredConversation, StoredEvent } from "../store/types";
 import { sync } from "../sync/engine";
 import { mlsEnabled, mlsSync } from "../sync/mls";
 import {
@@ -49,6 +49,7 @@ import {
   useTimeline,
   useTyping,
   useUnread,
+  type MessageMarks,
   type TimelineItem,
 } from "./hooks";
 import {
@@ -65,6 +66,7 @@ import {
   PanelSection,
   PlusIcon,
   SendIcon,
+  TrashIcon,
   UsersIcon,
 } from "./kit";
 
@@ -72,24 +74,11 @@ import {
 // Rendering content
 // ---------------------------------------------------------------------------
 
-/**
- * What to render for a message, or null when it cannot be rendered at all.
- *
- * Null is kept distinct from empty content on purpose: a payload whose
- * decrypt failed is ciphertext this device holds no key for (yet), which is
- * a different thing to say than a message with no text, and the two look
- * identical if they share a return value. `"unsupported"` is a third state
- * for the same reason -- a payload kind from a newer client is fixed by
- * updating, not by waiting for keys.
- */
-function messageContent(message: StoredMessage): DecodedContent | null {
-  // The explicit flag, not the version number: under v2 most version-2
-  // messages are readable and a few are not (sealed to an epoch this device
-  // never held), and only decrypt-at-ingest knew which. The forward archive
-  // sync heals these, so null here is usually a placeholder for seconds.
-  if (message.decryptFailed) return null;
-  return decodeContent(message.payload);
-}
+// Decoding no longer happens here: useTimeline and useLatestMessages hand
+// this file already-decoded content (RenderableContent | null, where null is
+// a decrypt still waiting for keys), because the same decode pass is what
+// aggregates reactions, edits and retractions onto their targets. See the
+// aggregation notes on useTimeline in hooks.ts.
 
 function conversationTitle(
   conversation: StoredConversation,
@@ -846,7 +835,7 @@ function GroupDetails({
  * and there is no need to track whether this call would be one.
  */
 function useMarkRead(conversationId: string | null, selfUserId: string): void {
-  const { items } = useTimeline(conversationId);
+  const { items } = useTimeline(conversationId, selfUserId);
 
   // The newest *stored* message. Outbox entries are excluded: they have no
   // server id yet, and marking your own unsent message read means nothing.
@@ -971,24 +960,29 @@ function ConversationList({
 
         {conversations.map((conversation) => {
           const preview = latest.get(conversation.id);
-          const previewContent = preview ? messageContent(preview) : null;
           // A photo with no caption still has to say something in the list,
-          // and so does a message kind this build cannot render.
-          const text =
-            previewContent === "unsupported"
-              ? "Needs a newer version"
-              : previewContent
-                ? previewContent.text ||
-                  (previewContent.attachments.length > 0 ? "Photo" : "")
-                : null;
+          // and so does a message kind this build cannot render. A retracted
+          // one says it was deleted rather than leaking what it used to say.
+          const text = preview
+            ? preview.retracted
+              ? "Message deleted"
+              : preview.content === "unsupported"
+                ? "Needs a newer version"
+                : preview.content
+                  ? preview.content.text ||
+                    (preview.content.attachments.length > 0 ? "Photo" : "")
+                  : null
+            : null;
           const count = unread.get(conversation.id) ?? 0;
           const isGroup = conversation.members.length > 2;
 
           // In a group the preview is ambiguous without a name -- "see you at
           // 6" from one of four people is half a message.
           const prefix =
-            isGroup && preview && preview.senderUserId !== session.user.id
-              ? `${memberName(conversation, preview.senderUserId)}: `
+            isGroup &&
+            preview &&
+            preview.message.senderUserId !== session.user.id
+              ? `${memberName(conversation, preview.message.senderUserId)}: `
               : "";
 
           const title = conversationTitle(conversation, session.user.id);
@@ -1025,7 +1019,7 @@ function ConversationList({
                   )}
                   {preview && (
                     <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">
-                      {listTime(preview.sentAt)}
+                      {listTime(preview.message.sentAt)}
                     </span>
                   )}
                 </span>
@@ -1060,19 +1054,24 @@ function ConversationList({
 function Bubble({
   mine,
   content,
+  marks,
   meta,
   muted,
   sender,
   receipt,
   first = true,
   last = true,
+  onDelete,
+  actionsShown = false,
 }: {
   mine: boolean;
   /**
    * Null when the payload cannot be read yet (no keys); `"unsupported"` when
    * it decoded fine but this build does not know the kind.
    */
-  content: DecodedContent | null;
+  content: RenderableContent | null;
+  /** What the ops targeting this message add up to -- see useTimeline. */
+  marks?: MessageMarks | null;
   meta: string;
   muted?: boolean;
   /**
@@ -1098,12 +1097,35 @@ function Bubble({
    */
   first?: boolean;
   last?: boolean;
+  /**
+   * Deletes (retracts) this message, offered only on your own sent ones.
+   * Revealed on hover, and by the long-press that sets `actionsShown` --
+   * the affordance living in the slack beside the bubble that stage 3 of
+   * the reform reserved.
+   */
+  onDelete?: (() => void) | undefined;
+  actionsShown?: boolean;
 }) {
+  const retracted = marks?.retracted === true;
+  const edited = !retracted && marks?.editedText !== undefined;
+
   return (
-    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex ${mine ? "justify-end" : "justify-start"}`}>
       {/* The horizontal padding beyond the bubble is deliberate slack: the
           affordance space where hover actions and long-press targets for
           reactions/replies land later without re-laying anything out. */}
+      {onDelete && !retracted && (
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label="Delete message"
+          className={`mr-1 self-center rounded-full p-1.5 text-neutral-400 transition-opacity hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:text-neutral-500 dark:hover:text-red-400 ${
+            actionsShown ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <TrashIcon className="h-4 w-4" />
+        </button>
+      )}
       <div
         className={`max-w-[85%] rounded-2xl px-3 py-2 md:max-w-[70%] ${
           mine
@@ -1116,7 +1138,13 @@ function Bubble({
             {sender}
           </span>
         )}
-        {content === null ? (
+        {retracted ? (
+          // The tombstone. A quiet line rather than a vanished bubble --
+          // vanishing re-flows the timeline under the reader, and a person
+          // half-remembering that something was here deserves the honest
+          // answer that it was.
+          <span className="text-sm italic opacity-60">Message deleted</span>
+        ) : content === null ? (
           <span className="text-sm italic opacity-80">
             Encrypted message — waiting for keys
           </span>
@@ -1133,9 +1161,9 @@ function Bubble({
                 ))}
               </span>
             )}
-            {content.text.length > 0 && (
+            {(marks?.editedText ?? content.text).length > 0 && (
               <span className="whitespace-pre-wrap break-words text-sm">
-                {content.text}
+                {marks?.editedText ?? content.text}
               </span>
             )}
           </>
@@ -1147,6 +1175,7 @@ function Bubble({
             }`}
           >
             {meta}
+            {edited && " · edited"}
             {receipt && ` · ${receipt}`}
           </span>
         )}
@@ -1213,8 +1242,62 @@ function Timeline({
   /** Undefined until the conversation list catches up; only names depend on it. */
   conversation: StoredConversation | undefined;
 }) {
-  const { items, hasMore, loadOlder } = useTimeline(conversationId);
+  const { items, hasMore, loadOlder } = useTimeline(
+    conversationId,
+    session.user.id,
+  );
   const delivered = useDeliveredMarks(conversationId);
+
+  // Which message's edge actions are held open by a long-press. Hover needs
+  // no state; this is the phone's path to the same affordance.
+  const [actionsFor, setActionsFor] = useState<string | null>(null);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => setActionsFor(null), [conversationId]);
+
+  const cancelPress = (): void => {
+    if (pressTimer.current !== null) {
+      clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+  };
+
+  /** Long-press (and right-click) toggles a message's edge actions. */
+  const pressHandlers = (messageId: string) => ({
+    onPointerDown: () => {
+      cancelPress();
+      pressTimer.current = setTimeout(
+        () =>
+          setActionsFor((current) =>
+            current === messageId ? null : messageId,
+          ),
+        450,
+      );
+    },
+    onPointerUp: cancelPress,
+    onPointerLeave: cancelPress,
+    onPointerCancel: cancelPress,
+    onContextMenu: (event: { preventDefault: () => void }) => {
+      event.preventDefault();
+      setActionsFor((current) => (current === messageId ? null : messageId));
+    },
+  });
+
+  /**
+   * Delete for everyone: an ordinary send whose payload is a retract op --
+   * see the ops notes on useTimeline in hooks.ts. Silent, because a phone
+   * ringing over a deletion would be worse than the message it removes; the
+   * optimistic outbox application is what tombstones it before the round
+   * trip completes.
+   */
+  const retractMessage = (messageId: string): void => {
+    if (!window.confirm("Delete this message for everyone?")) return;
+    setActionsFor(null);
+    void sync.enqueue(
+      conversationId,
+      encodeOp({ kind: "retract", target: messageId }),
+      { silent: true },
+    );
+  };
 
   // Names by user id, so attribution is a lookup rather than a scan per
   // message. Only built for groups, since a 1:1 never shows them.
@@ -1302,24 +1385,36 @@ function Timeline({
         const entrance = live ? " motion-safe:animate-message-in" : "";
 
         if (item.kind === "sent") {
+          const mine = item.message.senderUserId === session.user.id;
           return (
             <div
               key={item.message.messageId}
               className={(first ? "mt-3" : "mt-0.5") + entrance}
+              {...(mine && !item.marks?.retracted
+                ? pressHandlers(item.message.messageId)
+                : {})}
             >
               <Bubble
-                mine={item.message.senderUserId === session.user.id}
+                mine={mine}
                 first={first}
                 last={last}
-                content={messageContent(item.message)}
+                content={item.content}
+                marks={item.marks}
                 meta={time(item.message.sentAt)}
                 sender={
-                  isGroup && item.message.senderUserId !== session.user.id
+                  isGroup && !mine
                     ? (names.get(item.message.senderUserId) ?? "Someone")
                     : undefined
                 }
+                onDelete={
+                  mine ? () => retractMessage(item.message.messageId) : undefined
+                }
+                actionsShown={actionsFor === item.message.messageId}
                 receipt={
-                  item.message.messageId === newestOwnId
+                  // A tombstone with "Delivered" under it would be receipts
+                  // for a message that no longer says anything.
+                  item.message.messageId === newestOwnId &&
+                  !item.marks?.retracted
                     ? readLabel(
                         readCount(
                           conversation,
@@ -1348,7 +1443,7 @@ function Timeline({
               muted
               first={first}
               last={last}
-              content={decodeContent(item.entry.content)}
+              content={item.content}
               meta={
                 item.entry.failedPermanently
                   ? `Failed — ${item.entry.lastError ?? "not sent"}`

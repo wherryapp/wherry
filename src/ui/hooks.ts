@@ -11,6 +11,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
 import type { Announcement } from "../api/client";
 import {
+  decodeContent,
+  isMessageOp,
+  type MessageOp,
+  type RenderableContent,
+} from "../api/payload";
+import {
   META_ANNOUNCEMENTS,
   META_ANNOUNCEMENTS_SEEN,
   META_DELIVERED_PREFIX,
@@ -102,9 +108,29 @@ export function useConversations(): {
 
 const PAGE = 50;
 
+/**
+ * What the operations targeting a message add up to, aggregated at render
+ * time. Absence of marks is the overwhelmingly common case, so the timeline
+ * carries null rather than an empty object per message.
+ */
+export type MessageMarks = {
+  /** emoji -> reactor user ids, ordered by each emoji's first appearance. */
+  reactions: [string, string[]][];
+  /** Replacement text from the sender's latest edit. */
+  editedText?: string;
+  /** Renders as a tombstone. Beats any edit, and hides reactions. */
+  retracted?: boolean;
+};
+
 export type TimelineItem =
-  | { kind: "sent"; message: StoredMessage }
-  | { kind: "pending"; entry: OutboxEntry }
+  | {
+      kind: "sent";
+      message: StoredMessage;
+      /** Decoded once here; null when decrypt failed (payload is wire bytes). */
+      content: RenderableContent | null;
+      marks: MessageMarks | null;
+    }
+  | { kind: "pending"; entry: OutboxEntry; content: RenderableContent }
   | { kind: "event"; event: StoredEvent };
 
 /**
@@ -119,8 +145,35 @@ export type TimelineItem =
  * Notices are not paged with the messages: they are rare, the store holds a
  * conversation's whole notice history, and mixing a second cursor into the
  * "load older" walk would be real complexity for a handful of extra rows.
+ *
+ * ---------------------------------------------------------------------------
+ * Operations aggregate here, at read time
+ * ---------------------------------------------------------------------------
+ *
+ * A reaction, an edit or a retraction is stored as an ordinary message; this
+ * hook is where it stops being one. Ops never appear as items -- they fold
+ * into the `marks` of the message they target. Aggregating at read rather
+ * than materializing onto the target at write time is self-healing by
+ * construction: an op that arrives before its target (archive walk, decrypt
+ * healing) simply applies on the next render, with no reconciliation code.
+ *
+ * The loaded page bounds both cost and correctness, and the bound is sound:
+ * pages load as a contiguous newest-first suffix, and an op is always newer
+ * than its target (it names an existing id), so a loaded target's ops are
+ * always loaded with it. Ops in the outbox are aggregated too -- that is
+ * what makes a retraction tombstone instantly instead of after the round
+ * trip.
+ *
+ * Authority is client-enforced, honor-system, like every E2E messenger --
+ * the server cannot read who an op targets, so the *reader* checks: an edit
+ * or retraction applies only when its sender is the target's sender. A
+ * reaction applies from any member. "Latest wins" is uuidv7 order for stored
+ * ops, with pending ones last.
  */
-export function useTimeline(conversationId: string | null): {
+export function useTimeline(
+  conversationId: string | null,
+  selfUserId: string,
+): {
   items: TimelineItem[];
   hasMore: boolean;
   loadOlder: () => void;
@@ -168,11 +221,109 @@ export function useTimeline(conversationId: string | null): {
     }
   });
 
-  const items = useMemo<TimelineItem[]>(
-    () => [
-      ...messages.map((message) => ({ kind: "sent" as const, message })),
+  const items = useMemo<TimelineItem[]>(() => {
+    // One decode per message per reload -- the payloads are small and the
+    // page is bounded, so this is cheaper than it reads.
+    const decoded = messages.map((message) => ({
+      message,
+      content: message.decryptFailed ? null : decodeContent(message.payload),
+    }));
+
+    // Who sent each renderable message, for the authority check below.
+    const senderOf = new Map<string, string>();
+    for (const { message, content } of decoded) {
+      if (content === null || !isMessageOp(content)) {
+        senderOf.set(message.messageId, message.senderUserId);
+      }
+    }
+
+    // Ops in application order: stored ones are already ascending by id
+    // (send order), pending ones follow (they are newer than anything
+    // stored, and listOutbox returns them oldest first).
+    const ops: { op: MessageOp; senderUserId: string }[] = [];
+    for (const { message, content } of decoded) {
+      if (content !== null && isMessageOp(content)) {
+        ops.push({ op: content, senderUserId: message.senderUserId });
+      }
+    }
+    const pendingRenderable: { entry: OutboxEntry; content: RenderableContent }[] =
+      [];
+    for (const entry of pending) {
+      const content = decodeContent(entry.content);
+      if (isMessageOp(content)) {
+        // An unsent op still applies -- optimistically, to this user's own
+        // view. That is what makes "Delete" tombstone instantly.
+        ops.push({ op: content, senderUserId: selfUserId });
+      } else {
+        pendingRenderable.push({ entry, content });
+      }
+    }
+
+    // Latest wins by construction: later applications overwrite earlier.
+    const reactionsByTarget = new Map<string, Map<string, string | null>>();
+    const editByTarget = new Map<string, string>();
+    const retractedTargets = new Set<string>();
+    for (const { op, senderUserId } of ops) {
+      if (op.kind === "reaction") {
+        let perReactor = reactionsByTarget.get(op.target);
+        if (!perReactor) {
+          perReactor = new Map();
+          reactionsByTarget.set(op.target, perReactor);
+        }
+        perReactor.set(senderUserId, op.emoji);
+      } else if (senderOf.get(op.target) === senderUserId) {
+        // Edit and retract only from the target's own sender. An op failing
+        // this check is dropped silently -- it could not have been produced
+        // by a well-behaved client.
+        if (op.kind === "edit") editByTarget.set(op.target, op.text);
+        else retractedTargets.add(op.target);
+      }
+    }
+
+    const marksFor = (messageId: string): MessageMarks | null => {
+      const perReactor = reactionsByTarget.get(messageId);
+      const editedText = editByTarget.get(messageId);
+      const retracted = retractedTargets.has(messageId);
+      if (!perReactor && editedText === undefined && !retracted) return null;
+
+      // Group per-reactor state into chips, dropping removals (emoji null),
+      // keyed by each emoji's first appearance so chips do not jump around.
+      const grouped = new Map<string, string[]>();
+      if (perReactor) {
+        for (const [userId, emoji] of perReactor) {
+          if (emoji === null) continue;
+          const users = grouped.get(emoji) ?? [];
+          users.push(userId);
+          grouped.set(emoji, users);
+        }
+      }
+
+      const marks: MessageMarks = { reactions: [...grouped.entries()] };
+      if (retracted) marks.retracted = true;
+      else if (editedText !== undefined) marks.editedText = editedText;
+      return marks;
+    };
+
+    return [
+      ...decoded
+        .filter(
+          (
+            d,
+          ): d is { message: StoredMessage; content: RenderableContent | null } =>
+            d.content === null || !isMessageOp(d.content),
+        )
+        .map(({ message, content }) => ({
+          kind: "sent" as const,
+          message,
+          content,
+          marks: marksFor(message.messageId),
+        })),
       ...events.map((event) => ({ kind: "event" as const, event })),
-      ...pending.map((entry) => ({ kind: "pending" as const, entry })),
+      ...pendingRenderable.map(({ entry, content }) => ({
+        kind: "pending" as const,
+        entry,
+        content,
+      })),
     ].sort((a, b) => {
       // Pending entries have no server id yet and always sort last, after
       // everything with one. Sent messages and notices interleave by id --
@@ -189,9 +340,8 @@ export function useTimeline(conversationId: string | null): {
       if (aId === null) return 1;
       if (bId === null) return -1;
       return aId.localeCompare(bId);
-    }),
-    [messages, events, pending],
-  );
+    });
+  }, [messages, events, pending, selfUserId]);
 
   const loadOlder = useCallback(() => setLimit((n) => n + PAGE), []);
 
@@ -255,20 +405,99 @@ export function useUnread(
   return unread;
 }
 
-/** The most recent message per conversation, for the list's preview line. */
+/**
+ * How far back the preview walk looks for a renderable message. Ops are
+ * skipped, so a reaction-heavy burst must not push the real latest message
+ * out of reach -- but the walk still has to end somewhere. A window this
+ * deep being *all* ops means there is nothing sensible to preview anyway.
+ */
+const PREVIEW_WINDOW = 30;
+
+export type ConversationPreview = {
+  /** The newest renderable (non-op) message -- the preview's anchor. */
+  message: StoredMessage;
+  /** Decoded, with any authorised edit applied. Null when decrypt failed. */
+  content: RenderableContent | null;
+  /** Renders as "Message deleted" rather than the retracted text. */
+  retracted: boolean;
+};
+
+/**
+ * The most recent renderable message per conversation, for the list's
+ * preview line.
+ *
+ * Walks a small newest-first window rather than taking the newest row,
+ * because the newest row may be an op -- and "reacted 👍" is not what the
+ * preview line is for. Ops seen on the way down are applied to the anchor
+ * they land on: a retracted latest message previews as deleted instead of
+ * leaking the text it no longer shows, and an edited one previews its
+ * current text. Same authority rule as the timeline.
+ */
 export function useLatestMessages(
   conversations: readonly StoredConversation[],
-): Map<string, StoredMessage> {
-  const [latest, setLatest] = useState<Map<string, StoredMessage>>(new Map());
+): Map<string, ConversationPreview> {
+  const [latest, setLatest] = useState<Map<string, ConversationPreview>>(
+    new Map(),
+  );
   const ids = conversations.map((c) => c.id).join(",");
 
   const reload = useCallback(() => {
     const list = ids ? ids.split(",") : [];
     void Promise.all(
-      list.map(async (id) => [id, await store.getLatestMessage(id)] as const),
+      list.map(async (id) => {
+        const page = await store.getConversationPage(id, {
+          limit: PREVIEW_WINDOW,
+        });
+
+        // Newest first, so ops are seen before the targets they modify (an
+        // op is always newer than its target). First edit seen per target is
+        // the newest and wins.
+        const retractedBy = new Map<string, Set<string>>();
+        const editSeen = new Map<string, { text: string; by: string }>();
+        for (const message of page) {
+          const content = message.decryptFailed
+            ? null
+            : decodeContent(message.payload);
+
+          if (content !== null && isMessageOp(content)) {
+            if (content.kind === "retract") {
+              const senders = retractedBy.get(content.target) ?? new Set();
+              senders.add(message.senderUserId);
+              retractedBy.set(content.target, senders);
+            } else if (
+              content.kind === "edit" &&
+              !editSeen.has(content.target)
+            ) {
+              editSeen.set(content.target, {
+                text: content.text,
+                by: message.senderUserId,
+              });
+            }
+            continue;
+          }
+
+          // The anchor: the newest message that is itself renderable.
+          const retracted =
+            retractedBy.get(message.messageId)?.has(message.senderUserId) ??
+            false;
+          const edit = editSeen.get(message.messageId);
+          const withEdit =
+            content !== null &&
+            content !== "unsupported" &&
+            edit !== undefined &&
+            edit.by === message.senderUserId
+              ? { ...content, text: edit.text }
+              : content;
+          return [
+            id,
+            { message, content: withEdit, retracted } satisfies ConversationPreview,
+          ] as const;
+        }
+        return [id, undefined] as const;
+      }),
     ).then((pairs) => {
-      const next = new Map<string, StoredMessage>();
-      for (const [id, message] of pairs) if (message) next.set(id, message);
+      const next = new Map<string, ConversationPreview>();
+      for (const [id, preview] of pairs) if (preview) next.set(id, preview);
       setLatest(next);
     });
   }, [ids]);
