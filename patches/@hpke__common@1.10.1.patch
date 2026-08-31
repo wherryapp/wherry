@@ -1,0 +1,160 @@
+diff --git a/esm/src/algorithm.js b/esm/src/algorithm.js
+index 15b6b3dc407b03e0629a76b62d56f9bfe167a9a4..d050b0b9cdc25fb39f1a026d1cc89b61ce39942b 100644
+--- a/esm/src/algorithm.js
++++ b/esm/src/algorithm.js
+@@ -1,19 +1,14 @@
+-import * as dntShim from "../_dnt.shims.js";
+ import { NotSupportedError } from "./errors.js";
++// Patched (messenger project): this bundle only ever runs in a browser.
++// The upstream Node.js <19 fallback below did `await import("crypto")`,
++// which Vite externalizes to a stub that throws when touched -- WebKit
++// was observed taking this branch even though globalThis.crypto is always
++// defined in a real browser. See docs/changelog.md's HPKE freeze entry.
+ async function loadSubtleCrypto() {
+-    if (dntShim.dntGlobalThis !== undefined && globalThis.crypto !== undefined) {
+-        // Browsers, Node.js >= v19, Cloudflare Workers, Bun, etc.
++    if (globalThis.crypto !== undefined) {
+         return globalThis.crypto.subtle;
+     }
+-    // Node.js <= v18
+-    try {
+-        // @ts-ignore: to ignore "crypto"
+-        const { webcrypto } = await import("crypto"); // node:crypto
+-        return webcrypto.subtle;
+-    }
+-    catch (e) {
+-        throw new NotSupportedError(e);
+-    }
++    throw new NotSupportedError(new Error("globalThis.crypto is unavailable"));
+ }
+ export class NativeAlgorithm {
+     constructor() {
+diff --git a/esm/src/utils/misc.js b/esm/src/utils/misc.js
+index 09cb9e3aa40ec979f97b50d4d0b1123285a50851..2aa72b778cd31caeea68614646b8b29ac2149b79 100644
+--- a/esm/src/utils/misc.js
++++ b/esm/src/utils/misc.js
+@@ -131,35 +131,20 @@ export function kemToKeyGenAlgorithm(kem) {
+             };
+     }
+ }
++// Patched (messenger project): same dead-Node.js-fallback issue as
++// algorithm.js's loadSubtleCrypto -- see docs/changelog.md's HPKE freeze
++// entry. This bundle only ever runs in a browser.
+ export async function loadSubtleCrypto() {
+-    if (dntShim.dntGlobalThis !== undefined && globalThis.crypto !== undefined) {
+-        // Browsers, Node.js >= v19, Cloudflare Workers, Bun, etc.
++    if (globalThis.crypto !== undefined) {
+         return globalThis.crypto.subtle;
+     }
+-    // Node.js <= v18
+-    try {
+-        // @ts-ignore: to ignore "crypto"
+-        const { webcrypto } = await import("crypto"); // node:crypto
+-        return webcrypto.subtle;
+-    }
+-    catch (_e) {
+-        throw new Error("Failed to load SubtleCrypto");
+-    }
++    throw new Error("Failed to load SubtleCrypto");
+ }
+ export async function loadCrypto() {
+-    if (typeof dntShim.dntGlobalThis !== "undefined" && globalThis.crypto !== undefined) {
+-        // Browsers, Node.js >= v19, Cloudflare Workers, Bun, etc.
++    if (globalThis.crypto !== undefined) {
+         return globalThis.crypto;
+     }
+-    // Node.js <= v18
+-    try {
+-        // @ts-ignore: to ignore "crypto"
+-        const { webcrypto } = await import("crypto"); // node:crypto
+-        return webcrypto;
+-    }
+-    catch (_e) {
+-        throw new Error("failed to load Crypto");
+-    }
++    throw new Error("failed to load Crypto");
+ }
+ /**
+  * XOR for Uint8Array.
+diff --git a/script/src/algorithm.js b/script/src/algorithm.js
+index 3ebdc1749878aee1705fa370694d457caf68b5b7..38ab662d406d21c1f703535f122d73101251579e 100644
+--- a/script/src/algorithm.js
++++ b/script/src/algorithm.js
+@@ -34,22 +34,18 @@ var __importStar = (this && this.__importStar) || function (mod) {
+     var __syncRequire = typeof module === "object" && typeof module.exports === "object";
+     Object.defineProperty(exports, "__esModule", { value: true });
+     exports.NativeAlgorithm = void 0;
+-    const dntShim = __importStar(require("../_dnt.shims.js"));
+     const errors_js_1 = require("./errors.js");
++    // Patched (messenger project): this bundle only ever runs in a browser.
++    // The upstream Node.js <19 fallback did a dynamic require of "crypto",
++    // which Vite externalizes to a stub that throws when touched -- WebKit
++    // was observed taking this branch even though globalThis.crypto is
++    // always defined in a real browser. See docs/changelog.md's HPKE
++    // freeze entry.
+     async function loadSubtleCrypto() {
+-        if (dntShim.dntGlobalThis !== undefined && globalThis.crypto !== undefined) {
+-            // Browsers, Node.js >= v19, Cloudflare Workers, Bun, etc.
++        if (globalThis.crypto !== undefined) {
+             return globalThis.crypto.subtle;
+         }
+-        // Node.js <= v18
+-        try {
+-            // @ts-ignore: to ignore "crypto"
+-            const { webcrypto } = await (__syncRequire ? Promise.resolve().then(() => __importStar(require("crypto"))) : new Promise((resolve_1, reject_1) => { require(["crypto"], resolve_1, reject_1); }).then(__importStar)); // node:crypto
+-            return webcrypto.subtle;
+-        }
+-        catch (e) {
+-            throw new errors_js_1.NotSupportedError(e);
+-        }
++        throw new errors_js_1.NotSupportedError(new Error("globalThis.crypto is unavailable"));
+     }
+     class NativeAlgorithm {
+         constructor() {
+diff --git a/script/src/utils/misc.js b/script/src/utils/misc.js
+index c365fa0a1e0cd439ed301f801f22f61d962cdc35..4493cba59e5f0f56b9c37094df389218ea4191c3 100644
+--- a/script/src/utils/misc.js
++++ b/script/src/utils/misc.js
+@@ -180,35 +180,20 @@ var __importStar = (this && this.__importStar) || function (mod) {
+                 };
+         }
+     }
++    // Patched (messenger project): same dead-Node.js-fallback issue as
++    // algorithm.js's loadSubtleCrypto -- see docs/changelog.md's HPKE
++    // freeze entry. This bundle only ever runs in a browser.
+     async function loadSubtleCrypto() {
+-        if (dntShim.dntGlobalThis !== undefined && globalThis.crypto !== undefined) {
+-            // Browsers, Node.js >= v19, Cloudflare Workers, Bun, etc.
++        if (globalThis.crypto !== undefined) {
+             return globalThis.crypto.subtle;
+         }
+-        // Node.js <= v18
+-        try {
+-            // @ts-ignore: to ignore "crypto"
+-            const { webcrypto } = await (__syncRequire ? Promise.resolve().then(() => __importStar(require("crypto"))) : new Promise((resolve_1, reject_1) => { require(["crypto"], resolve_1, reject_1); }).then(__importStar)); // node:crypto
+-            return webcrypto.subtle;
+-        }
+-        catch (_e) {
+-            throw new Error("Failed to load SubtleCrypto");
+-        }
++        throw new Error("Failed to load SubtleCrypto");
+     }
+     async function loadCrypto() {
+-        if (typeof dntShim.dntGlobalThis !== "undefined" && globalThis.crypto !== undefined) {
+-            // Browsers, Node.js >= v19, Cloudflare Workers, Bun, etc.
++        if (globalThis.crypto !== undefined) {
+             return globalThis.crypto;
+         }
+-        // Node.js <= v18
+-        try {
+-            // @ts-ignore: to ignore "crypto"
+-            const { webcrypto } = await (__syncRequire ? Promise.resolve().then(() => __importStar(require("crypto"))) : new Promise((resolve_2, reject_2) => { require(["crypto"], resolve_2, reject_2); }).then(__importStar)); // node:crypto
+-            return webcrypto;
+-        }
+-        catch (_e) {
+-            throw new Error("failed to load Crypto");
+-        }
++        throw new Error("failed to load Crypto");
+     }
+     /**
+      * XOR for Uint8Array.

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@hpke/common@1.10.1': 432a30f7c8f38af137f7c986db55fee6335a4970ecafc2a2da1f02904972a506
+
 importers:
 
   .:
@@ -1018,15 +1021,15 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@hpke/common@1.10.1': {}
+  '@hpke/common@1.10.1(patch_hash=432a30f7c8f38af137f7c986db55fee6335a4970ecafc2a2da1f02904972a506)': {}
 
   '@hpke/core@1.9.0':
     dependencies:
-      '@hpke/common': 1.10.1
+      '@hpke/common': 1.10.1(patch_hash=432a30f7c8f38af137f7c986db55fee6335a4970ecafc2a2da1f02904972a506)
 
   '@hpke/dhkem-x25519@1.8.0':
     dependencies:
-      '@hpke/common': 1.10.1
+      '@hpke/common': 1.10.1(patch_hash=432a30f7c8f38af137f7c986db55fee6335a4970ecafc2a2da1f02904972a506)
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
