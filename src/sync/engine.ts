@@ -583,6 +583,17 @@ export class SyncEngine {
 
     await store.enqueueOutbox(entry);
     this.#emit({ type: "messages", conversationIds: [conversationId] });
+
+    // Nothing to seal with means the group does not exist yet -- a
+    // conversation created moments ago, typed into straight away. The poke
+    // below wakes the loop, but the membership sweep that would *make* the
+    // group runs on its own 30-second interval and a woken pass skips it if
+    // one ran recently. Without this, the first message in a brand-new hub
+    // sits on "sending" for up to half a minute while the only thing it
+    // needs waits on a timer -- measured at 20-30s, and the first thing
+    // anybody does with a new hub. Invalidating makes the woken pass sweep.
+    if (entry.pendingEncryption) mlsSync.invalidate();
+
     this.poke();
   }
 
