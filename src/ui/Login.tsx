@@ -157,7 +157,15 @@ export function Login({
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-neutral-50 p-6 dark:bg-neutral-950">
+    // #root is a fixed box sized to the visual viewport (index.css,
+    // viewport.ts) with no scroll of its own, so a form taller than it --
+    // registration, with five fields -- would otherwise have an unreachable
+    // bottom. This div is the scroll container that centering alone used to
+    // skip: min-h-full on the inner flex is a floor, not a cap, so content
+    // taller than the viewport grows the inner div past it and this
+    // overflow-y-auto is what makes the overflow reachable.
+    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
+      <div className="flex min-h-full items-center justify-center p-6">
       <form
         onSubmit={submit}
         className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
@@ -336,6 +344,7 @@ export function Login({
         </button>
         )}
       </form>
+      </div>
     </div>
   );
 }
@@ -358,7 +367,9 @@ function RecoveryCodeScreen({
   const [acknowledged, setAcknowledged] = useState(false);
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-neutral-50 p-6 dark:bg-neutral-950">
+    // Same scroll-container fix as the form above -- see its comment.
+    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
+      <div className="flex min-h-full items-center justify-center p-6">
       <div className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div>
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
@@ -398,6 +409,7 @@ function RecoveryCodeScreen({
         >
           Continue
         </Button>
+      </div>
       </div>
     </div>
   );
@@ -459,7 +471,10 @@ function RecoveryPrompt({
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-neutral-50 p-6 dark:bg-neutral-950">
+    // Same scroll-container fix as the sign-in/register form -- see its
+    // comment above.
+    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
+      <div className="flex min-h-full items-center justify-center p-6">
       <form
         onSubmit={submitCode}
         className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
@@ -536,6 +551,7 @@ function RecoveryPrompt({
           </button>
         )}
       </form>
+      </div>
     </div>
   );
 }

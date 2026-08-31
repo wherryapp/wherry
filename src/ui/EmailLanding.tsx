@@ -48,9 +48,14 @@ function clearUrl(): void {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-full items-center justify-center bg-neutral-50 p-4 dark:bg-neutral-950">
-      <div className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        {children}
+    // Same scroll-container fix as Login.tsx's forms -- #root is a fixed,
+    // visual-viewport-sized box with no scroll of its own, so centering
+    // alone leaves an unreachable bottom on anything taller than the screen.
+    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
+      <div className="flex min-h-full items-center justify-center p-4">
+        <div className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          {children}
+        </div>
       </div>
     </div>
   );
