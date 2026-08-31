@@ -1907,7 +1907,7 @@ function Bubble({
               </span>
             )}
             {(marks?.editedText ?? content.text).length > 0 && (
-              <span className="whitespace-pre-wrap break-words text-sm">
+              <span className="whitespace-pre-wrap wrap-anywhere text-sm">
                 {highlightMentions(
                   marks?.editedText ?? content.text,
                   mentionNames ?? [],
@@ -1960,7 +1960,7 @@ function Bubble({
 function Notice({ text }: { text: string }) {
   return (
     <div className="flex justify-center">
-      <span className="max-w-[85%] text-center text-xs text-neutral-500 dark:text-neutral-400">
+      <span className="max-w-[85%] wrap-anywhere text-center text-xs text-neutral-500 dark:text-neutral-400">
         {text}
       </span>
     </div>

@@ -365,7 +365,7 @@ export function Settings({
                   {/* The body is markdown by contract, shown as plain text
                       for now -- whether it deserves real rendering (and the
                       dependency that costs) is the reform's call. */}
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-200">
+                  <p className="mt-1 whitespace-pre-wrap wrap-anywhere text-sm text-neutral-700 dark:text-neutral-200">
                     {entry.body}
                   </p>
                 </li>
