@@ -2322,7 +2322,7 @@ export function Chat({
             Chats
           </span>
           <span className="flex items-center gap-1">
-            <IconButton label="Contacts" onClick={() => setFriendsOpen(true)}>
+            <IconButton label="Friends" onClick={() => setFriendsOpen(true)}>
               <UsersIcon />
             </IconButton>
             <button

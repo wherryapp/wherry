@@ -1,4 +1,4 @@
-// Contacts: who you know, who is waiting on you, and who you have blocked.
+// Friends: who you know, who is waiting on you, and who you have blocked.
 //
 // The same full-screen shape as Settings, for the same reason -- no router,
 // and a phone wants a page here anyway.
@@ -70,7 +70,7 @@ export function Friends({
     try {
       setLists(await fetchFriends());
     } catch {
-      setError("Could not load your contacts.");
+      setError("Could not load your friends.");
     }
   }, []);
 
@@ -112,7 +112,7 @@ export function Friends({
       setUsername("");
       setNote(
         result.mutual
-          ? `You and ${user.displayName} are now contacts.`
+          ? `You and ${user.displayName} are now friends.`
           : `Request sent to ${user.displayName}.`,
       );
       await reload();
@@ -149,7 +149,7 @@ export function Friends({
   }
 
   return (
-    <Panel title="Contacts" onClose={onClose}>
+    <Panel title="Friends" onClose={onClose}>
       <div>
         <form onSubmit={add} className="flex gap-2 px-4 py-4">
           <Input
@@ -190,7 +190,7 @@ export function Friends({
                         onClick={() =>
                           void act(
                             () => acceptFriend(person.userId),
-                            `You and ${person.displayName} are now contacts.`,
+                            `You and ${person.displayName} are now friends.`,
                           )
                         }
                       >
@@ -210,7 +210,7 @@ export function Friends({
               </PanelSection>
             )}
 
-            <PanelSection title={`Contacts (${lists.friends.length})`}>
+            <PanelSection title={`Friends (${lists.friends.length})`}>
               {lists.friends.length === 0 ? (
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
                   Nobody yet. Add somebody by their username above.
@@ -286,7 +286,7 @@ export function Friends({
                         onClick={() =>
                           void act(
                             () => unblockUser(person.userId),
-                            `${person.displayName} is unblocked. You are not contacts any more.`,
+                            `${person.displayName} is unblocked. You are not friends any more.`,
                           )
                         }
                       >
