@@ -90,6 +90,16 @@ export async function ensureRecipients(
 export class MlsSync {
   #lastReconcile = 0;
   #publishedThisSession = false;
+  /**
+   * conversationId -> the timestamp a rate-limited conversation may be
+   * retried again. Without this, a new device joining N groups at once
+   * re-issues a claim for every still-unadded conversation on every 30s
+   * sweep -- faster than CLAIM_RATE_LIMIT's 15-minute window can ever
+   * clear, so the sweep never succeeds and every send behind it stays
+   * stuck. Honouring the server's Retry-After here is the same fix
+   * engine.ts's #delayAfter already applies to the outer poll loop.
+   */
+  #reconcileCooldownUntil = new Map<string, number>();
 
   /** Forces the next tick to run the full sweep. */
   invalidate(): void {
@@ -123,12 +133,21 @@ export class MlsSync {
       const conversations = await store.listConversations();
       for (const conversation of conversations) {
         if (signal.aborted) break;
+        const cooldown = this.#reconcileCooldownUntil.get(conversation.id);
+        if (cooldown !== undefined && now < cooldown) continue;
         try {
           await this.reconcileConversation(conversation.id, me);
+          this.#reconcileCooldownUntil.delete(conversation.id);
         } catch (error) {
           // One conversation's trouble must not stop the sweep. Typical
           // causes are transient (a commit race, a device mid-publish).
           console.warn("mls reconcile failed", conversation.id, error);
+          if (error instanceof ApiError && error.retryAfterSeconds) {
+            this.#reconcileCooldownUntil.set(
+              conversation.id,
+              now + error.retryAfterSeconds * 1000,
+            );
+          }
         }
       }
     }
