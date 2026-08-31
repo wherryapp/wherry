@@ -3,7 +3,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -12,6 +11,9 @@ import { Settings } from "./Settings";
 import { Friends } from "./Friends";
 import { HubDetails } from "./HubDetails";
 import { ContactCheckboxRow } from "./ContactRow";
+import { avatarSeed, conversationTitle, memberName } from "./format";
+import { useIsDesktop } from "./viewport";
+import { ConversationList } from "./sidebar/Sidebar";
 import {
   decodeContent,
   encodeContent,
@@ -24,14 +26,11 @@ import { prepareForUpload } from "./media";
 import {
   ApiError,
   addMembers,
-  createConversation,
-  createHub,
   deleteHubMessage,
   fetchArchive,
   fetchAttachmentUsage,
   fetchFriends,
   fetchHubPins,
-  joinHub,
   leaveConversation,
   lookupUser,
   markConversationRead,
@@ -47,12 +46,7 @@ import {
   type Friend,
 } from "../api/client";
 import { decodeBase64 } from "../api/base64";
-import type {
-  HubInvitePreview,
-  HubPin,
-  HubSummary,
-  HubVisibility,
-} from "../api/types";
+import type { HubInvitePreview, HubPin } from "../api/types";
 import { PROTOCOL_PUBLIC } from "../crypto/provider";
 import { e2e } from "../crypto";
 import { encryptBlob } from "../crypto/blob";
@@ -65,22 +59,17 @@ import {
   useAnnouncements,
   useConversations,
   useDeliveredMarks,
-  useFeatures,
   useHubs,
-  useLatestMessages,
-  useMentions,
   usePresence,
   useSyncStatus,
   useTimeline,
   useTyping,
-  useUnread,
   type MessageMarks,
   type TimelineItem,
 } from "./hooks";
 import {
   Avatar,
   BackButton,
-  Badge,
   BellIcon,
   BellOffIcon,
   Button,
@@ -111,16 +100,6 @@ import {
 // a decrypt still waiting for keys), because the same decode pass is what
 // aggregates reactions, edits and retractions onto their targets. See the
 // aggregation notes on useTimeline in hooks.ts.
-
-function conversationTitle(
-  conversation: StoredConversation,
-  selfUserId: string,
-): string {
-  if (conversation.title) return conversation.title;
-  const others = conversation.members.filter((m) => m.userId !== selfUserId);
-  if (others.length === 0) return "You";
-  return others.map((m) => m.displayName || m.username).join(", ");
-}
 
 /** The words for a notice line -- see StoredEvent in store/types.ts. */
 function eventText(event: StoredEvent, selfUserId: string): string {
@@ -216,52 +195,11 @@ function deliveredLabel(count: number, others: number): string | undefined {
   return `Delivered to ${count}`;
 }
 
-/** A member's display name, for attribution in groups. */
-function memberName(conversation: StoredConversation, userId: string): string {
-  const member = conversation.members.find((m) => m.userId === userId);
-  return member ? member.displayName || member.username : "Someone";
-}
-
 function time(iso: string): string {
   return new Date(iso).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-/**
- * A conversation-list timestamp: the time today, the weekday within a week,
- * a date beyond that. The list answers "how stale is this thread" at a
- * glance; the exact minute of last Tuesday answers nothing.
- */
-function listTime(iso: string): string {
-  const then = new Date(iso);
-  const now = new Date();
-  if (then.toDateString() === now.toDateString()) {
-    return then.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-  if (now.getTime() - then.getTime() < 6 * 86_400_000) {
-    return then.toLocaleDateString([], { weekday: "short" });
-  }
-  return then.toLocaleDateString([], { month: "numeric", day: "numeric" });
-}
-
-/**
- * Who a conversation's avatar depicts: the other person in a 1:1, the group
- * itself otherwise. The id doubles as the colour seed (see kit's Avatar),
- * so a group keeps one identity even as its title changes.
- */
-function avatarSeed(
-  conversation: StoredConversation,
-  selfUserId: string,
-): string {
-  const others = conversation.members.filter((m) => m.userId !== selfUserId);
-  // Direct only -- a two-person hub channel is still the channel, not the
-  // other person, so it keeps its own identity like a group does.
-  if (conversation.kind === "direct" && others.length === 1) {
-    return others[0]!.userId;
-  }
-  return conversation.id;
 }
 
 function escapeRegex(value: string): string {
@@ -376,180 +314,6 @@ function UpdateBanner() {
 
 // ContactCheckboxRow moved to ContactRow.tsx when HubDetails became its
 // third user -- see that file's comment.
-
-/**
- * Username in, conversation out.
- *
- * Two calls, because `POST /conversations` takes ids and a person types names.
- * `GET /users/lookup` is the only thing that bridges them -- without it the
- * only ids a client ever holds are the ones already in its conversations,
- * which makes starting the first one impossible.
- */
-function NewConversation({
-  session,
-  onOpened,
-}: {
-  session: StoredSession;
-  onOpened: (conversationId: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [username, setUsername] = useState("");
-  const [contacts, setContacts] = useState<Friend[] | null>(null);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Loaded when the form opens rather than with the app. It is a handful of
-  // rows, it is only needed here, and fetching it on every startup would be a
-  // request per launch for a list most launches never look at.
-  useEffect(() => {
-    if (!open || contacts !== null) return;
-    void fetchFriends()
-      .then((lists) => setContacts(lists.friends))
-      .catch(() => setContacts([]));
-  }, [open, contacts]);
-
-  function toggle(userId: string): void {
-    setPicked((current) => {
-      const next = new Set(current);
-      if (next.has(userId)) next.delete(userId);
-      else next.add(userId);
-      return next;
-    });
-  }
-
-  function reset(): void {
-    setUsername("");
-    setPicked(new Set());
-    setError(null);
-    setOpen(false);
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-
-    try {
-      // Comma or space separated, so a group is typed the same way a single
-      // name is rather than behind a mode switch. Typing is still here
-      // alongside the picker, because somebody who is not a contact yet has to
-      // be reachable without being added first.
-      const names = [
-        ...new Set(
-          username
-            .split(/[\s,]+/)
-            .map((name) => name.trim())
-            .filter((name) => name.length > 0),
-        ),
-      ];
-
-      const typed = await Promise.all(names.map((name) => lookupUser(name)));
-
-      if (typed.some((user) => user.id === session.user.id)) {
-        setError("You are in every conversation you start; leave yourself out.");
-        return;
-      }
-
-      // A Set, because picking somebody *and* typing their name is an easy
-      // thing to do and should not send the server a duplicate member.
-      const memberUserIds = [
-        ...new Set([...picked, ...typed.map((user) => user.id)]),
-      ];
-
-      if (memberUserIds.length === 0) return;
-
-      // Two people is a direct conversation and is find-or-create, so naming
-      // somebody you already talk to reopens that thread rather than splitting
-      // the history in two. Three or more is a group, and groups always
-      // create: two groups with the same people are legitimately different
-      // groups, which is why the server does not deduplicate them.
-      const conversation = await createConversation({
-        kind: memberUserIds.length === 1 ? "direct" : "group",
-        memberUserIds,
-      });
-
-      // The list is refreshed on a timer, so nudge it rather than waiting.
-      sync.invalidateConversations();
-      onOpened(conversation.id);
-      reset();
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError && caught.code === "UNKNOWN_USER"
-          ? "No account with one of those usernames."
-          : caught instanceof ApiError
-            ? caught.message
-            : "Cannot reach the server.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!open) {
-    return (
-      <Button
-        variant="secondary"
-        onClick={() => setOpen(true)}
-        className="w-full"
-      >
-        New conversation
-      </Button>
-    );
-  }
-
-  const canSend = picked.size > 0 || username.trim().length > 0;
-
-  return (
-    <form onSubmit={submit} className="space-y-2">
-      {contacts !== null && contacts.length > 0 && (
-        <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
-          {contacts.map((contact) => (
-            <ContactCheckboxRow
-              key={contact.userId}
-              contact={contact}
-              checked={picked.has(contact.userId)}
-              onToggle={() => toggle(contact.userId)}
-            />
-          ))}
-        </div>
-      )}
-
-      <Input
-        autoFocus
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        placeholder={
-          contacts !== null && contacts.length > 0
-            ? "Or add by username"
-            : "username, or several for a group"
-        }
-      />
-
-      {picked.size > 1 && (
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">
-          {picked.size} people — this will start a group.
-        </p>
-      )}
-
-      {error && <ErrorText>{error}</ErrorText>}
-
-      <div className="flex gap-2">
-        <Button
-          type="submit"
-          size="sm"
-          disabled={busy || !canSend}
-          className="flex-1"
-        >
-          {busy ? "…" : "Start"}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={reset} className="px-3 py-1.5">
-          Cancel
-        </Button>
-      </div>
-    </form>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Group details
@@ -918,46 +682,6 @@ function useMarkRead(conversationId: string | null, selfUserId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Viewport
-// ---------------------------------------------------------------------------
-
-// Tailwind's `md` breakpoint, expressed in JS because two things depend on the
-// answer that CSS cannot express: which pane is *rendered*, and whether a
-// conversation is auto-selected on load. Auto-selecting on a phone would drop
-// somebody into a thread when they were expecting the list they last saw.
-//
-// Keep this number in step with the `md:` classes below. Tailwind's default
-// md is 768px; there is no config file to read it from, by choice.
-const DESKTOP_QUERY = "(min-width: 768px)";
-
-function subscribeToViewport(onChange: () => void): () => void {
-  const query = window.matchMedia(DESKTOP_QUERY);
-  query.addEventListener("change", onChange);
-
-  // Resize as well as the media query, which looks redundant and is not. The
-  // change event does not fire in every environment that can alter a viewport
-  // -- an emulated one caught this during testing, where the query read as
-  // matching while the layout was still in its phone shape. Re-reading on
-  // resize means the value cannot disagree with what `matchMedia` says now.
-  window.addEventListener("resize", onChange);
-
-  return () => {
-    query.removeEventListener("change", onChange);
-    window.removeEventListener("resize", onChange);
-  };
-}
-
-function useIsDesktop(): boolean {
-  // useSyncExternalStore rather than state-plus-effect: the value is read
-  // fresh on every notification, so there is no copy to fall out of step, and
-  // no first render that shows the wrong layout before an effect corrects it.
-  return useSyncExternalStore(
-    subscribeToViewport,
-    () => window.matchMedia(DESKTOP_QUERY).matches,
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Hubs
 // ---------------------------------------------------------------------------
 
@@ -1136,414 +860,9 @@ function PinsPanel({
   );
 }
 
-/**
- * Creating a hub, or joining a public one by id -- the sidebar's second
- * form, shaped like NewConversation. The class choice carries its label
- * copy right here, at the moment it is made, because the public class is
- * the one deliberate exception to "the server reads nothing" and the person
- * making it must see that sentence before the hub exists (CLAUDE.md rules
- * 1/9, as amended).
- */
-function NewHub({
-  onOpened,
-}: {
-  onOpened: (channelId: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [visibility, setVisibility] = useState<HubVisibility>("private");
-  const [joinId, setJoinId] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function reset(): void {
-    setOpen(false);
-    setName("");
-    setJoinId("");
-    setVisibility("private");
-    setError(null);
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const detail = await createHub({ name: name.trim(), visibility });
-      sync.invalidateConversations();
-      const general = detail.channels[0];
-      if (general) onOpened(general.id);
-      reset();
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError ? caught.message : "Could not create the hub.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function join(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const detail = await joinHub(joinId.trim());
-      sync.invalidateConversations();
-      const first = detail.channels[0];
-      if (first) onOpened(first.id);
-      reset();
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError && caught.status === 404
-          ? "No public hub with that ID."
-          : caught instanceof ApiError
-            ? caught.message
-            : "Could not join the hub.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!open) {
-    return (
-      <Button variant="secondary" onClick={() => setOpen(true)} className="w-full">
-        New hub
-      </Button>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <form onSubmit={submit} className="space-y-2">
-        <Input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Hub name"
-          maxLength={100}
-        />
-        <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
-          <input
-            type="radio"
-            name="hub-visibility"
-            checked={visibility === "private"}
-            onChange={() => setVisibility("private")}
-            className="mt-0.5 h-4 w-4 shrink-0"
-          />
-          <span>
-            Private
-            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-              Invitation only. Every channel is end-to-end encrypted, like a
-              group chat.
-            </span>
-          </span>
-        </label>
-        <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
-          <input
-            type="radio"
-            name="hub-visibility"
-            checked={visibility === "public"}
-            onChange={() => setVisibility("public")}
-            className="mt-0.5 h-4 w-4 shrink-0"
-          />
-          <span>
-            Public
-            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-              Anyone with an account can join. Messages are stored readable
-              by the server, so search and moderation work. This cannot be
-              changed later.
-            </span>
-          </span>
-        </label>
-        {error && <ErrorText>{error}</ErrorText>}
-        <div className="flex gap-2">
-          <Button
-            type="submit"
-            size="sm"
-            disabled={busy || name.trim().length === 0}
-            className="flex-1"
-          >
-            {busy ? "…" : "Create"}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={reset} className="px-3 py-1.5">
-            Cancel
-          </Button>
-        </div>
-      </form>
-      <form onSubmit={join} className="flex gap-2">
-        <Input
-          value={joinId}
-          onChange={(e) => setJoinId(e.target.value)}
-          placeholder="Or join with a hub ID"
-        />
-        <Button
-          type="submit"
-          size="sm"
-          variant="secondary"
-          disabled={busy || joinId.trim().length === 0}
-          className="shrink-0"
-        >
-          Join
-        </Button>
-      </form>
-    </div>
-  );
-}
-
-/**
- * The sidebar's hubs: each hub is a header row opening its panel, with its
- * channels nested under it. Channels are conversations, so selecting one
- * opens the ordinary thread view -- the section is navigation, not a second
- * message surface.
- */
-function HubsSection({
-  hubs,
-  canCreate,
-  unread,
-  mentions,
-  muted,
-  selected,
-  onSelect,
-  onOpenHub,
-}: {
-  hubs: HubSummary[];
-  /** The `hubs` feature flag -- gates the create form, not the list. */
-  canCreate: boolean;
-  unread: Map<string, number>;
-  /** Channels with an unread mention of this user -- the stronger badge. */
-  mentions: Set<string>;
-  /** Channel conversation ids the user has muted. */
-  muted: Set<string>;
-  selected: string | null;
-  onSelect: (conversationId: string) => void;
-  onOpenHub: (hubId: string) => void;
-}) {
-  if (hubs.length === 0 && !canCreate) return null;
-
-  return (
-    <div className="border-b border-neutral-200 p-3 dark:border-neutral-800">
-      {canCreate && <NewHub onOpened={onSelect} />}
-      {hubs.map((hub) => (
-        <div key={hub.id} className={canCreate || hub.id !== hubs[0]?.id ? "mt-3" : ""}>
-          <button
-            onClick={() => onOpenHub(hub.id)}
-            className="flex w-full items-center gap-2 rounded px-1 py-1 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
-          >
-            {/* The hub id seeds the colour, so the identity survives renames
-                -- the cheap identicon tier; uploaded icons stay deferred. */}
-            <Avatar size="sm" name={hub.name} userId={hub.id} />
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-              {hub.name}
-            </span>
-            {hub.visibility === "public" && (
-              <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-                Public
-              </span>
-            )}
-          </button>
-          <div className="mt-0.5">
-            {hub.channels.map((channel) => {
-              const count = unread.get(channel.id) ?? 0;
-              return (
-                <button
-                  key={channel.id}
-                  onClick={() => onSelect(channel.id)}
-                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition-colors ${
-                    selected === channel.id
-                      ? "bg-neutral-100 dark:bg-neutral-800"
-                      : "hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                  }`}
-                >
-                  <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
-                    #
-                  </span>
-                  <span
-                    className={`min-w-0 flex-1 truncate ${
-                      count > 0
-                        ? "font-semibold text-neutral-900 dark:text-neutral-100"
-                        : "text-neutral-700 dark:text-neutral-300"
-                    }`}
-                  >
-                    {channel.title ?? "channel"}
-                    {channel.posting === "moderators" && (
-                      <LockIcon className="ml-1 inline h-3 w-3 align-[-1px] text-neutral-400 dark:text-neutral-500" />
-                    )}
-                  </span>
-                  {muted.has(channel.id) && (
-                    <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
-                  )}
-                  {mentions.has(channel.id) && (
-                    <span
-                      aria-label="Mentions you"
-                      className="shrink-0 text-xs font-bold text-accent-600 dark:text-accent-400"
-                    >
-                      @
-                    </span>
-                  )}
-                  <Badge count={count} />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Conversation list
-// ---------------------------------------------------------------------------
-
-function ConversationList({
-  session,
-  selected,
-  onSelect,
-  onOpenHub,
-}: {
-  session: StoredSession;
-  selected: string | null;
-  onSelect: (id: string) => void;
-  onOpenHub: (hubId: string) => void;
-}) {
-  const { conversations } = useConversations();
-  const { hubs } = useHubs();
-  const features = useFeatures();
-  // Unread and previews are computed over everything -- channels included,
-  // for the hub section's badges -- but the direct/group rows below exclude
-  // channels, which render nested under their hub instead.
-  const latest = useLatestMessages(conversations);
-  const unread = useUnread(conversations, session.user.id);
-  const mentions = useMentions(conversations, session.user.id);
-  const muted = new Set(
-    conversations.filter((c) => c.muted).map((c) => c.id),
-  );
-  const directsAndGroups = conversations.filter(
-    (conversation) => conversation.kind !== "channel",
-  );
-
-  return (
-    <aside className="flex w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800">
-      <div className="border-b border-neutral-200 p-3 dark:border-neutral-800">
-        <NewConversation session={session} onOpened={onSelect} />
-      </div>
-
-      <HubsSection
-        hubs={hubs}
-        canCreate={features.hubs}
-        unread={unread}
-        mentions={mentions}
-        muted={muted}
-        selected={selected}
-        onSelect={onSelect}
-        onOpenHub={onOpenHub}
-      />
-
-      <div className="flex-1 overflow-y-auto">
-        {directsAndGroups.length === 0 && (
-          <p className="p-4 text-sm text-neutral-500 dark:text-neutral-400">
-            No conversations yet.
-          </p>
-        )}
-
-        {directsAndGroups.map((conversation) => {
-          const preview = latest.get(conversation.id);
-          // A photo with no caption still has to say something in the list,
-          // and so does a message kind this build cannot render. A retracted
-          // one says it was deleted rather than leaking what it used to say.
-          const text = preview
-            ? preview.retracted
-              ? "Message deleted"
-              : preview.content === "unsupported"
-                ? "Needs a newer version"
-                : preview.content
-                  ? preview.content.text ||
-                    (preview.content.attachments.length > 0 ? "Photo" : "")
-                  : null
-            : null;
-          const count = unread.get(conversation.id) ?? 0;
-          const isGroup = conversation.members.length > 2;
-
-          // In a group the preview is ambiguous without a name -- "see you at
-          // 6" from one of four people is half a message.
-          const prefix =
-            isGroup &&
-            preview &&
-            preview.message.senderUserId !== session.user.id
-              ? `${memberName(conversation, preview.message.senderUserId)}: `
-              : "";
-
-          const title = conversationTitle(conversation, session.user.id);
-
-          return (
-            <button
-              key={conversation.id}
-              onClick={() => onSelect(conversation.id)}
-              className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${
-                selected === conversation.id
-                  ? "bg-neutral-100 dark:bg-neutral-800"
-                  : // neutral-800, not the "neutral-850" that sat here
-                    // silently generating no rule -- the scale has no 850.
-                    "hover:bg-neutral-50 dark:hover:bg-neutral-800"
-              }`}
-            >
-              <Avatar
-                name={title}
-                userId={avatarSeed(conversation, session.user.id)}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-baseline gap-2">
-                  <span
-                    className={`min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-neutral-100 ${
-                      count > 0 ? "font-semibold" : "font-medium"
-                    }`}
-                  >
-                    {title}
-                  </span>
-                  {/* Timestamp and the mute icon share this slot -- the row
-                      is laid out so either fits without moving the name. */}
-                  {conversation.muted && (
-                    <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
-                  )}
-                  {preview && (
-                    <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">
-                      {listTime(preview.message.sentAt)}
-                    </span>
-                  )}
-                </span>
-                <span className="mt-0.5 flex items-center gap-2">
-                  <span
-                    className={`min-w-0 flex-1 truncate text-xs ${
-                      count > 0
-                        ? "text-neutral-700 dark:text-neutral-300"
-                        : "text-neutral-500 dark:text-neutral-400"
-                    }`}
-                  >
-                    {preview
-                      ? `${prefix}${text ?? "Encrypted message"}`
-                      : "No messages yet"}
-                  </span>
-                  {mentions.has(conversation.id) && (
-                    <span
-                      aria-label="Mentions you"
-                      className="shrink-0 text-xs font-bold text-accent-600 dark:text-accent-400"
-                    >
-                      @
-                    </span>
-                  )}
-                  <Badge count={count} />
-                </span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-    </aside>
-  );
-}
+// ConversationList (with NewConversation, NewHub and HubsSection) moved to
+// sidebar/Sidebar.tsx, sidebar/NewConversation.tsx, sidebar/NewHub.tsx and
+// sidebar/HubsSection.tsx.
 
 // ---------------------------------------------------------------------------
 // Timeline

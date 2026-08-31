@@ -22,6 +22,8 @@
 // keyboard animation, and re-rendering the tree on every frame of it would be
 // a lot of work to produce the same layout CSS can produce on its own.
 
+import { useSyncExternalStore } from "react";
+
 /**
  * Starts mirroring the visual viewport into CSS custom properties.
  *
@@ -135,4 +137,40 @@ export function trackVisualViewport(): void {
   viewport.addEventListener("scroll", startFollowing);
 
   apply();
+}
+
+// Tailwind's `md` breakpoint, expressed in JS because two things depend on the
+// answer that CSS cannot express: which pane is *rendered*, and whether a
+// conversation is auto-selected on load. Auto-selecting on a phone would drop
+// somebody into a thread when they were expecting the list they last saw.
+//
+// Keep this number in step with the `md:` classes below. Tailwind's default
+// md is 768px; there is no config file to read it from, by choice.
+const DESKTOP_QUERY = "(min-width: 768px)";
+
+function subscribeToViewport(onChange: () => void): () => void {
+  const query = window.matchMedia(DESKTOP_QUERY);
+  query.addEventListener("change", onChange);
+
+  // Resize as well as the media query, which looks redundant and is not. The
+  // change event does not fire in every environment that can alter a viewport
+  // -- an emulated one caught this during testing, where the query read as
+  // matching while the layout was still in its phone shape. Re-reading on
+  // resize means the value cannot disagree with what `matchMedia` says now.
+  window.addEventListener("resize", onChange);
+
+  return () => {
+    query.removeEventListener("change", onChange);
+    window.removeEventListener("resize", onChange);
+  };
+}
+
+export function useIsDesktop(): boolean {
+  // useSyncExternalStore rather than state-plus-effect: the value is read
+  // fresh on every notification, so there is no copy to fall out of step, and
+  // no first render that shows the wrong layout before an effect corrects it.
+  return useSyncExternalStore(
+    subscribeToViewport,
+    () => window.matchMedia(DESKTOP_QUERY).matches,
+  );
 }
