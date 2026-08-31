@@ -64,9 +64,11 @@ import {
   useSyncStatus,
   useTimeline,
   useTyping,
+  useUnread,
   type MessageMarks,
   type TimelineItem,
 } from "./hooks";
+import { QuickSwitcher } from "./QuickSwitcher";
 import {
   Avatar,
   BackButton,
@@ -2294,6 +2296,72 @@ export function Chat({
   // Only the count; the list itself renders in Settings. Zero whenever the
   // announcements flag is off, so the dot is dark exactly when the feature is.
   const { unread: unreadAnnouncements } = useAnnouncements();
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  // The browser tab carries the total unread, the way every messenger's tab
+  // does. Muted conversations are excluded -- for the count, mute means what
+  // it means for push and for the collapsed-hub roll-up: not worth waking
+  // anybody for. The store's own unread bookkeeping is untouched by mute.
+  const unreadByConversation = useUnread(conversations, session.user.id);
+  useEffect(() => {
+    let total = 0;
+    for (const conversation of conversations) {
+      if (conversation.muted) continue;
+      total += unreadByConversation.get(conversation.id) ?? 0;
+    }
+    document.title =
+      total > 0 ? `(${total > 99 ? "99+" : total}) messenger` : "messenger";
+    return () => {
+      document.title = "messenger";
+    };
+  }, [conversations, unreadByConversation]);
+
+  // Global keys. Ctrl/Cmd+K opens the switcher from anywhere in the main
+  // view, composer included; it stays out of the full-screen panels because
+  // they early-return their own trees and the dialog could not render over
+  // them. Plain Escape backs out of a thread only on a phone -- desktop
+  // shows both panes, so deselecting would just empty one -- and only when
+  // the key is not already someone else's: a focused field, an open panel,
+  // or the switcher itself all take precedence.
+  useEffect(() => {
+    const panelOpen =
+      settingsOpen ||
+      friendsOpen ||
+      groupDetailsOpen ||
+      hubDetailsFor !== null ||
+      pinsFor !== null;
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        if (panelOpen) return;
+        event.preventDefault();
+        setSwitcherOpen((open) => !open);
+        return;
+      }
+      if (event.key !== "Escape" || switcherOpen || panelOpen) return;
+      if (isDesktop || selected === null) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    switcherOpen,
+    isDesktop,
+    selected,
+    settingsOpen,
+    friendsOpen,
+    groupDetailsOpen,
+    hubDetailsFor,
+    pinsFor,
+  ]);
 
   // Only when a thread is actually on screen. On a phone that is the same
   // thing as being selected; on desktop both panes are visible at once.
@@ -2726,6 +2794,16 @@ export function Chat({
           </main>
         )}
       </div>
+
+      {switcherOpen && (
+        <QuickSwitcher
+          conversations={conversations}
+          hubs={hubs}
+          selfId={session.user.id}
+          onPick={setSelected}
+          onClose={() => setSwitcherOpen(false)}
+        />
+      )}
     </div>
   );
 }
