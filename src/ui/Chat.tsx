@@ -1195,10 +1195,20 @@ function Bubble({
     >
       {actions && !retracted && (
         <div
-          className={`pointer-events-none absolute -top-4 z-10 flex items-center gap-0.5 rounded-full border border-neutral-200 bg-white px-1 py-0.5 shadow-sm transition-opacity dark:border-neutral-700 dark:bg-neutral-800 ${
+          className={`absolute -top-4 z-10 flex items-center gap-0.5 rounded-full border border-neutral-200 bg-white px-1 py-0.5 shadow-sm transition-opacity dark:border-neutral-700 dark:bg-neutral-800 ${
+            // pointer-events-none and -auto must never both be present: they
+            // tie at equal specificity, and whichever Tailwind happens to
+            // emit later in the stylesheet wins regardless of which one this
+            // ternary "meant" -- which is exactly how the bar ended up
+            // visible (opacity flips correctly) but permanently unclickable
+            // (pointer-events stuck on none) once actionsShown went true.
+            // The hover branch is safe on its own: group-hover:pointer-
+            // events-auto is a compound selector, genuinely higher
+            // specificity than the plain pointer-events-none beside it, so
+            // it always wins on its own regardless of source order.
             actionsShown
               ? "pointer-events-auto opacity-100"
-              : "opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"
+              : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"
           } ${mine ? "right-2" : "left-2"}`}
         >
           {QUICK_REACTIONS.map((emoji) => (
@@ -1415,34 +1425,77 @@ function Timeline({
   );
   const delivered = useDeliveredMarks(conversationId);
 
-  // Which message's edge actions are held open by a long-press. Hover needs
-  // no state; this is the phone's path to the same affordance.
+  // Which message's edge actions are showing. Hover needs no state -- CSS
+  // alone reveals the bar on a mouse -- this is the touch path to the same
+  // affordance.
   const [actionsFor, setActionsFor] = useState<string | null>(null);
-  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => setActionsFor(null), [conversationId]);
 
-  const cancelPress = (): void => {
-    if (pressTimer.current !== null) {
-      clearTimeout(pressTimer.current);
-      pressTimer.current = null;
-    }
+  /**
+   * Where and when the current touch started, so its release can tell a
+   * tap from a scroll.
+   *
+   * This used to be a long-press timer. iOS Safari's own long-press gesture
+   * -- text selection, the Copy/Look Up callout -- fires off the exact same
+   * touch a timer would spend 450ms waiting on, and it wins: the callout
+   * swallows the tap that was meant for the bar's buttons a moment later,
+   * so the bar would appear and nothing in it could be tapped. A plain
+   * quick tap never gives that gesture time to start at all, which is what
+   * makes this immune to the conflict rather than merely defending against
+   * it -- the select-none/touch-callout CSS at the call site is a second
+   * line of defence against an accidental slow hold, not the mechanism
+   * this depends on.
+   */
+  const pointerStart = useRef<{ x: number; y: number; at: number } | null>(
+    null,
+  );
+
+  // Beyond this, a release is a scroll or a drag, not a tap.
+  const TAP_MOVE_PX = 10;
+  // Beyond this, a release is a genuine long-press. Below iOS's own
+  // long-press threshold, so with select-none in place a hold this short
+  // never triggers the OS gesture in the first place.
+  const TAP_MAX_MS = 400;
+
+  type PressPointerEvent = {
+    pointerType: string;
+    clientX: number;
+    clientY: number;
+    target: EventTarget | null;
   };
 
-  /** Long-press (and right-click) toggles a message's edge actions. */
+  /** A quick tap (and right-click) toggles a message's edge actions.
+   *  Mouse pointers are untouched -- hover already reveals the bar. */
   const pressHandlers = (messageId: string) => ({
-    onPointerDown: () => {
-      cancelPress();
-      pressTimer.current = setTimeout(
-        () =>
-          setActionsFor((current) =>
-            current === messageId ? null : messageId,
-          ),
-        450,
-      );
+    onPointerDown: (event: PressPointerEvent) => {
+      if (event.pointerType === "mouse") return;
+      pointerStart.current = {
+        x: event.clientX,
+        y: event.clientY,
+        at: Date.now(),
+      };
     },
-    onPointerUp: cancelPress,
-    onPointerLeave: cancelPress,
-    onPointerCancel: cancelPress,
+    onPointerUp: (event: PressPointerEvent) => {
+      if (event.pointerType === "mouse") return;
+      const start = pointerStart.current;
+      pointerStart.current = null;
+      if (!start) return;
+      // A tap landing on a button (the quote block, or a button in the bar
+      // itself) is that button's own action, not a toggle of the bar around
+      // it -- jumping to a quoted message must not also pop its reactions.
+      if (event.target instanceof Element && event.target.closest("button")) {
+        return;
+      }
+      const moved = Math.hypot(
+        event.clientX - start.x,
+        event.clientY - start.y,
+      );
+      if (moved > TAP_MOVE_PX || Date.now() - start.at > TAP_MAX_MS) return;
+      setActionsFor((current) => (current === messageId ? null : messageId));
+    },
+    onPointerCancel: () => {
+      pointerStart.current = null;
+    },
     onContextMenu: (event: { preventDefault: () => void }) => {
       event.preventDefault();
       setActionsFor((current) => (current === messageId ? null : messageId));
@@ -1651,7 +1704,8 @@ function Timeline({
                   // reply to on a placeholder or a still-sealed message.
                   onReply:
                     content !== null && content !== "unsupported"
-                      ? () =>
+                      ? () => {
+                          setActionsFor(null);
                           onReply({
                             messageId: item.message.messageId,
                             excerpt: excerptOf(content),
@@ -1660,18 +1714,21 @@ function Timeline({
                               ? "You"
                               : (names.get(item.message.senderUserId) ??
                                 "Someone"),
-                          })
+                          });
+                        }
                       : undefined,
                   // Editing starts from what the message says NOW -- a
                   // prior edit included -- and only your own text is yours
                   // to change.
                   onEdit:
                     mine && content !== null && content !== "unsupported"
-                      ? () =>
+                      ? () => {
+                          setActionsFor(null);
                           onEdit({
                             messageId: item.message.messageId,
                             text: item.marks?.editedText ?? content.text,
-                          })
+                          });
+                        }
                       : undefined,
                   onDelete: mine
                     ? () => retractMessage(item.message.messageId)
