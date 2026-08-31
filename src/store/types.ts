@@ -462,3 +462,34 @@ export type MentionState = Record<string, string>;
  * the conversation listing, persistently) always wins over it.
  */
 export const META_DELIVERED_PREFIX = "delivered.";
+
+/**
+ * Device-local sidebar layout preferences: the hubs/DMs split height, which
+ * hubs are collapsed, and the manual hub order. Deliberately not synced --
+ * the same class as `announcements.seen`: a server column is only worth it
+ * if layout must follow the account across devices, which it does not.
+ * Dying with store.clear() is correct rather than a loss, because the hub
+ * ids inside are account-scoped -- surviving into another account's session
+ * on this browser would be wrong. Read/written only through
+ * ui/sidebar/prefs.ts, which owns its own invalidation: no sync event ever
+ * fires for a local write, so the hooks.ts pattern does not apply.
+ */
+export const META_SIDEBAR_PREFS = "sidebar.prefs";
+
+export type SidebarPrefs = {
+  /**
+   * Fixed pixel height of the hubs section on desktop; null means auto
+   * (content-sized, capped by the sidebar's own max). Clamping when the
+   * window is too small happens in CSS, so this value is never rewritten
+   * by a resize the user didn't drag.
+   */
+  hubsHeightPx: number | null;
+  /** Hubs whose channel lists are hidden. */
+  collapsedHubIds: string[];
+  /**
+   * Manual hub order. Hubs not listed append in server order; ids of hubs
+   * since left are inert and get pruned on the next reorder, which writes
+   * only currently-present ids.
+   */
+  hubOrder: string[];
+};
