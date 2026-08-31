@@ -8,6 +8,7 @@
 // scrollbar inside an outer one is exactly what a phone must not have -- so
 // there it is one scroll surface, hubs above DMs.
 
+import { useRef, useState } from "react";
 import type { StoredSession } from "../../api/session";
 import {
   useConversations,
@@ -22,6 +23,8 @@ import { useIsDesktop } from "../viewport";
 import { Avatar, Badge, BellOffIcon } from "../kit";
 import { HubsSection } from "./HubsSection";
 import { NewConversation } from "./NewConversation";
+import { ResizeHandle } from "./ResizeHandle";
+import { useSidebarPrefs } from "./prefs";
 
 export function ConversationList({
   session,
@@ -50,6 +53,15 @@ export function ConversationList({
     (conversation) => conversation.kind !== "channel",
   );
   const isDesktop = useIsDesktop();
+  const { prefs, update } = useSidebarPrefs();
+
+  // A drag in progress renders from component state; storage is written once
+  // on pointerup. Committing clears the live value in the same handler, so
+  // the persisted height takes over in the same render batch.
+  const [liveHeight, setLiveHeight] = useState<number | null>(null);
+  const hubsHeight = liveHeight ?? prefs.hubsHeightPx;
+  const asideRef = useRef<HTMLElement>(null);
+  const hubsRef = useRef<HTMLDivElement>(null);
 
   // Hoisted from HubsSection's own null-return so the bordered wrapper the
   // scroll containers need does not render as a stray rule around nothing.
@@ -188,18 +200,50 @@ export function ConversationList({
   }
 
   return (
-    <aside className="flex min-h-0 w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800">
+    <aside
+      ref={asideRef}
+      className="flex min-h-0 w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800"
+    >
       <div className="shrink-0 border-b border-neutral-200 p-3 dark:border-neutral-800">
         <NewConversation session={session} onOpened={onSelect} />
       </div>
 
       {showHubs && (
-        <div
-          className="min-h-0 shrink-0 overflow-y-auto border-b border-neutral-200 dark:border-neutral-800"
-          style={{ maxHeight: "45%" }}
-        >
-          {hubsSection}
-        </div>
+        <>
+          <div
+            ref={hubsRef}
+            className="min-h-0 shrink-0 overflow-y-auto border-b border-neutral-200 dark:border-neutral-800"
+            // Auto: content-sized until the cap, so DMs keep the majority.
+            // Fixed: the user's height, with the CSS max doing the clamping
+            // when the window is too small -- max-height beats height, so
+            // the stored preference is never rewritten by a shrink the user
+            // didn't drag, and regrowing the window restores it.
+            style={
+              hubsHeight === null
+                ? { maxHeight: "45%" }
+                : {
+                    height: `${hubsHeight}px`,
+                    maxHeight: "calc(100% - 10rem)",
+                  }
+            }
+          >
+            {hubsSection}
+          </div>
+          <ResizeHandle
+            asideRef={asideRef}
+            hubsRef={hubsRef}
+            height={prefs.hubsHeightPx}
+            onLiveResize={setLiveHeight}
+            onCommit={(px) => {
+              setLiveHeight(null);
+              update({ hubsHeightPx: px });
+            }}
+            onReset={() => {
+              setLiveHeight(null);
+              update({ hubsHeightPx: null });
+            }}
+          />
+        </>
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">{dmRows}</div>
