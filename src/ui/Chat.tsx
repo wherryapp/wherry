@@ -1106,6 +1106,24 @@ function myReaction(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Pressing a message
+// ---------------------------------------------------------------------------
+
+type PressPointerEvent = {
+  pointerType: string;
+  clientX: number;
+  clientY: number;
+  target: EventTarget | null;
+};
+
+// Beyond this, a release is a scroll or a drag, not a tap.
+const TAP_MOVE_PX = 10;
+// Beyond this, a release is a genuine long-press. Below iOS's own long-press
+// threshold, so with select-none in place (see Bubble) a hold this short
+// never triggers the OS gesture in the first place.
+const TAP_MAX_MS = 400;
+
 function Bubble({
   mine,
   content,
@@ -1118,6 +1136,7 @@ function Bubble({
   last = true,
   actions,
   actionsShown = false,
+  onPress,
   quote,
   chips,
 }: {
@@ -1157,9 +1176,9 @@ function Bubble({
   /**
    * The floating action bar -- quick reactions, and Delete on your own
    * messages. Lives in the slack beside the bubble that stage 3 of the
-   * reform reserved: revealed on hover, held open by the long-press that
-   * sets `actionsShown`, and absolutely positioned so appearing never
-   * re-flows the timeline under the reader.
+   * reform reserved: revealed on hover on a mouse, held open by `onPress`'s
+   * tap on touch, and absolutely positioned so appearing never re-flows the
+   * timeline under the reader.
    */
   actions?:
     | {
@@ -1174,6 +1193,18 @@ function Bubble({
     | undefined;
   actionsShown?: boolean;
   /**
+   * Called on a qualifying tap or right-click -- the caller decides what
+   * "press" means (Timeline toggles `actionsShown` for this message id).
+   * Bubble owns the tap-vs-scroll disambiguation itself because it is the
+   * one component that knows its own rendered bounds: the wrapper this
+   * attaches to is sized to the message's own footprint (bubble, action
+   * bar and chips together), not the full-width row around it, so a tap
+   * anywhere else on the screen -- even directly beside a narrow bubble --
+   * never lands on this message by accident. Undefined for messages with
+   * nothing to press (retracted, or still unsent).
+   */
+  onPress?: (() => void) | undefined;
+  /**
    * The quoted block a reply renders above its text -- resolved by the
    * caller (name lookup is roster knowledge), tappable to jump to the
    * target when it is loaded.
@@ -1187,12 +1218,68 @@ function Bubble({
   const retracted = marks?.retracted === true;
   const edited = !retracted && marks?.editedText !== undefined;
 
+  const pointerStart = useRef<{ x: number; y: number; at: number } | null>(
+    null,
+  );
+
+  const handlePointerDown = (event: PressPointerEvent): void => {
+    if (event.pointerType === "mouse") return;
+    pointerStart.current = { x: event.clientX, y: event.clientY, at: Date.now() };
+  };
+  const handlePointerUp = (event: PressPointerEvent): void => {
+    if (event.pointerType === "mouse") return;
+    const start = pointerStart.current;
+    pointerStart.current = null;
+    if (!start) return;
+    // A tap landing on a button (the quote block, or a button in the bar
+    // itself) is that button's own action, not a toggle of the bar around
+    // it -- jumping to a quoted message must not also pop its reactions.
+    if (event.target instanceof Element && event.target.closest("button")) {
+      return;
+    }
+    const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+    if (moved > TAP_MOVE_PX || Date.now() - start.at > TAP_MAX_MS) return;
+    onPress?.();
+  };
+  const handlePointerCancel = (): void => {
+    pointerStart.current = null;
+  };
+  const handleContextMenu = (event: { preventDefault: () => void }): void => {
+    event.preventDefault();
+    onPress?.();
+  };
+
   return (
-    <div
-      className={`group relative flex flex-col ${
-        mine ? "items-end" : "items-start"
-      }`}
-    >
+    // Full-width alignment row, carrying no handlers of its own -- the
+    // narrower press-target wrapper inside is what a tap actually has to
+    // land inside, which is the whole fix: this outer box spans edge to
+    // edge so `justify-end`/`justify-start` can place the bubble, but a
+    // press anywhere in the empty space it leaves beside a narrow bubble
+    // must not land on this message.
+    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+      <div
+        data-bubble-press
+        className={`group relative flex min-w-0 max-w-[85%] flex-col md:max-w-[70%] ${
+          mine ? "items-end" : "items-start"
+        }${
+          onPress
+            ? // iOS Safari's own long-press gesture (text selection, the
+              // Copy/Look Up callout) fires on the same touch a hold-based
+              // trigger would need to wait for, and wins -- select-none is
+              // the standard trade a chat app makes so long-press means
+              // this menu, not the OS's (see WhatsApp/iMessage/Telegram).
+              " touch-manipulation select-none [-webkit-touch-callout:none]"
+            : ""
+        }`}
+        {...(onPress
+          ? {
+              onPointerDown: handlePointerDown,
+              onPointerUp: handlePointerUp,
+              onPointerCancel: handlePointerCancel,
+              onContextMenu: handleContextMenu,
+            }
+          : {})}
+      >
       {actions && !retracted && (
         <div
           className={`absolute -top-4 z-10 flex items-center gap-0.5 rounded-full border border-neutral-200 bg-white px-1 py-0.5 shadow-sm transition-opacity dark:border-neutral-700 dark:bg-neutral-800 ${
@@ -1261,7 +1348,7 @@ function Bubble({
         </div>
       )}
       <div
-        className={`max-w-[85%] rounded-2xl px-3 py-2 md:max-w-[70%] ${
+        className={`min-w-0 rounded-2xl px-3 py-2 ${
           mine
             ? "bg-accent-600 text-white"
             : "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
@@ -1351,6 +1438,7 @@ function Bubble({
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -1426,81 +1514,11 @@ function Timeline({
   const delivered = useDeliveredMarks(conversationId);
 
   // Which message's edge actions are showing. Hover needs no state -- CSS
-  // alone reveals the bar on a mouse -- this is the touch path to the same
-  // affordance.
+  // alone reveals the bar on a mouse; Bubble's own onPress is the touch path
+  // to the same affordance, scoped to that message's own rendered bounds
+  // (see the prop's comment on Bubble) rather than to this row's full width.
   const [actionsFor, setActionsFor] = useState<string | null>(null);
   useEffect(() => setActionsFor(null), [conversationId]);
-
-  /**
-   * Where and when the current touch started, so its release can tell a
-   * tap from a scroll.
-   *
-   * This used to be a long-press timer. iOS Safari's own long-press gesture
-   * -- text selection, the Copy/Look Up callout -- fires off the exact same
-   * touch a timer would spend 450ms waiting on, and it wins: the callout
-   * swallows the tap that was meant for the bar's buttons a moment later,
-   * so the bar would appear and nothing in it could be tapped. A plain
-   * quick tap never gives that gesture time to start at all, which is what
-   * makes this immune to the conflict rather than merely defending against
-   * it -- the select-none/touch-callout CSS at the call site is a second
-   * line of defence against an accidental slow hold, not the mechanism
-   * this depends on.
-   */
-  const pointerStart = useRef<{ x: number; y: number; at: number } | null>(
-    null,
-  );
-
-  // Beyond this, a release is a scroll or a drag, not a tap.
-  const TAP_MOVE_PX = 10;
-  // Beyond this, a release is a genuine long-press. Below iOS's own
-  // long-press threshold, so with select-none in place a hold this short
-  // never triggers the OS gesture in the first place.
-  const TAP_MAX_MS = 400;
-
-  type PressPointerEvent = {
-    pointerType: string;
-    clientX: number;
-    clientY: number;
-    target: EventTarget | null;
-  };
-
-  /** A quick tap (and right-click) toggles a message's edge actions.
-   *  Mouse pointers are untouched -- hover already reveals the bar. */
-  const pressHandlers = (messageId: string) => ({
-    onPointerDown: (event: PressPointerEvent) => {
-      if (event.pointerType === "mouse") return;
-      pointerStart.current = {
-        x: event.clientX,
-        y: event.clientY,
-        at: Date.now(),
-      };
-    },
-    onPointerUp: (event: PressPointerEvent) => {
-      if (event.pointerType === "mouse") return;
-      const start = pointerStart.current;
-      pointerStart.current = null;
-      if (!start) return;
-      // A tap landing on a button (the quote block, or a button in the bar
-      // itself) is that button's own action, not a toggle of the bar around
-      // it -- jumping to a quoted message must not also pop its reactions.
-      if (event.target instanceof Element && event.target.closest("button")) {
-        return;
-      }
-      const moved = Math.hypot(
-        event.clientX - start.x,
-        event.clientY - start.y,
-      );
-      if (moved > TAP_MOVE_PX || Date.now() - start.at > TAP_MAX_MS) return;
-      setActionsFor((current) => (current === messageId ? null : messageId));
-    },
-    onPointerCancel: () => {
-      pointerStart.current = null;
-    },
-    onContextMenu: (event: { preventDefault: () => void }) => {
-      event.preventDefault();
-      setActionsFor((current) => (current === messageId ? null : messageId));
-    },
-  });
 
   /**
    * Delete for everyone: an ordinary send whose payload is a retract op --
@@ -1618,7 +1636,27 @@ function Timeline({
   }, [items, session.user.id]);
 
   return (
-    <div className="flex-1 overflow-y-auto p-4">
+    <div
+      className="flex-1 overflow-y-auto p-4"
+      onClick={(event) => {
+        // A tap inside a message's own press-bounded wrapper already
+        // toggled that message's bar via Bubble's onPress (and toggling
+        // TO a different message closes whatever was open, being the same
+        // single-valued state) -- this only ever needs to act on genuine
+        // dead space: empty timeline area, a notice line, the load-older
+        // button. Checked by data attribute rather than the row's id,
+        // because the row itself is still full width; only the marked
+        // inner wrapper is the message's actual footprint.
+        if (actionsFor === null) return;
+        if (
+          event.target instanceof Element &&
+          event.target.closest("[data-bubble-press]")
+        ) {
+          return;
+        }
+        setActionsFor(null);
+      }}
+    >
       {hasMore && (
         <button
           onClick={loadOlder}
@@ -1664,24 +1702,7 @@ function Timeline({
             <div
               key={item.message.messageId}
               id={`msg-${item.message.messageId}`}
-              className={
-                (first ? "mt-3" : "mt-0.5") +
-                entrance +
-                // iOS Safari's own long-press gesture (text selection, the
-                // Copy/Look Up callout) fires on the same timescale as ours
-                // and wins: it puts the page into a selection state that
-                // swallows the tap that should land on the action bar's
-                // buttons a moment later -- the bar appears but nothing in
-                // it is clickable. Long press means our menu here, not the
-                // OS's; select-none is the standard trade a chat app makes
-                // for it (see WhatsApp/iMessage/Telegram).
-                (item.marks?.retracted
-                  ? ""
-                  : " touch-manipulation select-none [-webkit-touch-callout:none]")
-              }
-              {...(item.marks?.retracted
-                ? {}
-                : pressHandlers(item.message.messageId))}
+              className={(first ? "mt-3" : "mt-0.5") + entrance}
             >
               <Bubble
                 mine={mine}
@@ -1735,6 +1756,16 @@ function Timeline({
                     : undefined,
                 }}
                 actionsShown={actionsFor === item.message.messageId}
+                onPress={
+                  item.marks?.retracted
+                    ? undefined
+                    : () =>
+                        setActionsFor((current) =>
+                          current === item.message.messageId
+                            ? null
+                            : item.message.messageId,
+                        )
+                }
                 chips={chips}
                 receipt={
                   // A tombstone with "Delivered" under it would be receipts
