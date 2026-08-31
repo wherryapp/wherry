@@ -475,6 +475,22 @@ export function Field({
 }
 
 /**
+ * The "Loading…" placeholder shown while a panel's list is still in flight.
+ * Three sites wrote a `<p>` or `<div>` for this by hand, two of them
+ * forgetting the dark-mode color entirely -- `text-neutral-500` alone reads
+ * far too light against a dark background with nothing to lift it.
+ * `className` is for whatever font-size and padding the site around it
+ * already used; only the color pair lives here.
+ */
+export function LoadingLine({ className }: { className?: string }) {
+  return (
+    <p className={cx("text-neutral-500 dark:text-neutral-400", className)}>
+      Loading…
+    </p>
+  );
+}
+
+/**
  * Inline problem text, next to the thing that failed. `boxed` swaps that
  * for the red banner treatment three auth screens each built by hand for a
  * form-level failure (as opposed to a per-field one) -- same slot, same

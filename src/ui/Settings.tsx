@@ -30,7 +30,15 @@ import {
   type PushState,
 } from "../sync/push";
 import { useAnnouncements } from "./hooks";
-import { Button, ErrorText, Input, Note, Panel, PanelSection } from "./kit";
+import {
+  Button,
+  ErrorText,
+  Input,
+  LoadingLine,
+  Note,
+  Panel,
+  PanelSection,
+} from "./kit";
 
 /**
  * Stamped at build time the same way BUILD_COMMIT is (see sync/engine.ts) --
@@ -288,7 +296,7 @@ export function Settings({
           description="Revoking a device signs it out and stops it receiving new messages."
         >
           {devices === null ? (
-            <p className="text-xs text-neutral-500">Loading…</p>
+            <LoadingLine className="text-xs" />
           ) : (
             <ul className="space-y-2">
               {devices.map((device) => (

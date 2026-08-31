@@ -18,7 +18,16 @@ import {
   type FriendLists,
 } from "../api/client";
 import { sync } from "../sync/engine";
-import { Avatar, Button, ErrorText, Input, Note, Panel, PanelSection } from "./kit";
+import {
+  Avatar,
+  Button,
+  ErrorText,
+  Input,
+  LoadingLine,
+  Note,
+  Panel,
+  PanelSection,
+} from "./kit";
 
 function Person({
   person,
@@ -171,7 +180,7 @@ export function Friends({
           ))}
 
         {lists === null ? (
-          <p className="px-4 text-xs text-neutral-500">Loading…</p>
+          <LoadingLine className="px-4 text-xs" />
         ) : (
           <>
             {lists.incoming.length > 0 && (

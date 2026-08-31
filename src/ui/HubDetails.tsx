@@ -46,6 +46,7 @@ import {
   Button,
   ErrorText,
   Input,
+  LoadingLine,
   LockIcon,
   Note,
   Panel,
@@ -642,9 +643,7 @@ export function HubDetails({
   if (!detail) {
     return (
       <Panel title="Hub" onClose={onClose}>
-        <div className="p-4 text-sm text-neutral-500 dark:text-neutral-400">
-          Loading…
-        </div>
+        <LoadingLine className="p-4 text-sm" />
       </Panel>
     );
   }
