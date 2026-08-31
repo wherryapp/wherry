@@ -14,6 +14,7 @@ RUN corepack enable
 # for esbuild -- without it pnpm 11 refuses the build script and the
 # install fails, which is exactly what took deploy #514 down.
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
+COPY patches ./patches
 RUN pnpm install --frozen-lockfile || pnpm install
 
 COPY tsconfig*.json vite.config.ts index.html ./
