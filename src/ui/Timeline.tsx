@@ -28,6 +28,7 @@ import {
 } from "./hooks";
 import { memberName } from "./format";
 import { excerptOf, type EditDraft, type ReplyDraft } from "./drafts";
+import { unreadBoundary } from "./unread";
 import {
   PencilIcon,
   PinIcon,
@@ -545,6 +546,34 @@ function Bubble({
   );
 }
 
+/**
+ * The read/unread divider -- the line a conversation opens on.
+ *
+ * `capped` is store.countUnread's ceiling showing through: it stops walking
+ * at 99, so a returned 99 is a floor rather than a number. Rendering "99+"
+ * there is the same admission Badge already makes, and for the same reason.
+ */
+function UnreadDivider({ count, capped }: { count: number; capped: boolean }) {
+  const words = capped
+    ? "99+ new messages"
+    : count === 1
+      ? "1 new message"
+      : `${count} new messages`;
+  return (
+    <div
+      id="unread-divider"
+      className="my-2 flex items-center gap-2"
+      aria-label={words}
+    >
+      <span className="h-px flex-1 bg-accent-300 dark:bg-accent-800" />
+      <span className="text-[11px] font-medium text-accent-600 dark:text-accent-400">
+        {words}
+      </span>
+      <span className="h-px flex-1 bg-accent-300 dark:bg-accent-800" />
+    </div>
+  );
+}
+
 /** A notice line: no bubble, no sender, no side -- centred and easy to skip. */
 function Notice({ text }: { text: string }) {
   return (
@@ -560,6 +589,13 @@ function Notice({ text }: { text: string }) {
  *  both within a few minutes. Notices always break a run -- "X removed Y"
  *  between two messages is a boundary in the conversation, not a pause. */
 const RUN_GAP_MS = 5 * 60_000;
+
+/** Close enough to the bottom that a new message should follow the reader
+ *  down rather than wait to be scrolled to. About one bubble's worth. */
+const NEAR_BOTTOM_PX = 120;
+
+/** store.countUnread's default ceiling. A count equal to it is a floor. */
+const UNREAD_COUNT_CAP = 99;
 
 function runIdentity(
   item: TimelineItem | undefined,
@@ -760,14 +796,218 @@ export function Timeline({
   };
 
   const bottom = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const count = items.length;
 
+  // -------------------------------------------------------------------------
+  // Where the unread divider goes
+  // -------------------------------------------------------------------------
+
+  /**
+   * The read marker as it stood when this conversation was opened.
+   *
+   * A *snapshot*, never the live prop, because useMarkRead marks the
+   * conversation read the moment it is open and visible and merges the new
+   * marker locally -- so the live marker advances to the newest message a
+   * beat after open, and a divider computed from it would erase itself in
+   * front of the reader. Captured once, on the first render where the
+   * conversation list has caught up, and never updated again while this
+   * conversation stays open.
+   *
+   * The race is won by construction: useMarkRead's merge is async and lands
+   * after first render. If the list were ever so slow that the merge landed
+   * before `conversation` was defined at all, the divider is silently lost
+   * for that one open -- accepted, because the alternative is holding a
+   * marker the server has already moved past.
+   */
+  const [snapshot, setSnapshot] = useState<{
+    conversationId: string;
+    marker: string | null;
+  } | null>(null);
+
   useEffect(() => {
-    // A jump in progress owns the scroll position; pinning to the bottom
-    // here would yank the reader away from the very message they asked for.
+    setSnapshot((current) => {
+      if (current?.conversationId === conversationId) return current;
+      // Switched conversations and the list has not caught up yet: reset,
+      // and take the snapshot on a later run.
+      if (!conversation || conversation.id !== conversationId) return null;
+      return {
+        conversationId,
+        marker:
+          conversation.members.find(
+            (member) => member.userId === session.user.id,
+          )?.lastReadMessageId ?? null,
+      };
+    });
+  }, [conversation, conversationId, session.user.id]);
+
+  /**
+   * Whether `items` is this conversation's yet.
+   *
+   * useTimeline reloads from the store asynchronously and does not blank
+   * itself first, so for a beat after a switch these are still the *previous*
+   * conversation's messages -- and their ids, from a different id space
+   * entirely, all compare as "after" this conversation's marker. Believing
+   * them put the divider in the wrong thread and, worse, latched the open
+   * anchor onto it, so the real divider never got its one shot. Also false
+   * on an empty page, which is what a conversation looks like in the instant
+   * before its first load lands.
+   */
+  const itemsAreCurrent = useMemo(() => {
+    const first = items.find((item) => item.kind === "sent");
+    return first?.kind === "sent"
+      ? first.message.conversationId === conversationId
+      : false;
+  }, [items, conversationId]);
+
+  const boundary = useMemo(
+    () =>
+      snapshot === null || !itemsAreCurrent
+        ? null
+        : unreadBoundary(items, snapshot.marker, session.user.id),
+    [items, itemsAreCurrent, snapshot, session.user.id],
+  );
+
+  /**
+   * True when the boundary is *above* the loaded window: the oldest message
+   * on the page is already strictly after the marker, so the first unread
+   * one is off the top. A hub channel with 400 unread is the case.
+   *
+   * Deliberately not solved by paging until the marker appears -- that is 400
+   * messages fetched to place a line. The divider goes at the top of what is
+   * loaded instead, with an honest count from the store, and Load older
+   * stays the way to walk further back.
+   */
+  const clamped = useMemo(() => {
+    if (snapshot === null || !itemsAreCurrent || !hasMore) return false;
+    const oldest = items.find((item) => item.kind === "sent");
+    if (oldest?.kind !== "sent") return false;
+    return (
+      snapshot.marker === null || oldest.message.messageId > snapshot.marker
+    );
+  }, [items, itemsAreCurrent, hasMore, snapshot]);
+
+  // The clamped count, which only the store can answer -- it walks the whole
+  // conversation rather than the loaded page. Capped at 99 by countUnread.
+  const [deepCount, setDeepCount] = useState<number | null>(null);
+  useEffect(() => setDeepCount(null), [conversationId]);
+  useEffect(() => {
+    if (!clamped || snapshot === null) return;
+    let cancelled = false;
+    void store
+      .countUnread(conversationId, snapshot.marker, session.user.id)
+      .then((total) => {
+        if (!cancelled) setDeepCount(total);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clamped, snapshot, conversationId, session.user.id]);
+
+  /** Null when nothing is unread; `beforeId` null means "top of the page". */
+  const divider = useMemo((): {
+    beforeId: string | null;
+    count: number;
+    capped: boolean;
+  } | null => {
+    if (snapshot === null) return null;
+    if (clamped) {
+      if (deepCount === null || deepCount <= 0) return null;
+      return {
+        beforeId: null,
+        count: deepCount,
+        capped: deepCount >= UNREAD_COUNT_CAP,
+      };
+    }
+    if (!boundary) return null;
+    return {
+      beforeId: boundary.firstUnreadId,
+      count: boundary.count,
+      capped: false,
+    };
+  }, [snapshot, clamped, deepCount, boundary]);
+
+  /** Which rendered row the divider sits above; -1 for none. */
+  const dividerIndex = useMemo(() => {
+    if (!divider) return -1;
+    if (divider.beforeId === null) return items.length > 0 ? 0 : -1;
+    return items.findIndex(
+      (item) =>
+        item.kind === "sent" && item.message.messageId === divider.beforeId,
+    );
+  }, [divider, items]);
+
+  // -------------------------------------------------------------------------
+  // Scrolling
+  // -------------------------------------------------------------------------
+
+  /**
+   * Whether the reader is parked at the bottom, *sampled on scroll* rather
+   * than measured at the moment it is needed. Both consumers need the answer
+   * from before the change that is asking:
+   *
+   * - an arrival has already grown scrollHeight by its own height by the time
+   *   the effect below runs, so a live measurement reads a reader who was at
+   *   the bottom as scrolled up;
+   * - the keyboard has already shortened this pane by the time
+   *   visualViewport's resize fires, which moves the bottom hundreds of
+   *   pixels away for exactly the person the re-pin exists to serve.
+   *
+   * Neither event moves scrollTop, so the last sample is still the truth
+   * about where the reader put themselves.
+   */
+  const nearBottom = useRef(true);
+  const sampleNearBottom = (): void => {
+    const el = scroller.current;
+    if (!el) return;
+    nearBottom.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+  };
+
+  /**
+   * One shot per conversation: the open lands on the divider, or on the
+   * bottom when there is nothing unread. Latched, so everything after it is
+   * an *arrival*, which is a different question.
+   */
+  const anchored = useRef(false);
+  useEffect(() => {
+    anchored.current = false;
+  }, [conversationId]);
+
+  // True while the divider's existence is still undecided -- the conversation
+  // list has not caught up, or a clamped count is still in flight. Pin to the
+  // bottom meanwhile (today's behaviour) but do NOT latch, so the anchor
+  // still gets its one shot when the answer lands.
+  const dividerPending =
+    snapshot === null || !itemsAreCurrent || (clamped && deepCount === null);
+
+  useEffect(() => {
+    // A jump in progress owns the scroll position; pinning or anchoring here
+    // would yank the reader away from the very message they asked for. A
+    // search jump into a conversation beats the divider.
     if (jumpTo) return;
+
+    if (!anchored.current) {
+      // Keyed off the rendered row rather than the divider value, so this
+      // can only latch on a line that is actually in the DOM to scroll to.
+      if (dividerIndex >= 0) {
+        anchored.current = true;
+        document
+          .getElementById("unread-divider")
+          ?.scrollIntoView({ block: "center" });
+        return;
+      }
+      bottom.current?.scrollIntoView({ block: "end" });
+      if (!dividerPending) anchored.current = true;
+      return;
+    }
+
+    // An arrival. Following it is right for somebody reading at the bottom
+    // and wrong for anybody else -- the unconditional pin this replaces is
+    // what yanked a reader who had scrolled up back down again.
+    if (!nearBottom.current) return;
     bottom.current?.scrollIntoView({ block: "end" });
-  }, [count, conversationId, jumpTo]);
+  }, [count, conversationId, jumpTo, dividerIndex, dividerPending]);
 
   // The jump: scroll once the target renders; page older store content
   // until it does (the target is already stored by the caller). Bounded so
@@ -803,6 +1043,11 @@ export function Timeline({
     if (!viewport) return;
 
     const pin = (): void => {
+      // Through the same guard as an arrival, using the sample taken before
+      // the keyboard shortened the pane (see nearBottom). The case this
+      // exists for -- somebody at the bottom about to reply -- passes it by
+      // definition; a reader parked further up is left where they were.
+      if (!nearBottom.current) return;
       bottom.current?.scrollIntoView({ block: "end" });
     };
 
@@ -830,8 +1075,27 @@ export function Timeline({
     return null;
   }, [items, session.user.id]);
 
+  /**
+   * Slots the divider in above the row it belongs to. flatMap rather than a
+   * wrapping Fragment so both stay ordinary keyed siblings -- the divider
+   * appearing must not remount the message under it.
+   */
+  const withDivider = (index: number, row: ReactNode): ReactNode | ReactNode[] =>
+    index === dividerIndex && divider
+      ? [
+          <UnreadDivider
+            key="unread-divider"
+            count={divider.count}
+            capped={divider.capped}
+          />,
+          row,
+        ]
+      : row;
+
   return (
     <div
+      ref={scroller}
+      onScroll={sampleNearBottom}
       className="flex-1 overflow-y-auto bg-neutral-50 p-4 dark:bg-transparent"
       onClick={(event) => {
         // A tap inside a message's own press-bounded wrapper already
@@ -861,12 +1125,13 @@ export function Timeline({
         </button>
       )}
 
-      {items.map((item: TimelineItem, index) => {
+      {items.flatMap((item: TimelineItem, index) => {
         if (item.kind === "event") {
-          return (
+          return withDivider(
+            index,
             <div key={item.event.id} className="mt-3">
               <Notice text={eventText(item.event, session.user.id)} />
-            </div>
+            </div>,
           );
         }
 
@@ -893,7 +1158,8 @@ export function Timeline({
               .join(", "),
           }));
           const content = item.content;
-          return (
+          return withDivider(
+            index,
             <div
               key={item.message.messageId}
               id={`msg-${item.message.messageId}`}
@@ -1000,10 +1266,11 @@ export function Timeline({
                     : undefined
                 }
               />
-            </div>
+            </div>,
           );
         }
-        return (
+        return withDivider(
+          index,
           <div
             key={item.entry.clientMessageId}
             className={(first ? "mt-3" : "mt-0.5") + entrance}
@@ -1021,7 +1288,7 @@ export function Timeline({
                   : "Sending…"
               }
             />
-          </div>
+          </div>,
         );
       })}
 
