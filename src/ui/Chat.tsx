@@ -1051,6 +1051,24 @@ function ConversationList({
 // Timeline
 // ---------------------------------------------------------------------------
 
+/** The fixed quick-react palette. A search-every-emoji picker is a
+ *  dependency and a design problem for another day; six cover the register
+ *  the messengers people know converge on. */
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"] as const;
+
+/** Which emoji this user currently has on a message, if any. One per
+ *  person by construction: per (target, reactor) the latest op wins. */
+function myReaction(
+  marks: MessageMarks | null,
+  selfUserId: string,
+): string | null {
+  if (!marks) return null;
+  for (const [emoji, users] of marks.reactions) {
+    if (users.includes(selfUserId)) return emoji;
+  }
+  return null;
+}
+
 function Bubble({
   mine,
   content,
@@ -1061,8 +1079,9 @@ function Bubble({
   receipt,
   first = true,
   last = true,
-  onDelete,
+  actions,
   actionsShown = false,
+  chips,
 }: {
   mine: boolean;
   /**
@@ -1098,33 +1117,72 @@ function Bubble({
   first?: boolean;
   last?: boolean;
   /**
-   * Deletes (retracts) this message, offered only on your own sent ones.
-   * Revealed on hover, and by the long-press that sets `actionsShown` --
-   * the affordance living in the slack beside the bubble that stage 3 of
-   * the reform reserved.
+   * The floating action bar -- quick reactions, and Delete on your own
+   * messages. Lives in the slack beside the bubble that stage 3 of the
+   * reform reserved: revealed on hover, held open by the long-press that
+   * sets `actionsShown`, and absolutely positioned so appearing never
+   * re-flows the timeline under the reader.
    */
-  onDelete?: (() => void) | undefined;
+  actions?:
+    | {
+        /** null clears this user's reaction; an emoji sets or replaces it. */
+        onReact: (emoji: string | null) => void;
+        /** This user's current reaction, so the bar can show the toggle. */
+        current: string | null;
+        onDelete?: (() => void) | undefined;
+      }
+    | undefined;
   actionsShown?: boolean;
+  /** Aggregated reaction chips, rendered under the bubble. */
+  chips?:
+    | { emoji: string; count: number; mine: boolean; label: string }[]
+    | undefined;
 }) {
   const retracted = marks?.retracted === true;
   const edited = !retracted && marks?.editedText !== undefined;
 
   return (
-    <div className={`group flex ${mine ? "justify-end" : "justify-start"}`}>
-      {/* The horizontal padding beyond the bubble is deliberate slack: the
-          affordance space where hover actions and long-press targets for
-          reactions/replies land later without re-laying anything out. */}
-      {onDelete && !retracted && (
-        <button
-          type="button"
-          onClick={onDelete}
-          aria-label="Delete message"
-          className={`mr-1 self-center rounded-full p-1.5 text-neutral-400 transition-opacity hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:text-neutral-500 dark:hover:text-red-400 ${
-            actionsShown ? "opacity-100" : "opacity-0"
-          }`}
+    <div
+      className={`group relative flex flex-col ${
+        mine ? "items-end" : "items-start"
+      }`}
+    >
+      {actions && !retracted && (
+        <div
+          className={`pointer-events-none absolute -top-4 z-10 flex items-center gap-0.5 rounded-full border border-neutral-200 bg-white px-1 py-0.5 shadow-sm transition-opacity dark:border-neutral-700 dark:bg-neutral-800 ${
+            actionsShown
+              ? "pointer-events-auto opacity-100"
+              : "opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"
+          } ${mine ? "right-2" : "left-2"}`}
         >
-          <TrashIcon className="h-4 w-4" />
-        </button>
+          {QUICK_REACTIONS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              aria-label={`React ${emoji}`}
+              onClick={() =>
+                actions.onReact(actions.current === emoji ? null : emoji)
+              }
+              className={`rounded-full px-1 py-0.5 text-sm transition-transform hover:bg-neutral-100 motion-safe:hover:scale-125 dark:hover:bg-neutral-700 ${
+                actions.current === emoji
+                  ? "bg-accent-50 dark:bg-neutral-700"
+                  : ""
+              }`}
+            >
+              {emoji}
+            </button>
+          ))}
+          {actions.onDelete && (
+            <button
+              type="button"
+              onClick={actions.onDelete}
+              aria-label="Delete message"
+              className="rounded-full p-1 text-neutral-400 hover:bg-neutral-100 hover:text-red-600 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-red-400"
+            >
+              <TrashIcon className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       )}
       <div
         className={`max-w-[85%] rounded-2xl px-3 py-2 md:max-w-[70%] ${
@@ -1180,6 +1238,29 @@ function Bubble({
           </span>
         )}
       </div>
+      {!retracted && chips && chips.length > 0 && (
+        <div className={`mt-0.5 flex flex-wrap gap-1 px-1 ${mine ? "justify-end" : ""}`}>
+          {chips.map((chip) => (
+            <button
+              key={chip.emoji}
+              type="button"
+              title={chip.label}
+              aria-label={`${chip.emoji} ${chip.label}${chip.mine ? " — tap to remove yours" : ""}`}
+              onClick={() =>
+                actions?.onReact(chip.mine ? null : chip.emoji)
+              }
+              className={`rounded-full border px-1.5 py-0.5 text-xs motion-safe:animate-fade-in ${
+                chip.mine
+                  ? "border-accent-300 bg-accent-50 text-accent-900 dark:border-accent-700 dark:bg-neutral-800 dark:text-accent-100"
+                  : "border-neutral-200 bg-white text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+              }`}
+            >
+              {chip.emoji}
+              {chip.count > 1 && <span className="ml-0.5">{chip.count}</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1299,6 +1380,20 @@ function Timeline({
     );
   };
 
+  /**
+   * Sets, replaces or (with null) removes this user's reaction -- the same
+   * silent-op send as a retraction, aggregated the same way, so the chip
+   * appears optimistically from the outbox before the server confirms.
+   */
+  const sendReaction = (messageId: string, emoji: string | null): void => {
+    setActionsFor(null);
+    void sync.enqueue(
+      conversationId,
+      encodeOp({ kind: "reaction", target: messageId, emoji }),
+      { silent: true },
+    );
+  };
+
   // Names by user id, so attribution is a lookup rather than a scan per
   // message. Only built for groups, since a 1:1 never shows them.
   const isGroup = (conversation?.members.length ?? 0) > 2;
@@ -1386,13 +1481,25 @@ function Timeline({
 
         if (item.kind === "sent") {
           const mine = item.message.senderUserId === session.user.id;
+          const chips = (item.marks?.reactions ?? []).map(([emoji, users]) => ({
+            emoji,
+            count: users.length,
+            mine: users.includes(session.user.id),
+            label: users
+              .map((userId) =>
+                userId === session.user.id
+                  ? "You"
+                  : (names.get(userId) ?? "Someone"),
+              )
+              .join(", "),
+          }));
           return (
             <div
               key={item.message.messageId}
               className={(first ? "mt-3" : "mt-0.5") + entrance}
-              {...(mine && !item.marks?.retracted
-                ? pressHandlers(item.message.messageId)
-                : {})}
+              {...(item.marks?.retracted
+                ? {}
+                : pressHandlers(item.message.messageId))}
             >
               <Bubble
                 mine={mine}
@@ -1406,10 +1513,16 @@ function Timeline({
                     ? (names.get(item.message.senderUserId) ?? "Someone")
                     : undefined
                 }
-                onDelete={
-                  mine ? () => retractMessage(item.message.messageId) : undefined
-                }
+                actions={{
+                  onReact: (emoji) =>
+                    sendReaction(item.message.messageId, emoji),
+                  current: myReaction(item.marks, session.user.id),
+                  onDelete: mine
+                    ? () => retractMessage(item.message.messageId)
+                    : undefined,
+                }}
                 actionsShown={actionsFor === item.message.messageId}
+                chips={chips}
                 receipt={
                   // A tombstone with "Delivered" under it would be receipts
                   // for a message that no longer says anything.
