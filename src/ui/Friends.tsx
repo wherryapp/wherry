@@ -20,11 +20,6 @@ import {
 import { sync } from "../sync/engine";
 import { Avatar, Button, ErrorText, Input, Note, Panel, PanelSection } from "./kit";
 
-// Block is the one action here with no kit equivalent -- a plain-text button
-// but red, and the kit's ghost variant carries no color. See kit.tsx.
-const blockClass =
-  "shrink-0 rounded-md px-2 py-1 text-xs font-medium text-red-600 hover:bg-neutral-100 dark:text-red-400 dark:hover:bg-neutral-800";
-
 function Person({
   person,
   detail,
@@ -235,8 +230,10 @@ export function Friends({
                       >
                         Remove
                       </Button>
-                      <button
-                        className={blockClass}
+                      <Button
+                        variant="ghost-danger"
+                        size="sm"
+                        className="shrink-0 px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
                         onClick={() =>
                           void act(
                             () => blockUser(person.userId),
@@ -245,7 +242,7 @@ export function Friends({
                         }
                       >
                         Block
-                      </button>
+                      </Button>
                     </Person>
                   ))}
                 </ul>

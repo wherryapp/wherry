@@ -292,6 +292,15 @@ const BUTTON_VARIANTS = {
   /** Text that acts. The header links and row actions. */
   ghost:
     "text-neutral-500 hover:text-neutral-800 disabled:opacity-50 dark:hover:text-neutral-200",
+  /**
+   * Ghost's destructive counterpart -- text that acts, but wrecks something.
+   * Reinvented by hand at five call sites (Block, Revoke, Remove, Unpin, Ban)
+   * before this existed, each pasting the same red plus whatever hover the
+   * site felt like (underline, a background tint) -- that hover treatment
+   * stays a per-site className rather than living here, so this only carries
+   * what all five actually agreed on: the color and the disabled state.
+   */
+  "ghost-danger": "text-red-600 disabled:opacity-50 dark:text-red-400",
 } as const;
 
 export function Button({
@@ -305,6 +314,10 @@ export function Button({
   size?: "md" | "sm";
   className?: string;
 } & React.ComponentProps<"button">) {
+  // Both ghost variants are text, not boxes -- the scale-press and padding
+  // below are for buttons that look like buttons, and would misalign ghost
+  // text against the labels it sits beside.
+  const ghost = variant === "ghost" || variant === "ghost-danger";
   return (
     <button
       type={type}
@@ -314,10 +327,10 @@ export function Button({
         // feedback. Ghost buttons skip it -- text that shrinks reads as a
         // glitch, not a press.
         "rounded-md text-sm font-medium transition",
-        variant !== "ghost" && "motion-safe:active:scale-[0.97]",
+        !ghost && "motion-safe:active:scale-[0.97]",
         // Ghost buttons are text, not boxes; padding would misalign them
         // with the labels they sit beside.
-        variant !== "ghost" && (size === "md" ? "px-3 py-2" : "px-3 py-1.5"),
+        !ghost && (size === "md" ? "px-3 py-2" : "px-3 py-1.5"),
         BUTTON_VARIANTS[variant],
         className,
       )}

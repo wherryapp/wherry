@@ -534,13 +534,15 @@ function GroupDetails({
                   </span>
                 </span>
                 {member.userId !== selfUserId && (
-                  <button
+                  <Button
+                    variant="ghost-danger"
+                    size="sm"
                     onClick={() => removeOne(member.userId)}
                     disabled={removingUserId === member.userId}
-                    className="shrink-0 text-xs font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                    className="shrink-0 hover:underline"
                   >
                     {removingUserId === member.userId ? "…" : "Remove"}
-                  </button>
+                  </Button>
                 )}
               </li>
             ))}
@@ -844,12 +846,14 @@ function PinsPanel({
                   </span>
                 </button>
                 {canModerate && (
-                  <button
+                  <Button
+                    variant="ghost-danger"
+                    size="sm"
                     onClick={() => unpin(pin.messageId)}
-                    className="mt-0.5 text-xs font-medium text-red-600 hover:underline dark:text-red-400"
+                    className="mt-0.5 hover:underline"
                   >
                     Unpin
-                  </button>
+                  </Button>
                 )}
               </li>
             );

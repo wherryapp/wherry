@@ -888,20 +888,24 @@ export function HubDetails({
                       )}
                       {manages(myRole) && outranks(myRole, member.role) && (
                         <>
-                          <button
+                          <Button
+                            variant="ghost-danger"
+                            size="sm"
                             onClick={() => kick(member.userId, false)}
                             disabled={busy}
-                            className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                            className="hover:underline"
                           >
                             {busy ? "…" : "Remove"}
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            variant="ghost-danger"
+                            size="sm"
                             onClick={() => kick(member.userId, true)}
                             disabled={busy}
-                            className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                            className="hover:underline"
                           >
                             Ban
-                          </button>
+                          </Button>
                         </>
                       )}
                     </span>
@@ -971,12 +975,14 @@ export function HubDetails({
                         >
                           {copiedInviteId === invite.id ? "Copied" : "Copy"}
                         </button>
-                        <button
+                        <Button
+                          variant="ghost-danger"
+                          size="sm"
                           onClick={() => revokeInvite(invite.id)}
-                          className="text-xs font-medium text-red-600 hover:underline dark:text-red-400"
+                          className="hover:underline"
                         >
                           Revoke
-                        </button>
+                        </Button>
                       </span>
                     </div>
                     <p className="text-xs text-neutral-500 dark:text-neutral-400">

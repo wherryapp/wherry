@@ -314,12 +314,14 @@ export function Settings({
                     </span>
                   </span>
                   {!device.revokedAt && (
-                    <button
+                    <Button
+                      variant="ghost-danger"
+                      size="sm"
                       onClick={() => void revoke(device)}
-                      className="shrink-0 text-xs text-red-600 hover:underline dark:text-red-400"
+                      className="shrink-0 hover:underline"
                     >
                       {device.current ? "Sign out" : "Revoke"}
-                    </button>
+                    </Button>
                   )}
                 </li>
               ))}
