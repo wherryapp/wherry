@@ -410,6 +410,32 @@ export function Input({
 }
 
 /**
+ * The `<select>`, styled to match Input's box but sized for the small inline
+ * pickers it is used for -- HubDetails' role dropdown and its two invite-link
+ * selects, hand-styled identically three times before this. Vertical padding
+ * is not baked in: the role select uses `py-0.5` where the invite selects use
+ * `py-1`, so callers push it themselves via className, the same carve-out
+ * Button's ghost variants make for their own padding.
+ */
+export function Select({
+  className,
+  children,
+  ...rest
+}: { className?: string } & React.ComponentProps<"select">) {
+  return (
+    <select
+      className={cx(
+        "rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100",
+        className,
+      )}
+      {...rest}
+    >
+      {children}
+    </select>
+  );
+}
+
+/**
  * A labelled form field: the label span above whatever goes below it.
  * Repeated seven times across Login and VerifyGate, each a `<label>`
  * wrapping the same span and an `Input` -- this pulls out only the label,

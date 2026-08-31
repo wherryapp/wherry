@@ -51,6 +51,7 @@ import {
   Panel,
   PanelSection,
   PencilIcon,
+  Select,
   useConfirm,
 } from "./kit";
 import { ContactCheckboxRow } from "./ContactRow";
@@ -872,19 +873,19 @@ export function HubDetails({
                   {!self && (
                     <span className="flex shrink-0 items-center gap-2">
                       {myRole === "owner" && (
-                        <select
+                        <Select
                           value={member.role}
                           disabled={busy}
                           onChange={(e) =>
                             changeRole(member.userId, e.target.value as HubRole)
                           }
                           aria-label={`Role for ${member.displayName || member.username}`}
-                          className="rounded border border-neutral-300 bg-white px-1 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                          className="py-0.5"
                         >
                           <option value="member">Member</option>
                           <option value="moderator">Moderator</option>
                           <option value="owner">Owner…</option>
-                        </select>
+                        </Select>
                       )}
                       {manages(myRole) && outranks(myRole, member.role) && (
                         <>
@@ -999,26 +1000,26 @@ export function HubDetails({
               </ul>
             )}
             <form onSubmit={makeInvite} className="mt-2 flex items-center gap-2">
-              <select
+              <Select
                 value={inviteExpiry}
                 onChange={(e) => setInviteExpiry(e.target.value)}
                 aria-label="Invite expiry"
-                className="rounded border border-neutral-300 bg-white px-1 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                className="py-1"
               >
                 <option value="86400">1 day</option>
                 <option value="604800">7 days</option>
                 <option value="0">Never expires</option>
-              </select>
-              <select
+              </Select>
+              <Select
                 value={inviteUses}
                 onChange={(e) => setInviteUses(e.target.value)}
                 aria-label="Invite use limit"
-                className="rounded border border-neutral-300 bg-white px-1 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                className="py-1"
               >
                 <option value="0">Unlimited uses</option>
                 <option value="1">1 use</option>
                 <option value="10">10 uses</option>
-              </select>
+              </Select>
               <Button
                 type="submit"
                 size="sm"
