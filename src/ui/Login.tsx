@@ -21,7 +21,7 @@ import {
   unlockAccountKey,
 } from "../crypto/account";
 import { KeysError } from "../crypto/keys";
-import { AuthShell, Button, Input } from "./kit";
+import { AuthShell, Button, ErrorText, Input, Note } from "./kit";
 
 /**
  * What stands between a successful auth call and entering the app.
@@ -301,17 +301,13 @@ export function Login({
         )}
 
         {sent && (
-          <p className="rounded-md bg-neutral-100 px-3 py-2 text-sm text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+          <Note boxed>
             If that address has a confirmed account, a reset link is on its way.
             It works once and expires in 30 minutes.
-          </p>
+          </Note>
         )}
 
-        {error && (
-          <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-            {error}
-          </p>
-        )}
+        {error && <ErrorText boxed>{error}</ErrorText>}
 
         <Button type="submit" disabled={busy} className="w-full">
           {busy
@@ -513,11 +509,7 @@ function RecoveryPrompt({
           />
         </label>
 
-        {error && (
-          <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-            {error}
-          </p>
-        )}
+        {error && <ErrorText boxed>{error}</ErrorText>}
 
         <Button type="submit" disabled={busy} className="w-full">
           {busy ? "Working…" : "Unlock history"}

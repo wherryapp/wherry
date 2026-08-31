@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, me, resendVerification, setEmail } from "../api/client";
 import { markEmailVerified } from "../api/session";
 import type { StoredSession } from "../api/session";
-import { AuthShell, Button, Input } from "./kit";
+import { AuthShell, Button, ErrorText, Input, Note } from "./kit";
 
 // Frequent enough that finishing verification in another tab feels immediate
 // without switching back, cheap enough that it costs nothing sitting idle --
@@ -132,16 +132,8 @@ export function VerifyGate({
           </p>
         </div>
 
-        {notice && (
-          <p className="rounded-md bg-neutral-100 px-3 py-2 text-sm text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
-            {notice}
-          </p>
-        )}
-        {error && (
-          <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-            {error}
-          </p>
-        )}
+        {notice && <Note boxed>{notice}</Note>}
+        {error && <ErrorText boxed>{error}</ErrorText>}
 
         {currentEmail && (
           <Button

@@ -396,32 +396,57 @@ export function Input({
   );
 }
 
-/** Inline problem text, next to the thing that failed. */
+/**
+ * Inline problem text, next to the thing that failed. `boxed` swaps that
+ * for the red banner treatment three auth screens each built by hand for a
+ * form-level failure (as opposed to a per-field one) -- same slot, same
+ * component, a container with more visual weight instead of a second one.
+ */
 export function ErrorText({
   children,
   className,
+  boxed = false,
 }: {
   children: ReactNode;
   className?: string;
+  boxed?: boolean;
 }) {
   return (
-    <p className={cx("text-xs text-red-600 dark:text-red-400", className)}>
+    <p
+      className={cx(
+        boxed
+          ? "rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
+          : "text-xs text-red-600 dark:text-red-400",
+        className,
+      )}
+    >
       {children}
     </p>
   );
 }
 
-/** Inline confirmation or context, same slot as ErrorText. */
+/**
+ * Inline confirmation or context, same slot as ErrorText. `boxed` is its
+ * neutral counterpart to ErrorText's red one -- the same banner treatment
+ * for a success or informational message instead of a failure.
+ */
 export function Note({
   children,
   className,
+  boxed = false,
 }: {
   children: ReactNode;
   className?: string;
+  boxed?: boolean;
 }) {
   return (
     <p
-      className={cx("text-xs text-neutral-600 dark:text-neutral-300", className)}
+      className={cx(
+        boxed
+          ? "rounded-md bg-neutral-100 px-3 py-2 text-sm text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+          : "text-xs text-neutral-600 dark:text-neutral-300",
+        className,
+      )}
     >
       {children}
     </p>
