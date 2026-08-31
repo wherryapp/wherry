@@ -5,6 +5,7 @@
 // time, highlightMentions) are likewise timeline-only and travel with it.
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -611,6 +612,12 @@ const RUN_GAP_MS = 5 * 60_000;
  *  down rather than wait to be scrolled to. About one bubble's worth. */
 const NEAR_BOTTOM_PX = 120;
 
+/** How long after opening a conversation the anchor keeps re-applying itself
+ *  as content settles in above it. Long enough for three store reads and the
+ *  images they reference; short enough that it cannot be mistaken for the
+ *  scroll fighting back. Ends early the moment the reader touches anything. */
+const SETTLE_MS = 1200;
+
 /** store.countUnread's default ceiling. A count equal to it is a floor. */
 const UNREAD_COUNT_CAP = 99;
 
@@ -819,8 +826,10 @@ export function Timeline({
     };
   };
 
-  const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  // Wraps everything that is scrolled, so its height can be observed. The
+  // scroll container's own box never changes; what settles is its contents.
+  const content = useRef<HTMLDivElement>(null);
   const count = items.length;
 
   // -------------------------------------------------------------------------
@@ -989,14 +998,51 @@ export function Timeline({
   };
 
   /**
+   * The true bottom, by assignment rather than `scrollIntoView` on a trailing
+   * sentinel.
+   *
+   * `block: "end"` aligns the sentinel's own bottom edge with the scrollport's
+   * bottom edge, which leaves this container's `p-4` bottom padding below the
+   * fold: the newest message ends up with one pixel of gap under it where the
+   * design has sixteen, jammed against the typing line. Measured, not
+   * theorised — it is why the last message read as slightly out of frame, and
+   * it showed worst on the newest message because that is the one carrying the
+   * timestamp and receipt line. Assigning `scrollTop` clamps to the real
+   * maximum, padding included.
+   */
+  const pinBottom = useCallback((): void => {
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  const centreDivider = useCallback((): void => {
+    document
+      .getElementById("unread-divider")
+      ?.scrollIntoView({ block: "center" });
+  }, []);
+
+  /**
    * One shot per conversation: the open lands on the divider, or on the
    * bottom when there is nothing unread. Latched, so everything after it is
-   * an *arrival*, which is a different question.
+   * an *arrival*, which is a different question. `anchorTarget` records which
+   * of the two it chose, so the settle observer below can re-apply the same
+   * decision rather than re-deriving it.
    */
   const anchored = useRef(false);
+  const anchorTarget = useRef<"divider" | "bottom">("bottom");
+  const settled = useRef(false);
   useEffect(() => {
     anchored.current = false;
+    anchorTarget.current = "bottom";
+    settled.current = false;
   }, [conversationId]);
+
+  /** Puts the scroll back on whatever the open aimed at. */
+  const reapplyAnchor = useCallback((): void => {
+    if (settled.current || !anchored.current) return;
+    if (anchorTarget.current === "divider") centreDivider();
+    else if (nearBottom.current) pinBottom();
+  }, [centreDivider, pinBottom]);
 
   // True while the divider's existence is still undecided -- the conversation
   // list has not caught up, or a clamped count is still in flight. Pin to the
@@ -1016,13 +1062,25 @@ export function Timeline({
       // can only latch on a line that is actually in the DOM to scroll to.
       if (dividerIndex >= 0) {
         anchored.current = true;
-        document
-          .getElementById("unread-divider")
-          ?.scrollIntoView({ block: "center" });
+        anchorTarget.current = "divider";
+        centreDivider();
         return;
       }
-      bottom.current?.scrollIntoView({ block: "end" });
-      if (!dividerPending) anchored.current = true;
+      pinBottom();
+      if (!dividerPending) {
+        anchored.current = true;
+        anchorTarget.current = "bottom";
+      }
+      return;
+    }
+
+    // Still settling. `items` changing this soon after the anchor ran is the
+    // rest of the timeline arriving, not somebody sending something: notices
+    // come from their own store read and land after the messages they sit
+    // between, inserting hundreds of pixels above the anchor. Put the anchor
+    // back rather than reading this as an arrival.
+    if (!settled.current) {
+      reapplyAnchor();
       return;
     }
 
@@ -1030,8 +1088,74 @@ export function Timeline({
     // and wrong for anybody else -- the unconditional pin this replaces is
     // what yanked a reader who had scrolled up back down again.
     if (!nearBottom.current) return;
-    bottom.current?.scrollIntoView({ block: "end" });
-  }, [count, conversationId, jumpTo, dividerIndex, dividerPending]);
+    pinBottom();
+  }, [
+    count,
+    conversationId,
+    jumpTo,
+    dividerIndex,
+    dividerPending,
+    centreDivider,
+    pinBottom,
+    reapplyAnchor,
+  ]);
+
+  /**
+   * The anchor has to survive the timeline settling underneath it.
+   *
+   * `useTimeline` fills messages, notices and the outbox from three separate
+   * store reads and sets three separate pieces of state, so the notice lines
+   * land *after* the messages they sit between. In a group with a lot of them
+   * that is hundreds of pixels inserted above an anchor that has already been
+   * scrolled to and latched — measured at 364px on a seeded 40-message group
+   * with 13 notices, which is how a conversation opens "somewhere in the
+   * middle" instead of on its divider. Images, fonts and the receipt line do
+   * the same thing on a smaller scale.
+   *
+   * Chromium's scroll anchoring absorbs most of it, which is exactly why this
+   * is worse on a phone: Safari does not implement scroll anchoring at all,
+   * so there the full insertion moves the view.
+   *
+   * Notices arriving change `items`, so the effect above already re-runs for
+   * the big case and re-applies the anchor there. This observer is the net
+   * under everything that changes height *without* changing the item list:
+   * images decoding, fonts swapping, a receipt line appearing. Note it is
+   * driven by the rendering pipeline, so it does not fire while the document
+   * is hidden -- which is fine, since nobody is looking at the scroll then.
+   *
+   * Both ends of the window are needed: without the take-over check a fast
+   * reader gets yanked back, and without the timer every later arrival would
+   * re-centre the divider for the life of the conversation.
+   */
+  useEffect(() => {
+    const el = content.current;
+    // A jump owns the scroll outright; re-anchoring under it is the one thing
+    // this must never do.
+    if (!el || jumpTo) return;
+
+    const observer = new ResizeObserver(() => reapplyAnchor());
+    observer.observe(el);
+
+    // Any of these means the reader is driving now. `scroll` is not among
+    // them: it fires for our own programmatic scrolls too, so it cannot tell
+    // the reader apart from the anchor.
+    const takeOver = (): void => {
+      settled.current = true;
+    };
+    const timer = setTimeout(takeOver, SETTLE_MS);
+    const scrollEl = scroller.current;
+    scrollEl?.addEventListener("wheel", takeOver, { passive: true });
+    scrollEl?.addEventListener("touchstart", takeOver, { passive: true });
+    window.addEventListener("keydown", takeOver);
+
+    return () => {
+      observer.disconnect();
+      clearTimeout(timer);
+      scrollEl?.removeEventListener("wheel", takeOver);
+      scrollEl?.removeEventListener("touchstart", takeOver);
+      window.removeEventListener("keydown", takeOver);
+    };
+  }, [conversationId, jumpTo, reapplyAnchor]);
 
   // The jump: scroll once the target renders; page older store content
   // until it does (the target is already stored by the caller). Bounded so
@@ -1072,12 +1196,12 @@ export function Timeline({
       // exists for -- somebody at the bottom about to reply -- passes it by
       // definition; a reader parked further up is left where they were.
       if (!nearBottom.current) return;
-      bottom.current?.scrollIntoView({ block: "end" });
+      pinBottom();
     };
 
     viewport.addEventListener("resize", pin);
     return () => viewport.removeEventListener("resize", pin);
-  }, []);
+  }, [pinBottom]);
 
   // What separates a message *arriving* from a message being *loaded*: the
   // moment this conversation was opened. Only things newer than that animate
@@ -1140,6 +1264,10 @@ export function Timeline({
         setActionsFor(null);
       }}
     >
+      {/* Everything scrolled lives in here, so the settle observer above has
+          one box whose height it can watch. Carries no styling of its own --
+          the padding and background stay on the scroll container. */}
+      <div ref={content}>
       {hasMore && (
         <button
           onClick={loadOlder}
@@ -1316,8 +1444,7 @@ export function Timeline({
           </div>,
         );
       })}
-
-      <div ref={bottom} />
+      </div>
       {confirmDialog}
       {viewing && (
         <PhotoViewer
