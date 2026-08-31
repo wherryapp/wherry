@@ -11,7 +11,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, confirmPasswordReset, verifyEmail } from "../api/client";
-import { Button, ErrorText, Input } from "./kit";
+import { AuthShell, Button, ErrorText, Input } from "./kit";
 
 export type EmailRoute =
   | { kind: "verify"; token: string }
@@ -56,21 +56,6 @@ function clearUrl(): void {
   window.history.replaceState(null, "", "/");
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    // Same scroll-container fix as Login.tsx's forms -- #root is a fixed,
-    // visual-viewport-sized box with no scroll of its own, so centering
-    // alone leaves an unreachable bottom on anything taller than the screen.
-    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-          {children}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function VerifyEmail({ token, onDone }: { token: string; onDone: () => void }) {
   const [state, setState] = useState<"working" | "ok" | "failed">("working");
   const [message, setMessage] = useState("");
@@ -94,7 +79,7 @@ export function VerifyEmail({ token, onDone }: { token: string; onDone: () => vo
   }, [token]);
 
   return (
-    <Shell>
+    <AuthShell gutter="sm">
       <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
         {state === "working"
           ? "Confirming…"
@@ -122,7 +107,7 @@ export function VerifyEmail({ token, onDone }: { token: string; onDone: () => vo
           Continue
         </Button>
       )}
-    </Shell>
+    </AuthShell>
   );
 }
 
@@ -160,7 +145,7 @@ export function ResetPassword({
 
   if (done) {
     return (
-      <Shell>
+      <AuthShell gutter="sm">
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
           Password changed
         </h1>
@@ -171,12 +156,12 @@ export function ResetPassword({
         <Button onClick={onDone} className="w-full">
           Sign in
         </Button>
-      </Shell>
+      </AuthShell>
     );
   }
 
   return (
-    <Shell>
+    <AuthShell gutter="sm">
       <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
         Choose a new password
       </h1>
@@ -196,6 +181,6 @@ export function ResetPassword({
       <p className="text-xs text-neutral-500 dark:text-neutral-400">
         This signs out every device on the account.
       </p>
-    </Shell>
+    </AuthShell>
   );
 }

@@ -21,7 +21,7 @@ import {
   unlockAccountKey,
 } from "../crypto/account";
 import { KeysError } from "../crypto/keys";
-import { Button, Input } from "./kit";
+import { AuthShell, Button, Input } from "./kit";
 
 /**
  * What stands between a successful auth call and entering the app.
@@ -191,19 +191,7 @@ export function Login({
   }
 
   return (
-    // #root is a fixed box sized to the visual viewport (index.css,
-    // viewport.ts) with no scroll of its own, so a form taller than it --
-    // registration, with five fields -- would otherwise have an unreachable
-    // bottom. This div is the scroll container that centering alone used to
-    // skip: min-h-full on the inner flex is a floor, not a cap, so content
-    // taller than the viewport grows the inner div past it and this
-    // overflow-y-auto is what makes the overflow reachable.
-    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
-      <div className="flex min-h-full items-center justify-center p-6">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
-      >
+    <AuthShell onSubmit={submit}>
         <div>
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
             {mode === "login"
@@ -377,9 +365,7 @@ export function Login({
             : "Already have an account? Sign in"}
         </button>
         )}
-      </form>
-      </div>
-    </div>
+    </AuthShell>
   );
 }
 
@@ -401,10 +387,7 @@ function RecoveryCodeScreen({
   const [acknowledged, setAcknowledged] = useState(false);
 
   return (
-    // Same scroll-container fix as the form above -- see its comment.
-    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
-      <div className="flex min-h-full items-center justify-center p-6">
-      <div className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+    <AuthShell>
         <div>
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
             Your recovery code
@@ -443,9 +426,7 @@ function RecoveryCodeScreen({
         >
           Continue
         </Button>
-      </div>
-      </div>
-    </div>
+    </AuthShell>
   );
 }
 
@@ -505,14 +486,7 @@ function RecoveryPrompt({
   }
 
   return (
-    // Same scroll-container fix as the sign-in/register form -- see its
-    // comment above.
-    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
-      <div className="flex min-h-full items-center justify-center p-6">
-      <form
-        onSubmit={submitCode}
-        className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
-      >
+    <AuthShell onSubmit={submitCode}>
         <div>
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
             Unlock your history
@@ -584,8 +558,6 @@ function RecoveryPrompt({
             Lost your recovery code?
           </button>
         )}
-      </form>
-      </div>
-    </div>
+    </AuthShell>
   );
 }

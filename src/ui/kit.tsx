@@ -18,7 +18,14 @@
 // layout classes and style classes do not collide, and a dependency needs
 // a reason (CLAUDE.md).
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 
 function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
@@ -418,6 +425,60 @@ export function Note({
     >
       {children}
     </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Auth shell
+// ---------------------------------------------------------------------------
+
+const AUTH_GUTTER = { sm: "p-4", md: "p-6" } as const;
+
+/**
+ * The scroll shell and centered card behind Login's three screens,
+ * VerifyGate, and both of EmailLanding's -- pasted verbatim five times and
+ * already drifting once: the `overflow-y-auto` wrapper below was added to
+ * Login.tsx's copies as a fix (#root is a fixed, viewport-height box with no
+ * scroll of its own, so a form taller than it -- registration, with five
+ * fields -- had an unreachable bottom) and never carried to the other two
+ * files, so VerifyGate and EmailLanding kept the bug this recreates as a
+ * component specifically so it can't happen again.
+ *
+ * `onSubmit` makes the card a `<form>` instead of a `<div>` -- three of the
+ * five sites submit on Enter, two just display a result. `gutter` is the one
+ * real difference among the five: EmailLanding's pages sit in a narrower
+ * `p-4` margin where the other four use `p-6`. Everything else about the
+ * card -- width, spacing, border, radius, shadow -- is identical at every
+ * call site, which is the point of pulling it out.
+ */
+export function AuthShell({
+  children,
+  onSubmit,
+  gutter = "md",
+}: {
+  children: ReactNode;
+  onSubmit?: (event: FormEvent<HTMLFormElement>) => void;
+  gutter?: keyof typeof AUTH_GUTTER;
+}) {
+  const card =
+    "w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900";
+  return (
+    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
+      <div
+        className={cx(
+          "flex min-h-full items-center justify-center",
+          AUTH_GUTTER[gutter],
+        )}
+      >
+        {onSubmit ? (
+          <form onSubmit={onSubmit} className={card}>
+            {children}
+          </form>
+        ) : (
+          <div className={card}>{children}</div>
+        )}
+      </div>
+    </div>
   );
 }
 

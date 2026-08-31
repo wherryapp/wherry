@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, me, resendVerification, setEmail } from "../api/client";
 import { markEmailVerified } from "../api/session";
 import type { StoredSession } from "../api/session";
-import { Button, Input } from "./kit";
+import { AuthShell, Button, Input } from "./kit";
 
 // Frequent enough that finishing verification in another tab feels immediate
 // without switching back, cheap enough that it costs nothing sitting idle --
@@ -120,12 +120,7 @@ export function VerifyGate({
   }
 
   return (
-    // Same scroll-container fix as Login.tsx's forms -- #root is a fixed,
-    // visual-viewport-sized box with no scroll of its own, so centering
-    // alone leaves an unreachable bottom on anything taller than the screen.
-    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
-      <div className="flex min-h-full items-center justify-center p-6">
-      <div className="w-full max-w-sm space-y-4 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+    <AuthShell>
         <div>
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
             Confirm your email
@@ -200,8 +195,6 @@ export function VerifyGate({
             Sign out
           </button>
         </div>
-      </div>
-      </div>
-    </div>
+    </AuthShell>
   );
 }
