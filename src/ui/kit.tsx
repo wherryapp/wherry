@@ -308,11 +308,21 @@ export function Button({
   size = "md",
   className,
   type = "button",
+  loading = false,
+  disabled,
+  children,
   ...rest
 }: {
   variant?: keyof typeof BUTTON_VARIANTS;
   size?: "md" | "sm";
   className?: string;
+  /**
+   * Was a literal "…" label at every call site, each also remembering to
+   * disable the button so a second click couldn't fire mid-request. No
+   * spinner -- this is the same text swap those sites already did, just not
+   * fourteen times over.
+   */
+  loading?: boolean;
 } & React.ComponentProps<"button">) {
   // Both ghost variants are text, not boxes -- the scale-press and padding
   // below are for buttons that look like buttons, and would misalign ghost
@@ -321,6 +331,8 @@ export function Button({
   return (
     <button
       type={type}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
       className={cx(
         // The press scale is the touch feedback a native button has and a
         // web one lacks; motion-safe so reduced-motion gets color-only
@@ -335,7 +347,9 @@ export function Button({
         className,
       )}
       {...rest}
-    />
+    >
+      {loading ? "…" : children}
+    </button>
   );
 }
 

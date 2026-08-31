@@ -504,8 +504,8 @@ function GroupDetails({
               placeholder="Group name"
               maxLength={100}
             />
-            <Button type="submit" size="sm" disabled={titleBusy} className="shrink-0">
-              {titleBusy ? "…" : "Save"}
+            <Button type="submit" size="sm" loading={titleBusy} className="shrink-0">
+              Save
             </Button>
           </form>
           {titleError && <ErrorText className="mt-1">{titleError}</ErrorText>}
@@ -538,10 +538,10 @@ function GroupDetails({
                     variant="ghost-danger"
                     size="sm"
                     onClick={() => removeOne(member.userId)}
-                    disabled={removingUserId === member.userId}
+                    loading={removingUserId === member.userId}
                     className="shrink-0 hover:underline"
                   >
-                    {removingUserId === member.userId ? "…" : "Remove"}
+                    Remove
                   </Button>
                 )}
               </li>
@@ -555,10 +555,10 @@ function GroupDetails({
             variant="danger"
             size="sm"
             onClick={doLeave}
-            disabled={leaveBusy}
+            loading={leaveBusy}
             className="w-full"
           >
-            {leaveBusy ? "…" : "Leave group"}
+            Leave group
           </Button>
           {leaveError && <ErrorText className="mt-1">{leaveError}</ErrorText>}
         </div>
@@ -605,10 +605,11 @@ function GroupDetails({
             <Button
               type="submit"
               size="sm"
-              disabled={addBusy || (picked.size === 0 && username.trim().length === 0)}
+              loading={addBusy}
+              disabled={picked.size === 0 && username.trim().length === 0}
               className="w-full"
             >
-              {addBusy ? "…" : "Add"}
+              Add
             </Button>
           </form>
         </PanelSection>
@@ -760,8 +761,8 @@ function JoinInvite({
                 ? "Public hub — messages here are stored readable by the server so search and moderation can work."
                 : "Private hub — every channel is end-to-end encrypted. Joining by link shares none of the earlier messages."}
             </Note>
-            <Button onClick={join} disabled={busy} className="w-full">
-              {busy ? "…" : "Join hub"}
+            <Button onClick={join} loading={busy} className="w-full">
+              Join hub
             </Button>
           </>
         )}

@@ -155,10 +155,11 @@ export function Friends({
           <Button
             type="submit"
             size="sm"
-            disabled={busy || username.trim().length === 0}
+            loading={busy}
+            disabled={username.trim().length === 0}
             className="shrink-0"
           >
-            {busy ? "…" : "Add"}
+            Add
           </Button>
         </form>
 

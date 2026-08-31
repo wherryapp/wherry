@@ -680,8 +680,8 @@ export function HubDetails({
                 placeholder="Hub name"
                 maxLength={100}
               />
-              <Button type="submit" size="sm" disabled={nameBusy} className="shrink-0">
-                {nameBusy ? "…" : "Save"}
+              <Button type="submit" size="sm" loading={nameBusy} className="shrink-0">
+                Save
               </Button>
             </form>
           ) : null}
@@ -767,10 +767,11 @@ export function HubDetails({
               <Button
                 type="submit"
                 size="sm"
-                disabled={channelBusy || channelName.trim().length === 0}
+                loading={channelBusy}
+                disabled={channelName.trim().length === 0}
                 className="shrink-0"
               >
-                {channelBusy ? "…" : "Add"}
+                Add
               </Button>
             </form>
           )}
@@ -779,14 +780,10 @@ export function HubDetails({
             variant="secondary"
             size="sm"
             onClick={toggleMuteAll}
-            disabled={muteAllBusy}
+            loading={muteAllBusy}
             className="mt-2 w-full"
           >
-            {muteAllBusy
-              ? "…"
-              : allMuted
-                ? "Unmute all channels"
-                : "Mute all channels"}
+            {allMuted ? "Unmute all channels" : "Mute all channels"}
           </Button>
         </PanelSection>
 
@@ -805,10 +802,11 @@ export function HubDetails({
               <Button
                 type="submit"
                 size="sm"
-                disabled={searchBusy || query.trim().length === 0}
+                loading={searchBusy}
+                disabled={query.trim().length === 0}
                 className="shrink-0"
               >
-                {searchBusy ? "…" : "Search"}
+                Search
               </Button>
             </form>
             {results !== null && (
@@ -893,10 +891,10 @@ export function HubDetails({
                             variant="ghost-danger"
                             size="sm"
                             onClick={() => kick(member.userId, false)}
-                            disabled={busy}
+                            loading={busy}
                             className="hover:underline"
                           >
-                            {busy ? "…" : "Remove"}
+                            Remove
                           </Button>
                           <Button
                             variant="ghost-danger"
@@ -1023,10 +1021,10 @@ export function HubDetails({
               <Button
                 type="submit"
                 size="sm"
-                disabled={inviteBusy}
+                loading={inviteBusy}
                 className="ml-auto shrink-0"
               >
-                {inviteBusy ? "…" : "New link"}
+                New link
               </Button>
             </form>
             {inviteError && <ErrorText className="mt-1">{inviteError}</ErrorText>}
@@ -1074,12 +1072,11 @@ export function HubDetails({
               <Button
                 type="submit"
                 size="sm"
-                disabled={
-                  addBusy || (picked.size === 0 && username.trim().length === 0)
-                }
+                loading={addBusy}
+                disabled={picked.size === 0 && username.trim().length === 0}
                 className="w-full"
               >
-                {addBusy ? "…" : "Add"}
+                Add
               </Button>
             </form>
           </PanelSection>
@@ -1112,20 +1109,20 @@ export function HubDetails({
               variant="danger"
               size="sm"
               onClick={doDelete}
-              disabled={dangerBusy}
+              loading={dangerBusy}
               className="w-full"
             >
-              {dangerBusy ? "…" : "Delete hub"}
+              Delete hub
             </Button>
           ) : (
             <Button
               variant="danger"
               size="sm"
               onClick={doLeave}
-              disabled={dangerBusy}
+              loading={dangerBusy}
               className="w-full"
             >
-              {dangerBusy ? "…" : "Leave hub"}
+              Leave hub
             </Button>
           )}
           {dangerError && <ErrorText className="mt-1">{dangerError}</ErrorText>}

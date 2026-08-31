@@ -478,9 +478,10 @@ function PasswordSection({
         <Button
           type="submit"
           size="sm"
-          disabled={busy || current.length === 0 || next.length < 12}
+          loading={busy}
+          disabled={current.length === 0 || next.length < 12}
         >
-          {busy ? "…" : "Change password"}
+          Change password
         </Button>
       </form>
     </PanelSection>
