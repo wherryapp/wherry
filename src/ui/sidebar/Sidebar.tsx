@@ -25,7 +25,7 @@ import { HubsSection } from "./HubsSection";
 import { NewConversation } from "./NewConversation";
 import { ResizeHandle } from "./ResizeHandle";
 import { useSidebarPrefs } from "./prefs";
-import { rankConversations, recencyRanker } from "./rank";
+import { orderHubs, rankConversations, recencyRanker } from "./rank";
 
 export function ConversationList({
   session,
@@ -74,12 +74,19 @@ export function ConversationList({
   const asideRef = useRef<HTMLElement>(null);
   const hubsRef = useRef<HTMLDivElement>(null);
 
+  // The user's manual order over the server's newest-first default; hubs
+  // joined since the last reorder append after the ordered ones.
+  const orderedHubs = useMemo(
+    () => orderHubs(hubs, prefs.hubOrder),
+    [hubs, prefs.hubOrder],
+  );
+
   // Hoisted from HubsSection's own null-return so the bordered wrapper the
   // scroll containers need does not render as a stray rule around nothing.
   const showHubs = hubs.length > 0 || features.hubs;
   const hubsSection = (
     <HubsSection
-      hubs={hubs}
+      hubs={orderedHubs}
       canCreate={features.hubs}
       unread={unread}
       mentions={mentions}
