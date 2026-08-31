@@ -54,6 +54,7 @@ import {
   PencilIcon,
   Select,
   useConfirm,
+  usePrompt,
 } from "./kit";
 import { ContactCheckboxRow } from "./ContactRow";
 
@@ -150,6 +151,7 @@ export function HubDetails({
   const [detail, setDetail] = useState<HubDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const { confirm, confirmDialog } = useConfirm();
+  const { prompt, promptDialog } = usePrompt();
 
   const [name, setName] = useState("");
   const [nameBusy, setNameBusy] = useState(false);
@@ -272,7 +274,7 @@ export function HubDetails({
     }
   }
 
-  /** One PATCH per changed field; window.prompt keeps the ceremony low for
+  /** One PATCH per changed field; the kit prompt keeps the ceremony low for
    *  inputs that are a single line of text or a number. */
   async function changeChannel(
     conversationId: string,
@@ -298,25 +300,27 @@ export function HubDetails({
   }
 
   async function renameChannel(conversationId: string, current: string): Promise<void> {
-    const next = window.prompt("Channel name", current)?.trim();
+    const next = (
+      await prompt({ message: "Channel name", initial: current })
+    )?.trim();
     if (!next || next === current) return;
     await changeChannel(conversationId, { name: next });
   }
 
   async function editTopic(channel: HubChannel): Promise<void> {
-    const next = window.prompt(
-      "Channel topic (empty clears it)",
-      channel.topic ?? "",
-    );
+    const next = await prompt({
+      message: "Channel topic (empty clears it)",
+      initial: channel.topic ?? "",
+    });
     if (next === null || next.trim() === (channel.topic ?? "")) return;
     await changeChannel(channel.id, { topic: next });
   }
 
   async function editSlowmode(channel: HubChannel): Promise<void> {
-    const raw = window.prompt(
-      "Seconds between messages (0 turns slowmode off)",
-      String(channel.slowmodeSeconds ?? 0),
-    );
+    const raw = await prompt({
+      message: "Seconds between messages (0 turns slowmode off)",
+      initial: String(channel.slowmodeSeconds ?? 0),
+    });
     if (raw === null) return;
     const seconds = Number.parseInt(raw, 10);
     if (Number.isNaN(seconds) || seconds < 0 || seconds > 21600) return;
@@ -1128,6 +1132,7 @@ export function HubDetails({
         </div>
       </div>
       {confirmDialog}
+      {promptDialog}
     </Panel>
   );
 }

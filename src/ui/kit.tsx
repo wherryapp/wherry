@@ -881,3 +881,108 @@ export function useConfirm(): {
 
   return { confirm, confirmDialog };
 }
+
+/**
+ * The text-input sibling of useConfirm, replacing window.prompt for the
+ * same reasons window.confirm was replaced -- and with its return contract
+ * kept: resolves to the entered string, or null on cancel, so a call site
+ * ports from window.prompt without re-deriving its guards. Enter submits,
+ * Escape cancels (capture-phase, same as useConfirm, so the Panel under it
+ * stays open). One dialog per component; a second prompt() while one is
+ * open settles the first as cancelled, as does unmounting.
+ */
+export function usePrompt(): {
+  prompt: (options: {
+    message: string;
+    initial?: string;
+    confirmLabel?: string;
+  }) => Promise<string | null>;
+  promptDialog: ReactNode;
+} {
+  const [pending, setPending] = useState<{
+    message: string;
+    confirmLabel: string;
+  } | null>(null);
+  const [value, setValue] = useState("");
+  const resolver = useRef<((answer: string | null) => void) | null>(null);
+
+  const settle = useCallback((answer: string | null) => {
+    resolver.current?.(answer);
+    resolver.current = null;
+    setPending(null);
+  }, []);
+
+  const prompt = useCallback(
+    (options: { message: string; initial?: string; confirmLabel?: string }) => {
+      resolver.current?.(null);
+      setValue(options.initial ?? "");
+      setPending({
+        message: options.message,
+        confirmLabel: options.confirmLabel ?? "Save",
+      });
+      return new Promise<string | null>((resolve) => {
+        resolver.current = resolve;
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!pending) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        settle(null);
+      }
+    };
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      document.removeEventListener("keydown", onKey, { capture: true });
+  }, [pending, settle]);
+
+  const promptDialog = pending ? (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={() => settle(null)}
+      role="presentation"
+    >
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-label={pending.message}
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault();
+          settle(value);
+        }}
+        className="w-full max-w-xs rounded-lg border border-neutral-200 bg-white p-4 shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
+      >
+        <p className="text-sm text-neutral-900 dark:text-neutral-100">
+          {pending.message}
+        </p>
+        <div className="mt-3">
+          <Input
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            autoFocus
+          />
+        </div>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => settle(null)}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" size="sm">
+            {pending.confirmLabel}
+          </Button>
+        </div>
+      </form>
+    </div>
+  ) : null;
+
+  return { prompt, promptDialog };
+}
