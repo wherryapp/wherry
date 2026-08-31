@@ -118,7 +118,13 @@ export function BellIcon({ className }: IconProps) {
   );
 }
 
-/** Muted: the same bell, slashed -- push is silenced for this conversation. */
+/**
+ * Muted: the same closed bell as BellIcon, slashed -- push is silenced for
+ * this conversation. Was drawn as two disjoint arcs with a real gap between
+ * them, which is why only the muted state looked broken; this is BellIcon's
+ * own two paths with the slash stroke added on top, so both states read at
+ * the same weight.
+ */
 export function BellOffIcon({ className }: IconProps) {
   return (
     <svg
@@ -131,7 +137,7 @@ export function BellOffIcon({ className }: IconProps) {
       className={cx("h-5 w-5", className)}
       aria-hidden="true"
     >
-      <path d="M5 8a5 5 0 0 1 8.6-3.5M15 8c0 3.2 1 4.6 1.5 5.2H6.3" />
+      <path d="M5 8a5 5 0 0 1 10 0c0 3.2 1 4.6 1.5 5.2H3.5C4 12.6 5 11.2 5 8Z" />
       <path d="M8.2 16a1.8 1.8 0 0 0 3.6 0" />
       <path d="M3.5 3.5l13 13" />
     </svg>
