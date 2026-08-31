@@ -1908,6 +1908,12 @@ function Composer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  // How this field was last touched -- the same pointerType signal Bubble's
+  // press handling uses, never the platform (see CLAUDE.md's sharp edge on
+  // this, and the action bar's tap trigger it points at). A touch keyboard's
+  // Return breaks the line; a hardware keyboard's Enter sends.
+  const touchInput = useRef(false);
 
   // Entering edit mode loads the message's current text over whatever was
   // being typed; leaving it (cancel or save, both of which clear `edit`
@@ -1915,6 +1921,16 @@ function Composer({
   useEffect(() => {
     if (edit) setText(edit.text);
   }, [edit]);
+
+  // Grows the textarea with its content, up to the CSS max-height (then it
+  // scrolls internally). Resetting to "auto" first is what lets it shrink
+  // back down when text is deleted, not just grow.
+  useEffect(() => {
+    const el = textarea.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text]);
 
   const cancelEdit = (): void => {
     onClearEdit();
@@ -2146,8 +2162,10 @@ function Composer({
             <PlusIcon />
           </IconButton>
         )}
-        <input
+        <textarea
+          ref={textarea}
           value={text}
+          rows={1}
           onChange={(e) => {
             setText(e.target.value);
             // The typing signal, on input rather than on a timer. The
@@ -2155,8 +2173,20 @@ function Composer({
             // it per keystroke is the debounce, not a violation of one.
             if (e.target.value.length > 0) sync.sendTyping(conversationId);
           }}
+          onPointerDown={(e) => {
+            touchInput.current = e.pointerType !== "mouse";
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
+            // Touch keyboard: Return breaks the line, and only the send
+            // button sends. Hardware keyboard: Enter sends (Shift+Enter
+            // breaks the line, handled by the guard above).
+            if (touchInput.current) return;
+            e.preventDefault();
+            e.currentTarget.form?.requestSubmit();
+          }}
           placeholder="Message"
-          className="min-w-0 flex-1 rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none transition-colors focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+          className="max-h-32 min-w-0 flex-1 resize-none overflow-y-auto rounded-full border border-neutral-300 bg-white px-4 py-2 text-base outline-none transition-colors focus:border-neutral-500 md:text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
         />
         <button
           type="submit"
