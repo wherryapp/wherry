@@ -1611,7 +1611,21 @@ function Timeline({
             <div
               key={item.message.messageId}
               id={`msg-${item.message.messageId}`}
-              className={(first ? "mt-3" : "mt-0.5") + entrance}
+              className={
+                (first ? "mt-3" : "mt-0.5") +
+                entrance +
+                // iOS Safari's own long-press gesture (text selection, the
+                // Copy/Look Up callout) fires on the same timescale as ours
+                // and wins: it puts the page into a selection state that
+                // swallows the tap that should land on the action bar's
+                // buttons a moment later -- the bar appears but nothing in
+                // it is clickable. Long press means our menu here, not the
+                // OS's; select-none is the standard trade a chat app makes
+                // for it (see WhatsApp/iMessage/Telegram).
+                (item.marks?.retracted
+                  ? ""
+                  : " touch-manipulation select-none [-webkit-touch-callout:none]")
+              }
               {...(item.marks?.retracted
                 ? {}
                 : pressHandlers(item.message.messageId))}
