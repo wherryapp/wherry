@@ -6,7 +6,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { orderHubs, rankConversations, recencyRanker, uuidv7Ms } from "./rank.ts";
+import {
+  moveItem,
+  orderHubs,
+  rankConversations,
+  recencyRanker,
+  uuidv7Ms,
+} from "./rank.ts";
 
 // A real UUIDv7 layout: first 48 bits are unix milliseconds. 0x018f4e2d1a2b
 // is a plausible 2024 timestamp; the rest of the id is arbitrary.
@@ -65,6 +71,24 @@ test("orderHubs applies stored positions and appends unknown hubs after", () => 
     ordered.map((h) => h.id),
     ["b", "a", "newest"],
   );
+});
+
+test("moveItem drops into a later slot, adjusting for the removal", () => {
+  assert.deepEqual(moveItem(["a", "b", "c", "d"], 0, 3), ["b", "c", "a", "d"]);
+});
+
+test("moveItem drops into an earlier slot unadjusted", () => {
+  assert.deepEqual(moveItem(["a", "b", "c", "d"], 3, 1), ["a", "d", "b", "c"]);
+});
+
+test("moveItem treats the item's own two slots as no-ops", () => {
+  assert.deepEqual(moveItem(["a", "b", "c"], 1, 1), ["a", "b", "c"]);
+  assert.deepEqual(moveItem(["a", "b", "c"], 1, 2), ["a", "b", "c"]);
+});
+
+test("moveItem to the very ends", () => {
+  assert.deepEqual(moveItem(["a", "b", "c"], 2, 0), ["c", "a", "b"]);
+  assert.deepEqual(moveItem(["a", "b", "c"], 0, 3), ["b", "c", "a"]);
 });
 
 test("orderHubs ignores stale ids for hubs since left", () => {

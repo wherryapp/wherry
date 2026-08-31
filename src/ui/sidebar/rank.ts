@@ -55,6 +55,25 @@ export function rankConversations<T extends { id: string }>(
  * simply match nothing here; the next reorder writes only present ids,
  * which is what prunes them.
  */
+/**
+ * Move a list item to an insertion slot, drag-and-drop style: `overIndex`
+ * counts gaps (0 = before the first item, length = after the last), so the
+ * two slots hugging the item itself are the no-op positions.
+ */
+export function moveItem<T>(
+  list: readonly T[],
+  fromIndex: number,
+  overIndex: number,
+): T[] {
+  const target = overIndex > fromIndex ? overIndex - 1 : overIndex;
+  const moved = list[fromIndex];
+  if (target === fromIndex || moved === undefined) return [...list];
+  const next = [...list];
+  next.splice(fromIndex, 1);
+  next.splice(target, 0, moved);
+  return next;
+}
+
 export function orderHubs<T extends { id: string }>(
   hubs: readonly T[],
   order: readonly string[],
