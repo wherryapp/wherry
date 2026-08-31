@@ -98,6 +98,12 @@ export type StoredConversation = {
     lastReadMessageId: string | null;
     lastReadAt: string | null;
   }[];
+  /**
+   * Whether the caller has muted this conversation. Mirrors the wire field
+   * in api/types.ts -- push-silencing only, never affects unread counting or
+   * the sync loop.
+   */
+  muted: boolean;
 };
 
 /**
@@ -179,6 +185,13 @@ export type OutboxEntry = {
    * sync/engine.ts.
    */
   content: Uint8Array;
+  /**
+   * Ask the server not to push for this send -- set at enqueue time for
+   * operation payloads (reactions, edits, retractions), which should never
+   * ring a phone. Rides every retry unchanged; the socket wake is unaffected.
+   * See docs/api.md for the metadata disclosure this flag is.
+   */
+  silent?: true;
   /** Local clock, for ordering pending messages after delivered ones. */
   createdAt: string;
   attempts: number;
@@ -279,6 +292,10 @@ export interface MessageStore {
    * whole mechanism. Bounded by `cap`: a badge showing "99+" and one showing
    * 4,312 say the same thing to a person, and only one of them walks four
    * thousand records to say it.
+   *
+   * Operation payloads (api/payload.ts's MessageOp kinds) do not count --
+   * a reaction is not something a person has left unread. Every
+   * implementation of this interface owes the same filter.
    */
   /** A downloaded attachment, or a recorded terminal state, or undefined. */
   getBlob(attachmentId: string): Promise<StoredBlob | undefined>;

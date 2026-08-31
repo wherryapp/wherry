@@ -143,6 +143,13 @@ export type Conversation = {
   title: string | null;
   createdAt: string;
   members: ConversationMember[];
+  /**
+   * Whether the caller has muted this conversation. Server column, per the
+   * roadmap's mute triage -- push skips a muted member server-side, so a
+   * client-local flag alone could not stop the notification. Never anyone
+   * else's state.
+   */
+  muted: boolean;
 };
 
 export type ConversationEventKind =

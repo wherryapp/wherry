@@ -25,8 +25,10 @@ import {
   leaveConversation,
   lookupUser,
   markConversationRead,
+  muteConversation,
   removeMember,
   renameConversation,
+  unmuteConversation,
   uploadAttachment,
   type Friend,
 } from "../api/client";
@@ -53,6 +55,8 @@ import {
   Avatar,
   BackButton,
   Badge,
+  BellIcon,
+  BellOffIcon,
   Button,
   ErrorText,
   IconButton,
@@ -1014,9 +1018,11 @@ function ConversationList({
                   >
                     {title}
                   </span>
-                  {/* Timestamp and, one day, a mute icon share this slot --
-                      the row is laid out so either fits without moving the
-                      name. */}
+                  {/* Timestamp and the mute icon share this slot -- the row
+                      is laid out so either fits without moving the name. */}
+                  {conversation.muted && (
+                    <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                  )}
                   {preview && (
                     <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">
                       {listTime(preview.sentAt)}
@@ -1630,6 +1636,7 @@ export function Chat({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
+  const [muteBusy, setMuteBusy] = useState(false);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
   // Only the count; the list itself renders in Settings. Zero whenever the
@@ -1652,6 +1659,25 @@ export function Chat({
   }, [conversations, selected, isDesktop]);
 
   const current = conversations.find((c) => c.id === selected);
+
+  /**
+   * Mutation + refresh, the same shape as GroupDetails' saveTitle/removeOne:
+   * call the endpoint, then nudge the conversation list so the toggle's new
+   * state is what the store reports, rather than optimistically flipping
+   * local state that a failed request would leave wrong.
+   */
+  async function toggleMute(conversationId: string, muted: boolean): Promise<void> {
+    setMuteBusy(true);
+    try {
+      if (muted) await unmuteConversation(conversationId);
+      else await muteConversation(conversationId);
+      sync.invalidateConversations();
+    } catch (caught) {
+      console.warn("mute toggle failed", caught);
+    } finally {
+      setMuteBusy(false);
+    }
+  }
 
   // Nothing resets the selection any more, on purpose.
   //
@@ -1789,6 +1815,16 @@ export function Chat({
                       conversation={current}
                     />
                   </span>
+                  {current && (
+                    <IconButton
+                      label={current.muted ? "Unmute conversation" : "Mute conversation"}
+                      onClick={() => toggleMute(current.id, current.muted)}
+                      disabled={muteBusy}
+                      className="shrink-0"
+                    >
+                      {current.muted ? <BellOffIcon /> : <BellIcon />}
+                    </IconButton>
+                  )}
                   {current?.kind === "group" && (
                     <Button
                       variant="ghost"

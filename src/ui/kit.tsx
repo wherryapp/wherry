@@ -99,6 +99,79 @@ export function SendIcon({ className }: IconProps) {
   );
 }
 
+/** An unmuted conversation's toggle state, and the list row's default. */
+export function BellIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M5 8a5 5 0 0 1 10 0c0 3.2 1 4.6 1.5 5.2H3.5C4 12.6 5 11.2 5 8Z" />
+      <path d="M8.2 16a1.8 1.8 0 0 0 3.6 0" />
+    </svg>
+  );
+}
+
+/** Muted: the same bell, slashed -- push is silenced for this conversation. */
+export function BellOffIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M5 8a5 5 0 0 1 8.6-3.5M15 8c0 3.2 1 4.6 1.5 5.2H6.3" />
+      <path d="M8.2 16a1.8 1.8 0 0 0 3.6 0" />
+      <path d="M3.5 3.5l13 13" />
+    </svg>
+  );
+}
+
+export function TrashIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M3.5 5.5h13M8 5V3.5h4V5M5 5.5l.7 10a1.5 1.5 0 0 0 1.5 1.4h5.6a1.5 1.5 0 0 0 1.5-1.4l.7-10" />
+      <path d="M8.2 8.5v5M11.8 8.5v5" />
+    </svg>
+  );
+}
+
+/** The "more actions" affordance at a bubble's edge. */
+export function DotsIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <circle cx="4.5" cy="10" r="1.5" />
+      <circle cx="10" cy="10" r="1.5" />
+      <circle cx="15.5" cy="10" r="1.5" />
+    </svg>
+  );
+}
+
 export function XIcon({ className }: IconProps) {
   return (
     <svg

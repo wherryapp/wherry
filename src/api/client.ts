@@ -337,6 +337,24 @@ export function leaveConversation(conversationId: string): Promise<void> {
   });
 }
 
+/**
+ * Mutes/unmutes this conversation for the caller. Idempotent either way.
+ * Silences push only -- socket wakes and unread badges are unaffected, so a
+ * refresh after this call is what picks up the new `muted` flag rather than
+ * anything this call returns.
+ */
+export function muteConversation(conversationId: string): Promise<void> {
+  return request<void>(`${API}/conversations/${conversationId}/mute`, {
+    method: "POST",
+  });
+}
+
+export function unmuteConversation(conversationId: string): Promise<void> {
+  return request<void>(`${API}/conversations/${conversationId}/mute`, {
+    method: "DELETE",
+  });
+}
+
 /** Null clears the title back to the member-list default. */
 export function renameConversation(input: {
   conversationId: string;
