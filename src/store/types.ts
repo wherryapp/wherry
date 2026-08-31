@@ -246,6 +246,14 @@ export interface MessageStore {
   putMessages(messages: readonly StoredMessage[]): Promise<void>;
 
   /**
+   * Removes messages outright. The one caller is the moderation tombstone:
+   * a message_deleted hub event means the server no longer serves the
+   * message, so a local copy cannot be re-added by any later read -- removal
+   * here is final the same way the server's soft delete is.
+   */
+  deleteMessages(ids: readonly string[]): Promise<void>;
+
+  /**
    * Which of these ids the store already holds. The dedup-before-decrypt
    * check: a redelivered envelope must be acked without a second decrypt,
    * because under a ratcheting protocol the key that opened it the first
@@ -421,6 +429,28 @@ export type PublicChannelState = Record<
   string,
   { latest: string | null }
 >;
+
+/**
+ * Per-hub event-sync watermarks: hubId -> the newest hub event id this
+ * device has processed. The engine reads new events on the hub-refresh
+ * cadence and acts on the actionable kinds (message_deleted tombstones the
+ * local copy); the panel's own event listing stays a plain on-demand fetch.
+ */
+export const META_HUB_EVENTS = "hubs.events";
+
+export type HubEventState = Record<string, { latest: string | null }>;
+
+/**
+ * Per-conversation newest message id that mentions this account:
+ * conversationId -> messageId. Written by the engine when it stores a
+ * message whose payload names the user; read by the sidebar, which shows
+ * the stronger unread treatment while this id is ahead of the user's own
+ * read marker. Never cleared -- the comparison against the marker is what
+ * ends the highlight, so stale entries are inert.
+ */
+export const META_MENTIONS = "mentions";
+
+export type MentionState = Record<string, string>;
 
 /**
  * Per-conversation delivered watermarks: `delivered.<conversationId>` holds

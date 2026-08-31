@@ -74,10 +74,22 @@ export type ReplyContext = {
   senderUserId: string;
 };
 
+// Matches the server's MENTIONS_MAX; more than this is a broadcast wearing
+// a mention's clothes, and the server ignores the overflow anyway.
+export const MENTIONS_MAX = 20;
+
 export type MessageContent = {
   text: string;
   attachments: AttachmentRef[];
   replyTo?: ReplyContext;
+  /**
+   * User ids named in the text. Additive like replyTo -- an old client
+   * renders the text and merely misses the highlight. In PUBLIC channels
+   * the server reads this from the (readable) payload and pushes only the
+   * people it names; in sealed conversations it is client-side decoration
+   * only, because the server cannot read it there. Disclosed in docs/api.md.
+   */
+  mentions?: string[];
 };
 
 // ---------------------------------------------------------------------------
@@ -146,12 +158,22 @@ export function isMessageOp(decoded: DecodedContent): decoded is MessageOp {
 
 /** Encodes content, choosing the smallest representation that carries it. */
 export function encodeContent(content: MessageContent): Uint8Array {
-  // Text with no attachments and no reply context stays in the old format.
-  // Not for compatibility with old *clients* -- there are none in the wild
-  // that would choke -- but because the overwhelming majority of messages are
-  // plain text, and wrapping every one of them in JSON costs bytes in two
-  // tables and a parse on every render, forever, to express nothing.
-  if (content.attachments.length === 0 && content.replyTo === undefined) {
+  // Text with no attachments, no reply context and no mentions stays in the
+  // old format. Not for compatibility with old *clients* -- there are none
+  // in the wild that would choke -- but because the overwhelming majority of
+  // messages are plain text, and wrapping every one of them in JSON costs
+  // bytes in two tables and a parse on every render, forever, to express
+  // nothing.
+  const mentions =
+    content.mentions !== undefined && content.mentions.length > 0
+      ? [...new Set(content.mentions)].slice(0, MENTIONS_MAX)
+      : undefined;
+
+  if (
+    content.attachments.length === 0 &&
+    content.replyTo === undefined &&
+    mentions === undefined
+  ) {
     return new TextEncoder().encode(content.text);
   }
 
@@ -159,6 +181,7 @@ export function encodeContent(content: MessageContent): Uint8Array {
     text: content.text,
     attachments: content.attachments,
     ...(content.replyTo !== undefined && { replyTo: content.replyTo }),
+    ...(mentions !== undefined && { mentions }),
   });
 
   const body = new TextEncoder().encode(json);
@@ -207,6 +230,7 @@ export function decodeContent(payload: Uint8Array): DecodedContent {
       text?: unknown;
       attachments?: unknown;
       replyTo?: unknown;
+      mentions?: unknown;
       target?: unknown;
       emoji?: unknown;
     };
@@ -229,8 +253,16 @@ export function decodeContent(payload: Uint8Array): DecodedContent {
     };
     // A malformed replyTo is dropped rather than failing the message: the
     // text still renders, which is exactly how a client predating the field
-    // degrades.
+    // degrades. Mentions get the same treatment, entry by entry.
     if (isReplyContext(shape.replyTo)) content.replyTo = shape.replyTo;
+    if (Array.isArray(shape.mentions)) {
+      const mentions = [
+        ...new Set(
+          shape.mentions.filter((m): m is string => typeof m === "string"),
+        ),
+      ].slice(0, MENTIONS_MAX);
+      if (mentions.length > 0) content.mentions = mentions;
+    }
     return content;
   } catch {
     return { text: "", attachments: [] };

@@ -22,6 +22,8 @@ import {
   META_ANNOUNCEMENTS_SEEN,
   META_DELIVERED_PREFIX,
   META_HUBS,
+  META_MENTIONS,
+  type MentionState,
   type OutboxEntry,
   type StoredConversation,
   type StoredEvent,
@@ -512,6 +514,53 @@ export function useLatestMessages(
   });
 
   return latest;
+}
+
+/**
+ * Which conversations hold an unread mention of this user: the engine's
+ * recorded newest-mention id is ahead of the user's own read marker. The
+ * comparison against the marker is the whole lifecycle -- reading the
+ * conversation moves the marker past the mention and the highlight ends,
+ * with nothing to clear.
+ */
+export function useMentions(
+  conversations: readonly StoredConversation[],
+  selfUserId: string,
+): Set<string> {
+  const [mentioned, setMentioned] = useState<Set<string>>(new Set());
+
+  const signature = conversations
+    .map(
+      (conversation) =>
+        `${conversation.id}:${
+          conversation.members.find((m) => m.userId === selfUserId)
+            ?.lastReadMessageId ?? ""
+        }`,
+    )
+    .join(",");
+
+  const reload = useCallback(() => {
+    void store.getMeta<MentionState>(META_MENTIONS).then((state) => {
+      const next = new Set<string>();
+      if (state) {
+        for (const entry of signature ? signature.split(",") : []) {
+          const [id, marker] = entry.split(":");
+          const latest = state[id as string];
+          if (latest !== undefined && (!marker || latest > marker)) {
+            next.add(id as string);
+          }
+        }
+      }
+      setMentioned(next);
+    });
+  }, [signature]);
+
+  useEffect(reload, [reload]);
+  useSyncEvents((event) => {
+    if (event.type === "messages" || event.type === "conversations") reload();
+  });
+
+  return mentioned;
 }
 
 /** How long a typing signal lives without renewal. Comfortably above the

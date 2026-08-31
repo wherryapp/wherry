@@ -15,7 +15,10 @@ import { Button, ErrorText, Input } from "./kit";
 
 export type EmailRoute =
   | { kind: "verify"; token: string }
-  | { kind: "reset"; token: string };
+  | { kind: "reset"; token: string }
+  /** A hub invite link -- /join/<token>. Not emailed, but the same
+   *  path-rendered, router-free mechanism serves it. */
+  | { kind: "join"; token: string };
 
 /**
  * Which of these screens, if either, the current URL is asking for.
@@ -26,6 +29,13 @@ export type EmailRoute =
  */
 export function routeFromLocation(): EmailRoute | null {
   const { pathname, search } = window.location;
+
+  // Invite tokens ride the path, not the query -- the link people share is
+  // the whole URL either way, and the token's shape is the server's
+  // base64url mint.
+  const joinMatch = /^\/join\/([A-Za-z0-9_-]{16,64})$/.exec(pathname);
+  if (joinMatch) return { kind: "join", token: joinMatch[1]! };
+
   const token = new URLSearchParams(search).get("token");
   if (!token) return null;
 

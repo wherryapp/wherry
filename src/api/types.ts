@@ -280,10 +280,18 @@ export type MessagesPage = {
 
 export type HubRole = "owner" | "moderator" | "member";
 
+/** 'moderators' makes a channel announcement-only. */
+export type ChannelPosting = "everyone" | "moderators";
+
 export type HubChannel = {
   /** The channel's conversation id -- a channel IS a conversation. */
   id: string;
   title: string | null;
+  /** Roster-class metadata like title; null when unset. */
+  topic: string | null;
+  posting: ChannelPosting;
+  /** Public channels only; null means off. Moderators are exempt. */
+  slowmodeSeconds: number | null;
   createdAt: string;
 };
 
@@ -293,6 +301,13 @@ export type HubMember = {
   displayName: string;
   role: HubRole;
   joinedAt: string;
+};
+
+export type HubBanned = {
+  userId: string;
+  username: string;
+  displayName: string;
+  bannedAt: string;
 };
 
 export type HubSummary = {
@@ -314,6 +329,8 @@ export type HubDetail = {
   channelLimit: number;
   role: HubRole;
   members: HubMember[];
+  /** Populated only when the caller is moderator+; empty array otherwise. */
+  banned: HubBanned[];
   channels: HubChannel[];
 };
 
@@ -321,10 +338,22 @@ export type HubEventKind =
   | "member_added"
   | "member_removed"
   | "member_banned"
+  | "member_unbanned"
   | "role_changed"
   | "renamed"
   | "channel_created"
-  | "channel_renamed";
+  | "channel_renamed"
+  | "channel_topic"
+  | "channel_posting"
+  | "channel_slowmode"
+  | "message_deleted"
+  | "message_pinned"
+  | "message_unpinned"
+  | "invite_created"
+  | "invite_revoked"
+  // The server may add kinds this build has never heard of; render nothing
+  // rather than crash, same posture as ApiErrorCode.
+  | (string & {});
 
 /** A hub-level audit line, rendered in the hub panel (not in timelines). */
 export type HubEvent = {
@@ -338,6 +367,11 @@ export type HubEvent = {
   targetUsername: string | null;
   targetDisplayName: string | null;
   title: string | null;
+  /**
+   * Set for message-scoped kinds. message_deleted is load-bearing: the sync
+   * engine tombstones the local copy when it sees one.
+   */
+  messageId: string | null;
   historyShared: boolean;
   createdAt: string;
 };
@@ -352,15 +386,55 @@ export type HubSearchResult = {
   messageId: string;
   conversationId: string;
   senderUserId: string;
+  senderDeviceId: string;
   senderUsername: string;
   senderDisplayName: string;
   snippet: string;
+  /** The hit's full v4 payload, base64 -- storable, so a tap can jump to it. */
+  payload: string;
   sentAt: string;
 };
 
 export type HubSearchPage = {
   results: HubSearchResult[];
   nextCursor: string | null;
+};
+
+export type HubInvite = {
+  id: string;
+  /** The bearer credential itself; shown only to moderators. */
+  token: string;
+  createdByUserId: string;
+  createdByUsername: string;
+  expiresAt: string | null;
+  maxUses: number | null;
+  useCount: number;
+  createdAt: string;
+};
+
+/** What a token discloses before joining: enough to decide, nothing more. */
+export type HubInvitePreview = {
+  hubId: string;
+  name: string;
+  visibility: HubVisibility;
+  memberCount: number;
+};
+
+export type HubPin = {
+  messageId: string;
+  conversationId: string;
+  pinnedByUserId: string;
+  pinnedByUsername: string;
+  pinnedByDisplayName: string;
+  pinnedAt: string;
+  senderUserId: string;
+  senderDeviceId: string;
+  senderUsername: string;
+  senderDisplayName: string;
+  sentAt: string;
+  /** base64 v4 payload for public channels; null for private ones, where
+   * each client renders (or declines to render) its own local copy. */
+  payload: string | null;
 };
 
 /**

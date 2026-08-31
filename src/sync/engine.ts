@@ -28,6 +28,7 @@ import {
   fetchHealth,
   fetchHistoryKeys,
   fetchAnnouncements,
+  fetchHubEvents,
   fetchHubs,
   fetchInbox,
   isUnauthorized,
@@ -51,9 +52,13 @@ import {
   META_ANNOUNCEMENTS,
   META_DELIVERED_PREFIX,
   META_HUBS,
+  META_HUB_EVENTS,
   META_HYDRATION,
+  META_MENTIONS,
   META_PUBLIC_CHANNELS,
+  type HubEventState,
   type HydrationState,
+  type MentionState,
   type OutboxEntry,
   type PublicChannelState,
   type StoredMessage,
@@ -580,6 +585,19 @@ export class SyncEngine {
     this.poke();
   }
 
+  /**
+   * Tells this tab's subscribers (and every other tab) that stored messages
+   * changed outside the engine's own passes -- a moderation tombstone
+   * applied from the UI, a search hit written into the store before a jump.
+   * The engine's own writes never need this; UI-side store writes do,
+   * because components subscribe to their tab's engine instance and a
+   * BroadcastChannel does not deliver to its own sender.
+   */
+  notifyMessagesChanged(conversationIds: string[]): void {
+    this.#emit({ type: "messages", conversationIds });
+    broadcast({ type: "messages", conversationIds });
+  }
+
   /** Retries a send that was marked permanently failed. */
   async retry(clientMessageId: string): Promise<void> {
     const entries = await store.listOutbox();
@@ -900,6 +918,7 @@ export class SyncEngine {
       // Resolves on commit. Everything below depends on that.
       await store.putMessages(messages);
       await this.#recordPendingDecrypts(messages);
+      await this.#recordMentions(messages);
 
       // Only now, and every envelope in the page -- the known ones too.
       // See the note at the top of this file.
@@ -1053,6 +1072,21 @@ export class SyncEngine {
           continue;
         }
 
+        // Slowmode: the message is fine, the moment is wrong. Parked as a
+        // blocked conversation -- entries behind it hold their order, other
+        // conversations flow on, and the next tick retries when the window
+        // may have passed. Deliberately NOT thrown: a throw would put the
+        // whole loop into backoff-with-error over one throttled channel.
+        if (error instanceof ApiError && error.code === "SLOWMODE") {
+          await store.recordOutboxFailure(entry.clientMessageId, error.message);
+          this.#emit({
+            type: "messages",
+            conversationIds: [entry.conversationId],
+          });
+          blocked.add(entry.conversationId);
+          continue;
+        }
+
         if (isPermanentSendFailure(error)) {
           // Park it and keep going. One undeliverable message must not stop
           // the queue behind it.
@@ -1115,11 +1149,119 @@ export class SyncEngine {
     // Cheap structural compare: the list is small and ordered, and a rename,
     // role change, member count change or channel change must all count as
     // changed -- id comparison alone would miss them.
-    if (JSON.stringify(previous) === JSON.stringify(fetched)) return;
+    if (JSON.stringify(previous) !== JSON.stringify(fetched)) {
+      await store.setMeta(META_HUBS, fetched);
+      this.#emit({ type: "hubs" });
+      broadcast({ type: "hubs" });
+    }
 
-    await store.setMeta(META_HUBS, fetched);
-    this.#emit({ type: "hubs" });
-    broadcast({ type: "hubs" });
+    // Always, even when the summaries are unchanged: the actionable hub
+    // events (a moderator deleting a message) change nothing in a summary.
+    await this.#syncHubEvents(fetched);
+  }
+
+  /**
+   * Reads each hub's new events past a per-hub watermark and acts on the
+   * actionable kinds. Today that is one kind: message_deleted removes the
+   * local copy -- the propagation half of moderator deletion, closing the
+   * "already-synced clients keep it" gap the feature shipped with. The hub
+   * panel's own event listing stays an on-demand fetch; this sweep exists
+   * for side effects, not display.
+   *
+   * First contact records the newest event id without acting: history from
+   * before this device ever synced the hub has nothing local to act on.
+   */
+  async #syncHubEvents(hubs: readonly HubSummary[]): Promise<void> {
+    if (hubs.length === 0) return;
+
+    const state = (await store.getMeta<HubEventState>(META_HUB_EVENTS)) ?? {};
+    let stateDirty = false;
+
+    for (const hub of hubs) {
+      try {
+        const watermark = state[hub.id]?.latest;
+        const page = await fetchHubEvents({ hubId: hub.id });
+        const newest = page.events[0]?.id ?? null;
+
+        if (watermark === undefined) {
+          state[hub.id] = { latest: newest };
+          stateDirty = true;
+          continue;
+        }
+
+        // Newest-first page; everything above the watermark is new. One
+        // page suffices in practice -- events are rare and the sweep runs
+        // every 30 s; anything older than a full page of newer events is
+        // history this device slept through, and acting late on a delete
+        // is still acting.
+        const fresh = page.events.filter(
+          (event) => watermark === null || event.id > watermark,
+        );
+
+        const deleted = fresh
+          .filter(
+            (event) =>
+              event.kind === "message_deleted" && event.messageId !== null,
+          )
+          .map((event) => event.messageId!);
+
+        if (deleted.length > 0) {
+          await store.deleteMessages(deleted);
+          // No per-conversation bookkeeping: the event does not name the
+          // channel, and a broad "something changed" re-render is the
+          // cheap, correct answer for an action this rare.
+          this.#emit({ type: "conversations" });
+          broadcast({ type: "conversations" });
+        }
+
+        if (newest !== watermark) {
+          state[hub.id] = { latest: newest };
+          stateDirty = true;
+        }
+      } catch (error) {
+        console.warn("hub event sync failed", hub.id, error);
+      }
+    }
+
+    if (stateDirty) await store.setMeta(META_HUB_EVENTS, state);
+  }
+
+  /**
+   * Records the newest message that mentions this account, per conversation
+   * -- what the sidebar's stronger unread treatment reads. Written before
+   * the messages event fires, so subscribers re-reading on that event see
+   * it. Own messages and unreadable ones never count.
+   */
+  async #recordMentions(messages: readonly StoredMessage[]): Promise<void> {
+    const session = loadSession();
+    if (!session) return;
+
+    let latestByConversation: Map<string, string> | null = null;
+    for (const message of messages) {
+      if (message.decryptFailed) continue;
+      if (message.senderUserId === session.user.id) continue;
+      const content = decodeContent(message.payload);
+      if (content === "unsupported" || isMessageOp(content)) continue;
+      if (!content.mentions?.includes(session.user.id)) continue;
+
+      latestByConversation ??= new Map();
+      const current = latestByConversation.get(message.conversationId);
+      if (current === undefined || message.messageId > current) {
+        latestByConversation.set(message.conversationId, message.messageId);
+      }
+    }
+    if (latestByConversation === null) return;
+
+    const state = (await store.getMeta<MentionState>(META_MENTIONS)) ?? {};
+    let dirty = false;
+    for (const [conversationId, messageId] of latestByConversation) {
+      const current = state[conversationId];
+      if (current === undefined || messageId > current) {
+        state[conversationId] = messageId;
+        dirty = true;
+      }
+    }
+    if (dirty) await store.setMeta(META_MENTIONS, state);
   }
 
   /**
@@ -1160,6 +1302,7 @@ export class SyncEngine {
             page.entries.map((entry) => toStored(entry, "archive")),
           );
           await store.putMessages(messages);
+          await this.#recordMentions(messages);
           // Newest-first, so the first entry is the watermark. Persisted
           // after the messages are durable, like every cursor here.
           state[channel.id] = {
@@ -1187,6 +1330,7 @@ export class SyncEngine {
             page.entries.map((entry) => toStored(entry, "archive")),
           );
           await store.putMessages(messages);
+          await this.#recordMentions(messages);
           // Ascending mode: the last entry is the newest.
           latest = page.entries[page.entries.length - 1]!.messageId;
           state[channel.id] = { latest };

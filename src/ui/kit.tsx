@@ -18,7 +18,7 @@
 // layout classes and style classes do not collide, and a dependency needs
 // a reason (CLAUDE.md).
 
-import { useEffect, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
@@ -228,6 +228,42 @@ export function XIcon({ className }: IconProps) {
       aria-hidden="true"
     >
       <path d="m5 5 10 10M15 5 5 15" />
+    </svg>
+  );
+}
+
+export function LockIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <rect x="4.5" y="9" width="11" height="7.5" rx="1.5" />
+      <path d="M7 9V6.5a3 3 0 0 1 6 0V9" />
+    </svg>
+  );
+}
+
+export function PinIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M8 3h4l.5 5 2.5 2v1.5H5V10l2.5-2L8 3Z" />
+      <path d="M10 11.5V17" />
     </svg>
   );
 }
@@ -548,4 +584,107 @@ export function Badge({
       {count > 98 ? "99+" : count}
     </span>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation
+// ---------------------------------------------------------------------------
+
+/**
+ * A promise-based stand-in for window.confirm, which some embedded and
+ * automated environments auto-dismiss and which never matched the app's
+ * look. Usage:
+ *
+ *   const { confirm, confirmDialog } = useConfirm();
+ *   ...
+ *   if (!(await confirm({ message: "Ban them?" }))) return;
+ *   ...
+ *   return <>...{confirmDialog}</>;
+ *
+ * One dialog per component; a second confirm() while one is open settles
+ * the first as cancelled, which is also what unmounting does.
+ */
+export function useConfirm(): {
+  confirm: (options: {
+    message: string;
+    confirmLabel?: string;
+  }) => Promise<boolean>;
+  confirmDialog: ReactNode;
+} {
+  const [pending, setPending] = useState<{
+    message: string;
+    confirmLabel: string;
+  } | null>(null);
+  const resolver = useRef<((answer: boolean) => void) | null>(null);
+
+  const settle = useCallback((answer: boolean) => {
+    resolver.current?.(answer);
+    resolver.current = null;
+    setPending(null);
+  }, []);
+
+  const confirm = useCallback(
+    (options: { message: string; confirmLabel?: string }) => {
+      resolver.current?.(false);
+      setPending({
+        message: options.message,
+        confirmLabel: options.confirmLabel ?? "Confirm",
+      });
+      return new Promise<boolean>((resolve) => {
+        resolver.current = resolve;
+      });
+    },
+    [],
+  );
+
+  // Escape cancels the dialog and must not also close the Panel underneath:
+  // Panel listens on the document bubble phase, so a capture-phase listener
+  // that stops propagation gets there first.
+  useEffect(() => {
+    if (!pending) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        settle(false);
+      }
+    };
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      document.removeEventListener("keydown", onKey, { capture: true });
+  }, [pending, settle]);
+
+  const confirmDialog = pending ? (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={() => settle(false)}
+      role="presentation"
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={pending.message}
+        onClick={(event) => event.stopPropagation()}
+        className="w-full max-w-xs rounded-lg border border-neutral-200 bg-white p-4 shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
+      >
+        <p className="text-sm text-neutral-900 dark:text-neutral-100">
+          {pending.message}
+        </p>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => settle(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => settle(true)}
+            autoFocus
+          >
+            {pending.confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  return { confirm, confirmDialog };
 }

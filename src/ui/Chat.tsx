@@ -5,6 +5,7 @@ import {
   useState,
   useSyncExternalStore,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import { Attachment } from "./Attachment";
 import { Settings } from "./Settings";
@@ -12,8 +13,10 @@ import { Friends } from "./Friends";
 import { HubDetails } from "./HubDetails";
 import { ContactCheckboxRow } from "./ContactRow";
 import {
+  decodeContent,
   encodeContent,
   encodeOp,
+  isMessageOp,
   type AttachmentRef,
   type RenderableContent,
 } from "../api/payload";
@@ -23,20 +26,34 @@ import {
   addMembers,
   createConversation,
   createHub,
+  deleteHubMessage,
+  fetchArchive,
   fetchAttachmentUsage,
   fetchFriends,
+  fetchHubPins,
   joinHub,
   leaveConversation,
   lookupUser,
   markConversationRead,
   muteConversation,
+  pinHubMessage,
+  previewHubInvite,
+  redeemHubInvite,
   removeMember,
   renameConversation,
   unmuteConversation,
+  unpinHubMessage,
   uploadAttachment,
   type Friend,
 } from "../api/client";
-import type { HubSummary, HubVisibility } from "../api/types";
+import { decodeBase64 } from "../api/base64";
+import type {
+  HubInvitePreview,
+  HubPin,
+  HubSummary,
+  HubVisibility,
+} from "../api/types";
+import { PROTOCOL_PUBLIC } from "../crypto/provider";
 import { e2e } from "../crypto";
 import { encryptBlob } from "../crypto/blob";
 import { store } from "../store";
@@ -51,6 +68,7 @@ import {
   useFeatures,
   useHubs,
   useLatestMessages,
+  useMentions,
   usePresence,
   useSyncStatus,
   useTimeline,
@@ -69,15 +87,19 @@ import {
   ErrorText,
   IconButton,
   Input,
+  LockIcon,
+  Note,
   Panel,
   PanelSection,
   PencilIcon,
+  PinIcon,
   PlusIcon,
   ReplyIcon,
   SendIcon,
   TrashIcon,
   XIcon,
   UsersIcon,
+  useConfirm,
 } from "./kit";
 
 // ---------------------------------------------------------------------------
@@ -240,6 +262,31 @@ function avatarSeed(
     return others[0]!.userId;
   }
   return conversation.id;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Wraps the @Name runs of the people a message actually names (its payload's
+ * `mentions` list resolved to display names) -- a plain "@" in prose is left
+ * alone, because only the sender's list says who was meant.
+ */
+function highlightMentions(text: string, names: readonly string[]): ReactNode {
+  if (names.length === 0) return text;
+  const pattern = names.map((name) => `@${escapeRegex(name)}`).join("|");
+  const parts = text.split(new RegExp(`(${pattern})`, "g"));
+  if (parts.length === 1) return text;
+  return parts.map((part, index) =>
+    part.startsWith("@") && names.includes(part.slice(1)) ? (
+      <span key={index} className="rounded bg-black/10 px-0.5 font-semibold dark:bg-white/20">
+        {part}
+      </span>
+    ) : (
+      part
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +962,181 @@ function useIsDesktop(): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * The landing surface for /join/<token> links. Previews before joining --
+ * nobody should enter a room on a tap they could not inspect -- and carries
+ * the privacy-class label, since an invited stranger has seen none of the
+ * other surfaces that say it.
+ */
+function JoinInvite({
+  token,
+  onDone,
+}: {
+  token: string;
+  /** Called with the hub's first channel to open, or null on dismiss. */
+  onDone: (channelId: string | null) => void;
+}) {
+  const [preview, setPreview] = useState<HubInvitePreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void previewHubInvite(token)
+      .then(setPreview)
+      .catch((caught) => {
+        // Wrong, expired, revoked and exhausted all answer the same 404 --
+        // so this is the one honest sentence for all of them.
+        setError(
+          caught instanceof ApiError && caught.status === 404
+            ? "This invite link isn't valid anymore."
+            : "Could not check that invite. Try again in a moment.",
+        );
+      });
+  }, [token]);
+
+  async function join(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await redeemHubInvite(token);
+      sync.invalidateConversations();
+      onDone(detail.channels[0]?.id ?? null);
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError && caught.status === 404
+          ? "This invite link isn't valid anymore."
+          : caught instanceof ApiError
+            ? caught.message
+            : "Could not join. Check your connection.",
+      );
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel title="Hub invite" onClose={() => onDone(null)}>
+      <div className="space-y-3 p-4">
+        {error ? (
+          <ErrorText>{error}</ErrorText>
+        ) : preview === null ? (
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">
+            Checking the invite…
+          </p>
+        ) : (
+          <>
+            <p className="text-sm text-neutral-900 dark:text-neutral-100">
+              You're invited to{" "}
+              <span className="font-semibold">{preview.name}</span> —{" "}
+              {preview.memberCount}{" "}
+              {preview.memberCount === 1 ? "member" : "members"}.
+            </p>
+            <Note>
+              {preview.visibility === "public"
+                ? "Public hub — messages here are stored readable by the server so search and moderation can work."
+                : "Private hub — every channel is end-to-end encrypted. Joining by link shares none of the earlier messages."}
+            </Note>
+            <Button onClick={join} disabled={busy} className="w-full">
+              {busy ? "…" : "Join hub"}
+            </Button>
+          </>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * A channel's pinned messages. Public pins carry their payload (the server
+ * can hand readable content to a proven member); private pins are
+ * references only, rendered from whatever this device holds -- here, as a
+ * line naming the sender, with the jump showing the local copy.
+ */
+function PinsPanel({
+  hubId,
+  conversationId,
+  canModerate,
+  onClose,
+  onJump,
+}: {
+  hubId: string;
+  conversationId: string;
+  canModerate: boolean;
+  onClose: () => void;
+  onJump: (pin: HubPin) => void;
+}) {
+  const [pins, setPins] = useState<HubPin[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void fetchHubPins({ hubId, conversationId })
+      .then(setPins)
+      .catch(() => setError("Could not load the pins."));
+  }, [hubId, conversationId]);
+
+  async function unpin(messageId: string): Promise<void> {
+    try {
+      await unpinHubMessage({ hubId, conversationId, messageId });
+      setPins((current) =>
+        (current ?? []).filter((pin) => pin.messageId !== messageId),
+      );
+    } catch {
+      setError("Could not unpin that.");
+    }
+  }
+
+  return (
+    <Panel title="Pinned messages" onClose={onClose}>
+      <div className="p-4">
+        {error && <ErrorText>{error}</ErrorText>}
+        {pins !== null && pins.length === 0 && (
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">
+            Nothing pinned in this channel yet.
+          </p>
+        )}
+        <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+          {(pins ?? []).map((pin) => {
+            const content = pin.payload
+              ? decodeContent(decodeBase64(pin.payload))
+              : null;
+            const line =
+              content !== null &&
+              content !== "unsupported" &&
+              !isMessageOp(content)
+                ? excerptOf(content)
+                : "Pinned message";
+            return (
+              <li key={pin.messageId} className="py-2">
+                <button
+                  onClick={() => onJump(pin)}
+                  className="block w-full text-left"
+                >
+                  <span className="block text-xs font-medium text-neutral-900 dark:text-neutral-100">
+                    {pin.senderDisplayName || pin.senderUsername}
+                    <span className="ml-2 font-normal text-neutral-500 dark:text-neutral-400">
+                      {new Date(pin.sentAt).toLocaleDateString()}
+                    </span>
+                  </span>
+                  <span className="block truncate text-xs text-neutral-600 dark:text-neutral-300">
+                    {line}
+                  </span>
+                </button>
+                {canModerate && (
+                  <button
+                    onClick={() => unpin(pin.messageId)}
+                    className="mt-0.5 text-xs font-medium text-red-600 hover:underline dark:text-red-400"
+                  >
+                    Unpin
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </Panel>
+  );
+}
+
+/**
  * Creating a hub, or joining a public one by id -- the sidebar's second
  * form, shaped like NewConversation. The class choice carries its label
  * copy right here, at the moment it is made, because the public class is
@@ -1080,6 +1302,7 @@ function HubsSection({
   hubs,
   canCreate,
   unread,
+  mentions,
   selected,
   onSelect,
   onOpenHub,
@@ -1088,6 +1311,8 @@ function HubsSection({
   /** The `hubs` feature flag -- gates the create form, not the list. */
   canCreate: boolean;
   unread: Map<string, number>;
+  /** Channels with an unread mention of this user -- the stronger badge. */
+  mentions: Set<string>;
   selected: string | null;
   onSelect: (conversationId: string) => void;
   onOpenHub: (hubId: string) => void;
@@ -1103,6 +1328,9 @@ function HubsSection({
             onClick={() => onOpenHub(hub.id)}
             className="flex w-full items-center gap-2 rounded px-1 py-1 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
           >
+            {/* The hub id seeds the colour, so the identity survives renames
+                -- the cheap identicon tier; uploaded icons stay deferred. */}
+            <Avatar size="sm" name={hub.name} userId={hub.id} />
             <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
               {hub.name}
             </span>
@@ -1136,7 +1364,18 @@ function HubsSection({
                     }`}
                   >
                     {channel.title ?? "channel"}
+                    {channel.posting === "moderators" && (
+                      <LockIcon className="ml-1 inline h-3 w-3 align-[-1px] text-neutral-400 dark:text-neutral-500" />
+                    )}
                   </span>
+                  {mentions.has(channel.id) && (
+                    <span
+                      aria-label="Mentions you"
+                      className="shrink-0 text-xs font-bold text-accent-600 dark:text-accent-400"
+                    >
+                      @
+                    </span>
+                  )}
                   <Badge count={count} />
                 </button>
               );
@@ -1171,6 +1410,7 @@ function ConversationList({
   // channels, which render nested under their hub instead.
   const latest = useLatestMessages(conversations);
   const unread = useUnread(conversations, session.user.id);
+  const mentions = useMentions(conversations, session.user.id);
   const directsAndGroups = conversations.filter(
     (conversation) => conversation.kind !== "channel",
   );
@@ -1185,6 +1425,7 @@ function ConversationList({
         hubs={hubs}
         canCreate={features.hubs}
         unread={unread}
+        mentions={mentions}
         selected={selected}
         onSelect={onSelect}
         onOpenHub={onOpenHub}
@@ -1274,6 +1515,14 @@ function ConversationList({
                       ? `${prefix}${text ?? "Encrypted message"}`
                       : "No messages yet"}
                   </span>
+                  {mentions.has(conversation.id) && (
+                    <span
+                      aria-label="Mentions you"
+                      className="shrink-0 text-xs font-bold text-accent-600 dark:text-accent-400"
+                    >
+                      @
+                    </span>
+                  )}
                   <Badge count={count} />
                 </span>
               </span>
@@ -1375,6 +1624,7 @@ function Bubble({
   onPress,
   quote,
   chips,
+  mentionNames,
 }: {
   mine: boolean;
   /**
@@ -1425,6 +1675,8 @@ function Bubble({
         onReply?: (() => void) | undefined;
         onEdit?: (() => void) | undefined;
         onDelete?: (() => void) | undefined;
+        /** Moderators only -- pins are hub furniture, not personal state. */
+        onPin?: (() => void) | undefined;
       }
     | undefined;
   actionsShown?: boolean;
@@ -1450,6 +1702,8 @@ function Bubble({
   chips?:
     | { emoji: string; count: number; mine: boolean; label: string }[]
     | undefined;
+  /** Display names this message mentions, for the text highlight. */
+  mentionNames?: readonly string[] | undefined;
 }) {
   const retracted = marks?.retracted === true;
   const edited = !retracted && marks?.editedText !== undefined;
@@ -1571,6 +1825,16 @@ function Bubble({
               <PencilIcon className="h-4 w-4" />
             </button>
           )}
+          {actions.onPin && (
+            <button
+              type="button"
+              onClick={actions.onPin}
+              aria-label="Pin message"
+              className="rounded-full p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+            >
+              <PinIcon className="h-4 w-4" />
+            </button>
+          )}
           {actions.onDelete && (
             <button
               type="button"
@@ -1634,7 +1898,10 @@ function Bubble({
             )}
             {(marks?.editedText ?? content.text).length > 0 && (
               <span className="whitespace-pre-wrap break-words text-sm">
-                {marks?.editedText ?? content.text}
+                {highlightMentions(
+                  marks?.editedText ?? content.text,
+                  mentionNames ?? [],
+                )}
               </span>
             )}
           </>
@@ -1733,6 +2000,10 @@ function Timeline({
   conversation,
   onReply,
   onEdit,
+  moderation,
+  canPost = true,
+  jumpTo = null,
+  onJumped,
 }: {
   conversationId: string;
   session: StoredSession;
@@ -1742,6 +2013,16 @@ function Timeline({
   onReply: (draft: ReplyDraft) => void;
   /** Same shape for an edit: the composer is the edit surface. */
   onEdit: (draft: EditDraft) => void;
+  /** Set when the viewer moderates this channel's hub: pinning everywhere,
+   *  and Remove on others' messages where the server can enforce it. */
+  moderation?: { hubId: string; isPublic: boolean } | undefined;
+  /** False in an announcement-only channel for a plain member: every action
+   *  here is a send, so the whole bar stays hidden rather than 403ing. */
+  canPost?: boolean;
+  /** A message id to scroll to once it is rendered -- search and pin jumps.
+   *  The hook pages older store content until it appears (bounded). */
+  jumpTo?: string | null;
+  onJumped?: (() => void) | undefined;
 }) {
   const { items, hasMore, loadOlder } = useTimeline(
     conversationId,
@@ -1755,6 +2036,7 @@ function Timeline({
   // (see the prop's comment on Bubble) rather than to this row's full width.
   const [actionsFor, setActionsFor] = useState<string | null>(null);
   useEffect(() => setActionsFor(null), [conversationId]);
+  const { confirm, confirmDialog } = useConfirm();
 
   /**
    * Delete for everyone: an ordinary send whose payload is a retract op --
@@ -1763,14 +2045,60 @@ function Timeline({
    * optimistic outbox application is what tombstones it before the round
    * trip completes.
    */
-  const retractMessage = (messageId: string): void => {
-    if (!window.confirm("Delete this message for everyone?")) return;
+  const retractMessage = async (messageId: string): Promise<void> => {
+    if (
+      !(await confirm({
+        message: "Delete this message for everyone?",
+        confirmLabel: "Delete",
+      }))
+    ) {
+      return;
+    }
     setActionsFor(null);
     void sync.enqueue(
       conversationId,
       encodeOp({ kind: "retract", target: messageId }),
       { silent: true },
     );
+  };
+
+  /**
+   * Moderator removal of someone else's message -- server-enforced, public
+   * channels only. The local copy goes too, and other devices follow via
+   * the message_deleted hub event their sync engines act on.
+   */
+  const moderatorDelete = async (messageId: string): Promise<void> => {
+    if (!moderation) return;
+    if (
+      !(await confirm({
+        message: "Remove this message for everyone in the channel?",
+        confirmLabel: "Remove",
+      }))
+    ) {
+      return;
+    }
+    setActionsFor(null);
+    try {
+      await deleteHubMessage({
+        hubId: moderation.hubId,
+        conversationId,
+        messageId,
+      });
+      await store.deleteMessages([messageId]);
+      sync.notifyMessagesChanged([conversationId]);
+    } catch (caught) {
+      console.warn("moderator delete failed", caught);
+    }
+  };
+
+  const pinMessage = (messageId: string): void => {
+    if (!moderation) return;
+    setActionsFor(null);
+    void pinHubMessage({
+      hubId: moderation.hubId,
+      conversationId,
+      messageId,
+    }).catch((caught) => console.warn("pin failed", caught));
   };
 
   /**
@@ -1836,8 +2164,35 @@ function Timeline({
   const count = items.length;
 
   useEffect(() => {
+    // A jump in progress owns the scroll position; pinning to the bottom
+    // here would yank the reader away from the very message they asked for.
+    if (jumpTo) return;
     bottom.current?.scrollIntoView({ block: "end" });
-  }, [count, conversationId]);
+  }, [count, conversationId, jumpTo]);
+
+  // The jump: scroll once the target renders; page older store content
+  // until it does (the target is already stored by the caller). Bounded so
+  // a vanished id cannot grow the page forever.
+  const jumpTries = useRef(0);
+  useEffect(() => {
+    if (!jumpTo) {
+      jumpTries.current = 0;
+      return;
+    }
+    const el = document.getElementById(`msg-${jumpTo}`);
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      el.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 800 });
+      jumpTries.current = 0;
+      onJumped?.();
+    } else if (hasMore && jumpTries.current < 40) {
+      jumpTries.current += 1;
+      loadOlder();
+    } else {
+      jumpTries.current = 0;
+      onJumped?.();
+    }
+  }, [jumpTo, items, hasMore, loadOlder, onJumped]);
 
   // The keyboard opening makes this pane shorter without moving what is
   // scrolled, so the newest message ends up hidden behind the composer at the
@@ -1958,7 +2313,20 @@ function Timeline({
                     : undefined
                 }
                 quote={quoteOf(content)}
-                actions={{
+                mentionNames={
+                  content !== null &&
+                  content !== "unsupported" &&
+                  content.mentions
+                    ? content.mentions
+                        .map((userId) =>
+                          userId === session.user.id
+                            ? session.user.displayName
+                            : names.get(userId),
+                        )
+                        .filter((name): name is string => name !== undefined)
+                    : undefined
+                }
+                actions={canPost ? {
                   onReact: (emoji) =>
                     sendReaction(item.message.messageId, emoji),
                   current: myReaction(item.marks, session.user.id),
@@ -1993,12 +2361,17 @@ function Timeline({
                         }
                       : undefined,
                   onDelete: mine
-                    ? () => retractMessage(item.message.messageId)
+                    ? () => void retractMessage(item.message.messageId)
+                    : moderation?.isPublic
+                      ? () => void moderatorDelete(item.message.messageId)
+                      : undefined,
+                  onPin: moderation
+                    ? () => pinMessage(item.message.messageId)
                     : undefined,
-                }}
+                } : undefined}
                 actionsShown={actionsFor === item.message.messageId}
                 onPress={
-                  item.marks?.retracted
+                  item.marks?.retracted || !canPost
                     ? undefined
                     : () =>
                         setActionsFor((current) =>
@@ -2054,6 +2427,7 @@ function Timeline({
       })}
 
       <div ref={bottom} />
+      {confirmDialog}
     </div>
   );
 }
@@ -2134,12 +2508,22 @@ type Pending = {
 function Composer({
   conversationId,
   publicChannel,
+  members,
+  slowmodeSeconds,
   reply,
   onClearReply,
   edit,
   onClearEdit,
 }: {
   conversationId: string;
+  /**
+   * The other members, for @-mention autocomplete. Mentions ride the
+   * payload additively (api/payload.ts) -- highlight everywhere, and in a
+   * public channel the server reads them to push exactly the people named.
+   */
+  members: readonly { userId: string; name: string }[];
+  /** Shown when set; the server enforces it (mods exempt, ops exempt). */
+  slowmodeSeconds: number | null;
   /**
    * True in a public hub channel, where nothing is sealed: the message
    * payload goes up readable (protocol v4 -- sync/engine.ts's enqueue
@@ -2167,6 +2551,44 @@ function Composer({
   // this, and the action bar's tap trigger it points at). A touch keyboard's
   // Return breaks the line; a hardware keyboard's Enter sends.
   const touchInput = useRef(false);
+
+  // The @-token being typed at the caret, or null. Suggestion picks insert
+  // "@Name " and remember name -> id here; at send time only the names still
+  // present in the text become the payload's mentions, so deleting a name
+  // un-mentions the person without any bookkeeping.
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const mentionsPicked = useRef(new Map<string, string>());
+  useEffect(() => {
+    mentionsPicked.current.clear();
+    setMentionQuery(null);
+  }, [conversationId]);
+
+  const mentionMatches =
+    mentionQuery === null
+      ? []
+      : members
+          .filter((member) =>
+            member.name.toLowerCase().startsWith(mentionQuery.toLowerCase()),
+          )
+          .slice(0, 5);
+
+  function readMentionQuery(value: string, caret: number): void {
+    const before = value.slice(0, caret);
+    const match = /(^|\s)@([^\s@]{0,30})$/.exec(before);
+    setMentionQuery(match ? match[2]! : null);
+  }
+
+  function pickMention(member: { userId: string; name: string }): void {
+    const el = textarea.current;
+    const caret = el?.selectionStart ?? text.length;
+    const before = text.slice(0, caret);
+    const after = text.slice(caret);
+    const replaced = before.replace(/@([^\s@]{0,30})$/, `@${member.name} `);
+    mentionsPicked.current.set(member.name, member.userId);
+    setText(replaced + after);
+    setMentionQuery(null);
+    el?.focus();
+  }
 
   // Entering edit mode loads the message's current text over whatever was
   // being typed; leaving it (cancel or save, both of which clear `edit`
@@ -2300,6 +2722,12 @@ function Composer({
       setPending([]);
       if (reply) onClearReply();
 
+      // Only the names still present count -- see the mention state above.
+      const mentionIds = [...mentionsPicked.current]
+        .filter(([name]) => trimmed.includes(`@${name}`))
+        .map(([, userId]) => userId);
+      mentionsPicked.current.clear();
+
       await sync.enqueue(
         conversationId,
         encodeContent({
@@ -2314,6 +2742,7 @@ function Composer({
                 },
               }
             : {}),
+          ...(mentionIds.length > 0 ? { mentions: mentionIds } : {}),
         }),
       );
     } catch (caught) {
@@ -2394,6 +2823,21 @@ function Composer({
         </div>
       )}
 
+      {mentionMatches.length > 0 && !edit && (
+        <div className="mb-2 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
+          {mentionMatches.map((member) => (
+            <button
+              key={member.userId}
+              type="button"
+              onClick={() => pickMention(member)}
+              className="block w-full px-3 py-1.5 text-left text-sm text-neutral-900 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+            >
+              @{member.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* A column on purpose: the row below keeps the reply-context bar's
           slot above it (filled by the block above since the wave's stage 3),
           and the row itself has room for a mic button beside the attach one
@@ -2427,6 +2871,10 @@ function Composer({
           rows={1}
           onChange={(e) => {
             setText(e.target.value);
+            readMentionQuery(
+              e.target.value,
+              e.target.selectionStart ?? e.target.value.length,
+            );
             // The typing signal, on input rather than on a timer. The
             // engine floors this to one frame per few seconds, so calling
             // it per keystroke is the debounce, not a violation of one.
@@ -2456,6 +2904,11 @@ function Composer({
           <SendIcon className="h-4.5 w-4.5" />
         </button>
       </div>
+      {slowmodeSeconds !== null && (
+        <Note className="mt-1">
+          Slowmode is on — one message every {slowmodeSeconds}s.
+        </Note>
+      )}
     </form>
   );
 }
@@ -2467,9 +2920,14 @@ function Composer({
 export function Chat({
   session,
   onSignOut,
+  inviteToken = null,
+  onInviteHandled = () => {},
 }: {
   session: StoredSession;
   onSignOut: () => void;
+  /** A hub invite from a /join/<token> link, handled before anything else. */
+  inviteToken?: string | null;
+  onInviteHandled?: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2478,6 +2936,10 @@ export function Chat({
   /** Which hub's panel is open, by hub id -- the channel-class sibling of
    *  groupDetailsOpen. */
   const [hubDetailsFor, setHubDetailsFor] = useState<string | null>(null);
+  /** Which channel's pin list is open. */
+  const [pinsFor, setPinsFor] = useState<string | null>(null);
+  /** A message id the open timeline should scroll to -- search/pin jumps. */
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null);
   // Owned here rather than by Timeline or Composer, because it is the one
   // piece of state they share: the bar's Reply action sets it, the
   // composer renders and consumes it. Reset on switching conversations --
@@ -2492,6 +2954,7 @@ export function Chat({
   }, [selected]);
   const [muteBusy, setMuteBusy] = useState(false);
   const { conversations } = useConversations();
+  const { hubs } = useHubs();
   const isDesktop = useIsDesktop();
   // Only the count; the list itself renders in Settings. Zero whenever the
   // announcements flag is off, so the dot is dark exactly when the feature is.
@@ -2526,6 +2989,78 @@ export function Chat({
   }, [conversations, selected, isDesktop]);
 
   const current = conversations.find((c) => c.id === selected);
+
+  // The channel's hub-side settings and the viewer's role, from the hubs
+  // summary the engine keeps -- the mirror of the server's matrix, for
+  // showing controls; the server enforces for real.
+  const currentHub = hubs.find((hub) => hub.id === current?.hubId);
+  const channelInfo = currentHub?.channels.find(
+    (channel) => channel.id === selected,
+  );
+  const canModerate =
+    currentHub !== undefined && currentHub.role !== "member";
+  const restricted =
+    channelInfo?.posting === "moderators" && !canModerate;
+
+  /**
+   * The jump half of search and pins: store the archived message locally (a
+   * public channel's payload is handed over readable), pull a little context
+   * around it, then open the channel scrolled to it. A private pin carries
+   * no payload; the jump then shows whatever this device already holds.
+   */
+  async function jumpToArchived(target: {
+    conversationId: string;
+    messageId: string;
+    payload: string | null;
+    senderUserId: string;
+    senderDeviceId: string;
+    sentAt: string;
+  }): Promise<void> {
+    if (target.payload !== null) {
+      await store.putMessages([
+        {
+          messageId: target.messageId,
+          conversationId: target.conversationId,
+          senderUserId: target.senderUserId,
+          senderDeviceId: target.senderDeviceId,
+          protocolVersion: PROTOCOL_PUBLIC,
+          payload: decodeBase64(target.payload),
+          sentAt: target.sentAt,
+        },
+      ]);
+      try {
+        const [older, newer] = await Promise.all([
+          fetchArchive({
+            conversationId: target.conversationId,
+            cursor: target.messageId,
+            limit: 25,
+          }),
+          fetchArchive({
+            conversationId: target.conversationId,
+            after: target.messageId,
+            limit: 25,
+          }),
+        ]);
+        const context = [...older.entries, ...newer.entries]
+          .filter((entry) => entry.protocolVersion === PROTOCOL_PUBLIC)
+          .map((entry) => ({
+            messageId: entry.messageId,
+            conversationId: entry.conversationId,
+            senderUserId: entry.senderUserId,
+            senderDeviceId: entry.senderDeviceId,
+            protocolVersion: entry.protocolVersion,
+            payload: decodeBase64(entry.payload),
+            sentAt: entry.sentAt,
+          }));
+        if (context.length > 0) await store.putMessages(context);
+      } catch {
+        // Context is a nicety; the hit itself is already stored.
+      }
+      sync.notifyMessagesChanged([target.conversationId]);
+    }
+    setSelected(target.conversationId);
+    setJumpTarget(target.messageId);
+  }
 
   /**
    * Mutation + refresh, the same shape as GroupDetails' saveTitle/removeOne:
@@ -2565,6 +3100,40 @@ export function Chat({
   // there is no reason to run the one nobody can see.
   const showList = isDesktop || selected === null;
   const showThread = isDesktop || selected !== null;
+
+  if (inviteToken) {
+    return (
+      <JoinInvite
+        token={inviteToken}
+        onDone={(channelId) => {
+          onInviteHandled();
+          if (channelId) setSelected(channelId);
+        }}
+      />
+    );
+  }
+
+  if (pinsFor !== null && current?.hubId) {
+    return (
+      <PinsPanel
+        hubId={current.hubId}
+        conversationId={pinsFor}
+        canModerate={canModerate}
+        onClose={() => setPinsFor(null)}
+        onJump={(pin) => {
+          setPinsFor(null);
+          void jumpToArchived({
+            conversationId: pin.conversationId,
+            messageId: pin.messageId,
+            payload: pin.payload,
+            senderUserId: pin.senderUserId,
+            senderDeviceId: pin.senderDeviceId,
+            sentAt: pin.sentAt,
+          });
+        }}
+      />
+    );
+  }
 
   if (friendsOpen) {
     return (
@@ -2606,9 +3175,20 @@ export function Chat({
         hubId={hubDetailsFor}
         selfUserId={session.user.id}
         onClose={() => setHubDetailsFor(null)}
-        onOpenChannel={(conversationId) => {
-          setSelected(conversationId);
+        onOpenChannel={(conversationId, jumpToHit) => {
           setHubDetailsFor(null);
+          if (jumpToHit) {
+            void jumpToArchived({
+              conversationId,
+              messageId: jumpToHit.messageId,
+              payload: jumpToHit.payload,
+              senderUserId: jumpToHit.senderUserId,
+              senderDeviceId: jumpToHit.senderDeviceId,
+              sentAt: jumpToHit.sentAt,
+            });
+          } else {
+            setSelected(conversationId);
+          }
         }}
       />
     );
@@ -2694,6 +3274,9 @@ export function Chat({
                             #
                           </span>
                         )}
+                        {channelInfo?.posting === "moderators" && (
+                          <LockIcon className="mr-0.5 inline h-3.5 w-3.5 align-[-2px] text-neutral-400 dark:text-neutral-500" />
+                        )}
                         {current
                           ? conversationTitle(current, session.user.id)
                           : "Conversation"}
@@ -2706,11 +3289,25 @@ export function Chat({
                         </span>
                       )}
                     </span>
+                    {channelInfo?.topic && (
+                      <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+                        {channelInfo.topic}
+                      </span>
+                    )}
                     <Presence
                       conversationId={selected}
                       conversation={current}
                     />
                   </span>
+                  {current?.kind === "channel" && current.hubId && (
+                    <IconButton
+                      label="Pinned messages"
+                      onClick={() => setPinsFor(selected)}
+                      className="shrink-0"
+                    >
+                      <PinIcon />
+                    </IconButton>
+                  )}
                   {current && (
                     <IconButton
                       label={current.muted ? "Unmute conversation" : "Mute conversation"}
@@ -2752,19 +3349,45 @@ export function Chat({
                     setReplyDraft(null);
                     setEditDraft(draft);
                   }}
+                  moderation={
+                    current?.kind === "channel" && current.hubId && canModerate
+                      ? {
+                          hubId: current.hubId,
+                          isPublic: current.hubVisibility === "public",
+                        }
+                      : undefined
+                  }
+                  canPost={!restricted}
+                  jumpTo={jumpTarget}
+                  onJumped={() => setJumpTarget(null)}
                 />
                 <TypingLine
                   conversationId={selected}
                   conversation={current}
                 />
-                <Composer
-                  conversationId={selected}
-                  publicChannel={current?.hubVisibility === "public"}
-                  reply={replyDraft}
-                  onClearReply={() => setReplyDraft(null)}
-                  edit={editDraft}
-                  onClearEdit={() => setEditDraft(null)}
-                />
+                {restricted ? (
+                  <div className="border-t border-neutral-200 p-3 text-center text-sm text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+                    Only moderators can post in this channel.
+                  </div>
+                ) : (
+                  <Composer
+                    conversationId={selected}
+                    publicChannel={current?.hubVisibility === "public"}
+                    members={(current?.members ?? [])
+                      .filter((member) => member.userId !== session.user.id)
+                      .map((member) => ({
+                        userId: member.userId,
+                        name: member.displayName || member.username,
+                      }))}
+                    slowmodeSeconds={
+                      canModerate ? null : (channelInfo?.slowmodeSeconds ?? null)
+                    }
+                    reply={replyDraft}
+                    onClearReply={() => setReplyDraft(null)}
+                    edit={editDraft}
+                    onClearEdit={() => setEditDraft(null)}
+                  />
+                )}
               </>
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">

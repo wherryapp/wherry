@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  MENTIONS_MAX,
   decodeContent,
   encodeContent,
   encodeOp,
@@ -106,6 +107,49 @@ test("replyTo rides the structured text shape and round-trips", () => {
   // A reply forces the structured format even with no attachments.
   assert.equal(encoded[0], 0x01);
   assert.deepEqual(decodeContent(encoded), content);
+});
+
+test("mentions ride the structured text shape and round-trip", () => {
+  const content = { text: "hey @Dave", attachments: [], mentions: ["u2"] };
+  const encoded = encodeContent(content);
+  // Mentions force the structured format even with no attachments.
+  assert.equal(encoded[0], 0x01);
+  assert.deepEqual(decodeContent(encoded), content);
+});
+
+test("mentions are deduplicated, filtered and capped, never trusted", () => {
+  const encoded = encodeContent({
+    text: "x",
+    attachments: [],
+    mentions: ["a", "a", "b"],
+  });
+  const decoded = decodeContent(encoded);
+  assert.notEqual(decoded, "unsupported");
+  if (decoded !== "unsupported" && !isMessageOp(decoded)) {
+    assert.deepEqual(decoded.mentions, ["a", "b"]);
+  }
+
+  // Off the wire, non-strings are dropped and an empty list is absence.
+  const dirty = decodeContent(
+    structured({ text: "x", attachments: [], mentions: [5, null, "c"] }),
+  );
+  if (dirty !== "unsupported" && !isMessageOp(dirty)) {
+    assert.deepEqual(dirty.mentions, ["c"]);
+  }
+  const none = decodeContent(
+    structured({ text: "x", attachments: [], mentions: [] }),
+  );
+  if (none !== "unsupported" && !isMessageOp(none)) {
+    assert.equal(none.mentions, undefined);
+  }
+
+  const many = Array.from({ length: MENTIONS_MAX + 5 }, (_, i) => `u${i}`);
+  const capped = decodeContent(
+    structured({ text: "x", attachments: [], mentions: many }),
+  );
+  if (capped !== "unsupported" && !isMessageOp(capped)) {
+    assert.equal(capped.mentions?.length, MENTIONS_MAX);
+  }
 });
 
 test("a malformed replyTo is dropped, leaving the text intact", () => {

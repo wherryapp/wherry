@@ -28,6 +28,16 @@ export default function App() {
   // already falls back to index.html for unknown paths, so both URLs load.
   const [emailRoute, setEmailRoute] = useState(routeFromLocation);
 
+  // An invite token is a bearer credential for a membership: taken out of
+  // the URL immediately, so it survives in neither history nor whatever the
+  // browser syncs. The state keeps it across the sign-in an invited
+  // stranger usually still has ahead of them.
+  useEffect(() => {
+    if (emailRoute?.kind === "join") {
+      window.history.replaceState(null, "", "/");
+    }
+  }, [emailRoute]);
+
   const signOutLocally = useCallback(async () => {
     sync.stop();
     clearSession();
@@ -118,5 +128,12 @@ export default function App() {
     );
   }
 
-  return <Chat session={session} onSignOut={signOut} />;
+  return (
+    <Chat
+      session={session}
+      onSignOut={signOut}
+      inviteToken={emailRoute?.kind === "join" ? emailRoute.token : null}
+      onInviteHandled={() => setEmailRoute(null)}
+    />
+  );
 }

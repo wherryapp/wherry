@@ -20,10 +20,15 @@ import type {
   CommitEntry,
   Conversation,
   DeviceDescriptor,
+  ChannelPosting,
   EventsPage,
   HistoryKeyEntry,
+  HubChannel,
   HubDetail,
   HubEventsPage,
+  HubInvite,
+  HubInvitePreview,
+  HubPin,
   HubSearchPage,
   HubSummary,
   HubVisibility,
@@ -1041,21 +1046,30 @@ export function deleteHub(hubId: string): Promise<void> {
 export function createHubChannel(input: {
   hubId: string;
   name: string;
-}): Promise<{ id: string; title: string | null; createdAt: string }> {
-  return request(`${API}/hubs/${input.hubId}/channels`, {
+}): Promise<HubChannel> {
+  return request<HubChannel>(`${API}/hubs/${input.hubId}/channels`, {
     method: "POST",
     body: { name: input.name },
   });
 }
 
-export function renameHubChannel(input: {
+/**
+ * One PATCH for everything a moderator sets on a channel; send only the
+ * field being changed. An empty topic clears it; a null slowmodeSeconds
+ * turns slowmode off (public hubs only -- elsewhere it answers NOT_PUBLIC).
+ */
+export function updateHubChannel(input: {
   hubId: string;
   conversationId: string;
-  name: string;
-}): Promise<{ id: string; title: string | null; createdAt: string }> {
-  return request(
-    `${API}/hubs/${input.hubId}/channels/${input.conversationId}`,
-    { method: "PATCH", body: { name: input.name } },
+  name?: string;
+  topic?: string;
+  posting?: ChannelPosting;
+  slowmodeSeconds?: number | null;
+}): Promise<HubChannel> {
+  const { hubId, conversationId, ...body } = input;
+  return request<HubChannel>(
+    `${API}/hubs/${hubId}/channels/${conversationId}`,
+    { method: "PATCH", body },
   );
 }
 
@@ -1146,8 +1160,11 @@ export function searchHub(input: {
   return request<HubSearchPage>(`${API}/hubs/${input.hubId}/search?${params}`);
 }
 
-/** Moderator soft-delete in a public channel. Server-enforced from now on;
- * clients that already synced the message keep their local copy. */
+/**
+ * Moderator soft-delete in a public channel. The server writes a
+ * message_deleted hub event alongside it, which every member's sync engine
+ * turns into a local tombstone -- deletion propagates now.
+ */
 export function deleteHubMessage(input: {
   hubId: string;
   conversationId: string;
@@ -1157,6 +1174,99 @@ export function deleteHubMessage(input: {
     `${API}/hubs/${input.hubId}/channels/${input.conversationId}/messages/${input.messageId}`,
     { method: "DELETE" },
   );
+}
+
+/** Moderator+. Clears the ban WITHOUT re-membering -- they may rejoin or be
+ * re-added, but are not put back in the room by this call. */
+export function unbanHubMember(input: {
+  hubId: string;
+  userId: string;
+}): Promise<HubDetail> {
+  return request<HubDetail>(
+    `${API}/hubs/${input.hubId}/bans/${input.userId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function createHubInvite(input: {
+  hubId: string;
+  /** Omit for a link that never expires. */
+  expiresInSeconds?: number;
+  /** Omit for unlimited uses. */
+  maxUses?: number;
+}): Promise<HubInvite> {
+  const { hubId, ...body } = input;
+  return request<HubInvite>(`${API}/hubs/${hubId}/invites`, {
+    method: "POST",
+    body,
+  });
+}
+
+export async function fetchHubInvites(hubId: string): Promise<HubInvite[]> {
+  const page = await request<{ invites: HubInvite[] }>(
+    `${API}/hubs/${hubId}/invites`,
+  );
+  return page.invites;
+}
+
+export function revokeHubInvite(input: {
+  hubId: string;
+  inviteId: string;
+}): Promise<void> {
+  return request<void>(
+    `${API}/hubs/${input.hubId}/invites/${input.inviteId}`,
+    { method: "DELETE" },
+  );
+}
+
+/** POSTed, not GET, so the token stays out of logs and history. Any dead
+ * token -- wrong, expired, revoked, exhausted -- answers the same 404. */
+export function previewHubInvite(token: string): Promise<HubInvitePreview> {
+  return request<HubInvitePreview>(`${API}/hubs/invite-preview`, {
+    method: "POST",
+    body: { token },
+  });
+}
+
+/** Join by invite, both classes. No history is shared on an invite join. */
+export function redeemHubInvite(token: string): Promise<HubDetail> {
+  return request<HubDetail>(`${API}/hubs/join-invite`, {
+    method: "POST",
+    body: { token },
+  });
+}
+
+/** Moderator+. Both classes -- a pin is a reference, never a copy. */
+export function pinHubMessage(input: {
+  hubId: string;
+  conversationId: string;
+  messageId: string;
+}): Promise<void> {
+  return request<void>(
+    `${API}/hubs/${input.hubId}/channels/${input.conversationId}/pins/${input.messageId}`,
+    { method: "POST", body: {} },
+  );
+}
+
+export function unpinHubMessage(input: {
+  hubId: string;
+  conversationId: string;
+  messageId: string;
+}): Promise<void> {
+  return request<void>(
+    `${API}/hubs/${input.hubId}/channels/${input.conversationId}/pins/${input.messageId}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function fetchHubPins(input: {
+  hubId: string;
+  conversationId: string;
+}): Promise<HubPin[]> {
+  const page = await request<{ pins: HubPin[] }>(
+    `${API}/hubs/${input.hubId}/channels/${input.conversationId}/pins`,
+  );
+  return page.pins;
 }
 
 // ---------------------------------------------------------------------------

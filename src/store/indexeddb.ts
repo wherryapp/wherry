@@ -186,6 +186,14 @@ export class IndexedDbMessageStore implements MessageStore {
     await tx.done;
   }
 
+  async deleteMessages(ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const db = await this.#open();
+    const tx = db.transaction(MESSAGES, "readwrite");
+    await Promise.all(ids.map((id) => tx.store.delete(id)));
+    await tx.done;
+  }
+
   async existingMessageIds(ids: readonly string[]): Promise<Set<string>> {
     if (ids.length === 0) return new Set();
     const db = await this.#open();
