@@ -156,6 +156,25 @@ export function TrashIcon({ className }: IconProps) {
   );
 }
 
+/** Reply, in a bubble's action bar and the composer's context bar. */
+export function ReplyIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M8 4 3.5 8.5 8 13" />
+      <path d="M3.5 8.5h8a5 5 0 0 1 5 5V16" />
+    </svg>
+  );
+}
+
 /** The "more actions" affordance at a bubble's edge. */
 export function DotsIcon({ className }: IconProps) {
   return (

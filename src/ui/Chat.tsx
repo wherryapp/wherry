@@ -65,8 +65,10 @@ import {
   Panel,
   PanelSection,
   PlusIcon,
+  ReplyIcon,
   SendIcon,
   TrashIcon,
+  XIcon,
   UsersIcon,
 } from "./kit";
 
@@ -1051,6 +1053,28 @@ function ConversationList({
 // Timeline
 // ---------------------------------------------------------------------------
 
+/**
+ * A reply being composed: what the composer bar shows, and what becomes the
+ * payload's `replyTo` on send. The excerpt is copied here at reply time --
+ * into the payload too, eventually -- because the target may not exist on a
+ * receiving device (see ReplyContext in api/payload.ts). `senderName` is
+ * display-only; payloads carry the id and let each reader resolve the name.
+ */
+type ReplyDraft = {
+  messageId: string;
+  excerpt: string;
+  senderUserId: string;
+  senderName: string;
+};
+
+/** The quoted line a reply shows: the text, or what stands in for it. */
+function excerptOf(content: { text: string; attachments: unknown[] }): string {
+  return (
+    content.text.slice(0, 120) ||
+    (content.attachments.length > 0 ? "Photo" : "")
+  );
+}
+
 /** The fixed quick-react palette. A search-every-emoji picker is a
  *  dependency and a design problem for another day; six cover the register
  *  the messengers people know converge on. */
@@ -1081,6 +1105,7 @@ function Bubble({
   last = true,
   actions,
   actionsShown = false,
+  quote,
   chips,
 }: {
   mine: boolean;
@@ -1129,10 +1154,17 @@ function Bubble({
         onReact: (emoji: string | null) => void;
         /** This user's current reaction, so the bar can show the toggle. */
         current: string | null;
+        onReply?: (() => void) | undefined;
         onDelete?: (() => void) | undefined;
       }
     | undefined;
   actionsShown?: boolean;
+  /**
+   * The quoted block a reply renders above its text -- resolved by the
+   * caller (name lookup is roster knowledge), tappable to jump to the
+   * target when it is loaded.
+   */
+  quote?: { name: string; excerpt: string; onJump: () => void } | undefined;
   /** Aggregated reaction chips, rendered under the bubble. */
   chips?:
     | { emoji: string; count: number; mine: boolean; label: string }[]
@@ -1172,6 +1204,16 @@ function Bubble({
               {emoji}
             </button>
           ))}
+          {actions.onReply && (
+            <button
+              type="button"
+              onClick={actions.onReply}
+              aria-label="Reply"
+              className="rounded-full p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+            >
+              <ReplyIcon className="h-4 w-4" />
+            </button>
+          )}
           {actions.onDelete && (
             <button
               type="button"
@@ -1195,6 +1237,20 @@ function Bubble({
           <span className="mb-0.5 block text-[11px] font-medium opacity-70">
             {sender}
           </span>
+        )}
+        {quote && !retracted && (
+          <button
+            type="button"
+            onClick={quote.onJump}
+            className={`mb-1 block w-full rounded-md border-l-2 px-2 py-1 text-left text-xs ${
+              mine
+                ? "border-white/60 bg-white/15 text-white/90"
+                : "border-accent-400 bg-neutral-100 text-neutral-600 dark:bg-neutral-700/60 dark:text-neutral-300"
+            }`}
+          >
+            <span className="block font-medium">{quote.name}</span>
+            <span className="block truncate">{quote.excerpt}</span>
+          </button>
         )}
         {retracted ? (
           // The tombstone. A quiet line rather than a vanished bubble --
@@ -1317,11 +1373,14 @@ function Timeline({
   conversationId,
   session,
   conversation,
+  onReply,
 }: {
   conversationId: string;
   session: StoredSession;
   /** Undefined until the conversation list catches up; only names depend on it. */
   conversation: StoredConversation | undefined;
+  /** Hands a reply draft up to the shell, which owns the composer's bar. */
+  onReply: (draft: ReplyDraft) => void;
 }) {
   const { items, hasMore, loadOlder } = useTimeline(
     conversationId,
@@ -1407,6 +1466,33 @@ function Timeline({
     }
     return map;
   }, [conversation]);
+
+  /** Resolves a message's replyTo into the quote block Bubble renders. */
+  const quoteOf = (content: RenderableContent | null) => {
+    if (content === null || content === "unsupported" || !content.replyTo) {
+      return undefined;
+    }
+    const reply = content.replyTo;
+    return {
+      name:
+        reply.senderUserId === session.user.id
+          ? "You"
+          : (names.get(reply.senderUserId) ?? "Someone"),
+      excerpt: reply.excerpt,
+      // Jump to the target if it is loaded. If it is above the loaded page
+      // this is simply a no-op -- honest, since nothing can scroll to a row
+      // that does not exist.
+      onJump: () => {
+        document.getElementById(`msg-${reply.messageId}`)?.scrollIntoView({
+          block: "center",
+          behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? "auto"
+            : "smooth",
+        });
+      },
+    };
+  };
+
   const bottom = useRef<HTMLDivElement>(null);
   const count = items.length;
 
@@ -1493,9 +1579,11 @@ function Timeline({
               )
               .join(", "),
           }));
+          const content = item.content;
           return (
             <div
               key={item.message.messageId}
+              id={`msg-${item.message.messageId}`}
               className={(first ? "mt-3" : "mt-0.5") + entrance}
               {...(item.marks?.retracted
                 ? {}
@@ -1505,7 +1593,7 @@ function Timeline({
                 mine={mine}
                 first={first}
                 last={last}
-                content={item.content}
+                content={content}
                 marks={item.marks}
                 meta={time(item.message.sentAt)}
                 sender={
@@ -1513,10 +1601,26 @@ function Timeline({
                     ? (names.get(item.message.senderUserId) ?? "Someone")
                     : undefined
                 }
+                quote={quoteOf(content)}
                 actions={{
                   onReact: (emoji) =>
                     sendReaction(item.message.messageId, emoji),
                   current: myReaction(item.marks, session.user.id),
+                  // Replying quotes the content, so there is nothing to
+                  // reply to on a placeholder or a still-sealed message.
+                  onReply:
+                    content !== null && content !== "unsupported"
+                      ? () =>
+                          onReply({
+                            messageId: item.message.messageId,
+                            excerpt: excerptOf(content),
+                            senderUserId: item.message.senderUserId,
+                            senderName: mine
+                              ? "You"
+                              : (names.get(item.message.senderUserId) ??
+                                "Someone"),
+                          })
+                      : undefined,
                   onDelete: mine
                     ? () => retractMessage(item.message.messageId)
                     : undefined,
@@ -1557,6 +1661,7 @@ function Timeline({
               first={first}
               last={last}
               content={item.content}
+              quote={quoteOf(item.content)}
               meta={
                 item.entry.failedPermanently
                   ? `Failed — ${item.entry.lastError ?? "not sent"}`
@@ -1643,7 +1748,16 @@ type Pending = {
   url: string;
 };
 
-function Composer({ conversationId }: { conversationId: string }) {
+function Composer({
+  conversationId,
+  reply,
+  onClearReply,
+}: {
+  conversationId: string;
+  /** The reply being composed, owned by the shell so Timeline can set it. */
+  reply: ReplyDraft | null;
+  onClearReply: () => void;
+}) {
   const [text, setText] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
   const [busy, setBusy] = useState(false);
@@ -1735,10 +1849,23 @@ function Composer({ conversationId }: { conversationId: string }) {
       setText("");
       for (const item of pending) URL.revokeObjectURL(item.url);
       setPending([]);
+      if (reply) onClearReply();
 
       await sync.enqueue(
         conversationId,
-        encodeContent({ text: trimmed, attachments }),
+        encodeContent({
+          text: trimmed,
+          attachments,
+          ...(reply
+            ? {
+                replyTo: {
+                  messageId: reply.messageId,
+                  excerpt: reply.excerpt,
+                  senderUserId: reply.senderUserId,
+                },
+              }
+            : {}),
+        }),
       );
     } catch (caught) {
       setError(
@@ -1780,11 +1907,32 @@ function Composer({ conversationId }: { conversationId: string }) {
 
       {error && <ErrorText className="mb-2">{error}</ErrorText>}
 
+      {/* The reply-context bar, in the slot the stage-3 comment below
+          reserved for it. Height comes and goes with the reply -- that is a
+          deliberate act by the user, not the ambient flicker the typing
+          line's fixed height guards against. */}
+      {reply && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border-l-2 border-accent-400 bg-neutral-100 px-2 py-1 motion-safe:animate-fade-in dark:bg-neutral-800">
+          <span className="min-w-0 flex-1 text-xs text-neutral-600 dark:text-neutral-300">
+            <span className="block font-medium">
+              Replying to {reply.senderName}
+            </span>
+            <span className="block truncate">{reply.excerpt}</span>
+          </span>
+          <IconButton
+            label="Cancel reply"
+            onClick={onClearReply}
+            className="shrink-0"
+          >
+            <XIcon className="h-4 w-4" />
+          </IconButton>
+        </div>
+      )}
+
       {/* A column on purpose: the row below keeps the reply-context bar's
-          slot above it (reply/quote is a known future payload kind), so
-          adding one later inserts a sibling here rather than re-laying out
-          the whole composer. The row itself has room for a mic button
-          beside the attach one for the same reason. */}
+          slot above it (filled by the block above since the wave's stage 3),
+          and the row itself has room for a mic button beside the attach one
+          for the same reason. */}
       <div className="flex items-center gap-2">
         {/* accept without capture. `capture` forces the camera and removes the
             photo library, which on a phone is where the photo somebody wants
@@ -1844,6 +1992,12 @@ export function Chat({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
+  // Owned here rather than by Timeline or Composer, because it is the one
+  // piece of state they share: the bar's Reply action sets it, the
+  // composer renders and consumes it. Reset on switching conversations --
+  // a reply drafted in one thread must not attach to another.
+  const [replyDraft, setReplyDraft] = useState<ReplyDraft | null>(null);
+  useEffect(() => setReplyDraft(null), [selected]);
   const [muteBusy, setMuteBusy] = useState(false);
   const { conversations } = useConversations();
   const isDesktop = useIsDesktop();
@@ -2047,12 +2201,17 @@ export function Chat({
                   conversationId={selected}
                   session={session}
                   conversation={current}
+                  onReply={setReplyDraft}
                 />
                 <TypingLine
                   conversationId={selected}
                   conversation={current}
                 />
-                <Composer conversationId={selected} />
+                <Composer
+                  conversationId={selected}
+                  reply={replyDraft}
+                  onClearReply={() => setReplyDraft(null)}
+                />
               </>
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">
