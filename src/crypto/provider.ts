@@ -23,6 +23,14 @@ export const PROTOCOL_MLS = 2;
 // key. Envelopes are untouched -- live delivery stays MLS ciphertext stamped
 // PROTOCOL_MLS. Mirrors server/src/protocol.ts.
 export const PROTOCOL_HISTORY_KEY = 3;
+// v4 is plaintext BY DESIGN -- public hub channel content, the scoped
+// rule-1/9 amendment (docs/architecture.md's hubs section). Deliberately NOT
+// part of ProtocolVersion below: no provider ever produces or opens it,
+// because there is nothing cryptographic about it. The sync engine
+// short-circuits v4 before the provider is ever asked (see decryptForStorage
+// in sync/engine.ts), which keeps this seam crypto-only. Mirrors
+// server/src/protocol.ts.
+export const PROTOCOL_PUBLIC = 4;
 
 export type ProtocolVersion =
   | typeof PROTOCOL_PLAINTEXT

@@ -119,7 +119,12 @@ export type DeviceDescriptor = {
   platform: Platform;
 };
 
-export type ConversationKind = "direct" | "group";
+// 'channel' rows belong to a hub and are created only through the hub
+// endpoints; the send path and timeline treat them as ordinary
+// conversations, with the content class decided by `hubVisibility` below.
+export type ConversationKind = "direct" | "group" | "channel";
+
+export type HubVisibility = "private" | "public";
 
 export type ConversationMember = {
   userId: string;
@@ -142,6 +147,16 @@ export type Conversation = {
   /** Null uses the default (member names joined) rather than a real name. */
   title: string | null;
   createdAt: string;
+  /** The owning hub for a channel; null for direct and group, always. */
+  hubId: string | null;
+  /**
+   * The owning hub's visibility, resolved server-side. This is THE content-
+   * class switch: 'public' means sends carry plaintext (protocol v4, no
+   * crypto fields) and the timeline syncs by cursor read; 'private' and null
+   * mean sealed exactly as ever. Never inferred client-side from anything
+   * else.
+   */
+  hubVisibility: HubVisibility | null;
   members: ConversationMember[];
   /**
    * Whether the caller has muted this conversation. Server column, per the
@@ -256,6 +271,95 @@ export type MessageSummary = {
 
 export type MessagesPage = {
   messages: MessageSummary[];
+  nextCursor: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Hubs
+// ---------------------------------------------------------------------------
+
+export type HubRole = "owner" | "moderator" | "member";
+
+export type HubChannel = {
+  /** The channel's conversation id -- a channel IS a conversation. */
+  id: string;
+  title: string | null;
+  createdAt: string;
+};
+
+export type HubMember = {
+  userId: string;
+  username: string;
+  displayName: string;
+  role: HubRole;
+  joinedAt: string;
+};
+
+export type HubSummary = {
+  id: string;
+  name: string;
+  visibility: HubVisibility;
+  /** The caller's own role. */
+  role: HubRole;
+  memberCount: number;
+  channels: HubChannel[];
+};
+
+export type HubDetail = {
+  id: string;
+  name: string;
+  visibility: HubVisibility;
+  createdAt: string;
+  memberLimit: number;
+  channelLimit: number;
+  role: HubRole;
+  members: HubMember[];
+  channels: HubChannel[];
+};
+
+export type HubEventKind =
+  | "member_added"
+  | "member_removed"
+  | "member_banned"
+  | "role_changed"
+  | "renamed"
+  | "channel_created"
+  | "channel_renamed";
+
+/** A hub-level audit line, rendered in the hub panel (not in timelines). */
+export type HubEvent = {
+  id: string;
+  hubId: string;
+  kind: HubEventKind;
+  actorUserId: string;
+  actorUsername: string;
+  actorDisplayName: string;
+  targetUserId: string | null;
+  targetUsername: string | null;
+  targetDisplayName: string | null;
+  title: string | null;
+  historyShared: boolean;
+  createdAt: string;
+};
+
+export type HubEventsPage = {
+  events: HubEvent[];
+  nextCursor: string | null;
+};
+
+/** One full-text hit in a public hub. Snippet wraps matches in <b>..</b>. */
+export type HubSearchResult = {
+  messageId: string;
+  conversationId: string;
+  senderUserId: string;
+  senderUsername: string;
+  senderDisplayName: string;
+  snippet: string;
+  sentAt: string;
+};
+
+export type HubSearchPage = {
+  results: HubSearchResult[];
   nextCursor: string | null;
 };
 

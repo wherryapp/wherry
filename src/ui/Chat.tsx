@@ -9,6 +9,8 @@ import {
 import { Attachment } from "./Attachment";
 import { Settings } from "./Settings";
 import { Friends } from "./Friends";
+import { HubDetails } from "./HubDetails";
+import { ContactCheckboxRow } from "./ContactRow";
 import {
   encodeContent,
   encodeOp,
@@ -20,8 +22,10 @@ import {
   ApiError,
   addMembers,
   createConversation,
+  createHub,
   fetchAttachmentUsage,
   fetchFriends,
+  joinHub,
   leaveConversation,
   lookupUser,
   markConversationRead,
@@ -32,6 +36,7 @@ import {
   uploadAttachment,
   type Friend,
 } from "../api/client";
+import type { HubSummary, HubVisibility } from "../api/types";
 import { e2e } from "../crypto";
 import { encryptBlob } from "../crypto/blob";
 import { store } from "../store";
@@ -43,6 +48,8 @@ import {
   useAnnouncements,
   useConversations,
   useDeliveredMarks,
+  useFeatures,
+  useHubs,
   useLatestMessages,
   usePresence,
   useSyncStatus,
@@ -227,7 +234,9 @@ function avatarSeed(
   selfUserId: string,
 ): string {
   const others = conversation.members.filter((m) => m.userId !== selfUserId);
-  if (conversation.kind !== "group" && others.length === 1) {
+  // Direct only -- a two-person hub channel is still the channel, not the
+  // other person, so it keeps its own identity like a group does.
+  if (conversation.kind === "direct" && others.length === 1) {
     return others[0]!.userId;
   }
   return conversation.id;
@@ -318,38 +327,8 @@ function UpdateBanner() {
 // Starting a conversation
 // ---------------------------------------------------------------------------
 
-/**
- * A contact row with a checkbox, used by both the new-conversation picker
- * and GroupDetails' add-people picker -- they were built as two copies of
- * the same label, which is exactly the drift kit.tsx exists to prevent.
- */
-function ContactCheckboxRow({
-  contact,
-  checked,
-  onToggle,
-}: {
-  contact: Friend;
-  checked: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <label className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm text-neutral-800 hover:bg-neutral-50 dark:text-neutral-100 dark:hover:bg-neutral-800">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onToggle}
-        className="h-4 w-4 shrink-0"
-      />
-      <Avatar size="sm" name={contact.displayName} userId={contact.userId} />
-      <span className="min-w-0 truncate">
-        {contact.displayName}
-        <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
-          @{contact.username}
-        </span>
-      </span>
-    </label>
-  );
-}
+// ContactCheckboxRow moved to ContactRow.tsx when HubDetails became its
+// third user -- see that file's comment.
 
 /**
  * Username in, conversation out.
@@ -932,6 +911,244 @@ function useIsDesktop(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Hubs
+// ---------------------------------------------------------------------------
+
+/**
+ * Creating a hub, or joining a public one by id -- the sidebar's second
+ * form, shaped like NewConversation. The class choice carries its label
+ * copy right here, at the moment it is made, because the public class is
+ * the one deliberate exception to "the server reads nothing" and the person
+ * making it must see that sentence before the hub exists (CLAUDE.md rules
+ * 1/9, as amended).
+ */
+function NewHub({
+  onOpened,
+}: {
+  onOpened: (channelId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [visibility, setVisibility] = useState<HubVisibility>("private");
+  const [joinId, setJoinId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function reset(): void {
+    setOpen(false);
+    setName("");
+    setJoinId("");
+    setVisibility("private");
+    setError(null);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await createHub({ name: name.trim(), visibility });
+      sync.invalidateConversations();
+      const general = detail.channels[0];
+      if (general) onOpened(general.id);
+      reset();
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError ? caught.message : "Could not create the hub.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function join(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await joinHub(joinId.trim());
+      sync.invalidateConversations();
+      const first = detail.channels[0];
+      if (first) onOpened(first.id);
+      reset();
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError && caught.status === 404
+          ? "No public hub with that ID."
+          : caught instanceof ApiError
+            ? caught.message
+            : "Could not join the hub.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <Button variant="secondary" onClick={() => setOpen(true)} className="w-full">
+        New hub
+      </Button>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <form onSubmit={submit} className="space-y-2">
+        <Input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Hub name"
+          maxLength={100}
+        />
+        <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
+          <input
+            type="radio"
+            name="hub-visibility"
+            checked={visibility === "private"}
+            onChange={() => setVisibility("private")}
+            className="mt-0.5 h-4 w-4 shrink-0"
+          />
+          <span>
+            Private
+            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+              Invitation only. Every channel is end-to-end encrypted, like a
+              group chat.
+            </span>
+          </span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
+          <input
+            type="radio"
+            name="hub-visibility"
+            checked={visibility === "public"}
+            onChange={() => setVisibility("public")}
+            className="mt-0.5 h-4 w-4 shrink-0"
+          />
+          <span>
+            Public
+            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+              Anyone with an account can join. Messages are stored readable
+              by the server, so search and moderation work. This cannot be
+              changed later.
+            </span>
+          </span>
+        </label>
+        {error && <ErrorText>{error}</ErrorText>}
+        <div className="flex gap-2">
+          <Button
+            type="submit"
+            size="sm"
+            disabled={busy || name.trim().length === 0}
+            className="flex-1"
+          >
+            {busy ? "…" : "Create"}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={reset} className="px-3 py-1.5">
+            Cancel
+          </Button>
+        </div>
+      </form>
+      <form onSubmit={join} className="flex gap-2">
+        <Input
+          value={joinId}
+          onChange={(e) => setJoinId(e.target.value)}
+          placeholder="Or join with a hub ID"
+        />
+        <Button
+          type="submit"
+          size="sm"
+          variant="secondary"
+          disabled={busy || joinId.trim().length === 0}
+          className="shrink-0"
+        >
+          Join
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * The sidebar's hubs: each hub is a header row opening its panel, with its
+ * channels nested under it. Channels are conversations, so selecting one
+ * opens the ordinary thread view -- the section is navigation, not a second
+ * message surface.
+ */
+function HubsSection({
+  hubs,
+  canCreate,
+  unread,
+  selected,
+  onSelect,
+  onOpenHub,
+}: {
+  hubs: HubSummary[];
+  /** The `hubs` feature flag -- gates the create form, not the list. */
+  canCreate: boolean;
+  unread: Map<string, number>;
+  selected: string | null;
+  onSelect: (conversationId: string) => void;
+  onOpenHub: (hubId: string) => void;
+}) {
+  if (hubs.length === 0 && !canCreate) return null;
+
+  return (
+    <div className="border-b border-neutral-200 p-3 dark:border-neutral-800">
+      {canCreate && <NewHub onOpened={onSelect} />}
+      {hubs.map((hub) => (
+        <div key={hub.id} className={canCreate || hub.id !== hubs[0]?.id ? "mt-3" : ""}>
+          <button
+            onClick={() => onOpenHub(hub.id)}
+            className="flex w-full items-center gap-2 rounded px-1 py-1 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
+          >
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              {hub.name}
+            </span>
+            {hub.visibility === "public" && (
+              <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+                Public
+              </span>
+            )}
+          </button>
+          <div className="mt-0.5">
+            {hub.channels.map((channel) => {
+              const count = unread.get(channel.id) ?? 0;
+              return (
+                <button
+                  key={channel.id}
+                  onClick={() => onSelect(channel.id)}
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition-colors ${
+                    selected === channel.id
+                      ? "bg-neutral-100 dark:bg-neutral-800"
+                      : "hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                  }`}
+                >
+                  <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
+                    #
+                  </span>
+                  <span
+                    className={`min-w-0 flex-1 truncate ${
+                      count > 0
+                        ? "font-semibold text-neutral-900 dark:text-neutral-100"
+                        : "text-neutral-700 dark:text-neutral-300"
+                    }`}
+                  >
+                    {channel.title ?? "channel"}
+                  </span>
+                  <Badge count={count} />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Conversation list
 // ---------------------------------------------------------------------------
 
@@ -939,14 +1156,24 @@ function ConversationList({
   session,
   selected,
   onSelect,
+  onOpenHub,
 }: {
   session: StoredSession;
   selected: string | null;
   onSelect: (id: string) => void;
+  onOpenHub: (hubId: string) => void;
 }) {
   const { conversations } = useConversations();
+  const { hubs } = useHubs();
+  const features = useFeatures();
+  // Unread and previews are computed over everything -- channels included,
+  // for the hub section's badges -- but the direct/group rows below exclude
+  // channels, which render nested under their hub instead.
   const latest = useLatestMessages(conversations);
   const unread = useUnread(conversations, session.user.id);
+  const directsAndGroups = conversations.filter(
+    (conversation) => conversation.kind !== "channel",
+  );
 
   return (
     <aside className="flex w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800">
@@ -954,14 +1181,23 @@ function ConversationList({
         <NewConversation session={session} onOpened={onSelect} />
       </div>
 
+      <HubsSection
+        hubs={hubs}
+        canCreate={features.hubs}
+        unread={unread}
+        selected={selected}
+        onSelect={onSelect}
+        onOpenHub={onOpenHub}
+      />
+
       <div className="flex-1 overflow-y-auto">
-        {conversations.length === 0 && (
+        {directsAndGroups.length === 0 && (
           <p className="p-4 text-sm text-neutral-500 dark:text-neutral-400">
             No conversations yet.
           </p>
         )}
 
-        {conversations.map((conversation) => {
+        {directsAndGroups.map((conversation) => {
           const preview = latest.get(conversation.id);
           // A photo with no caption still has to say something in the list,
           // and so does a message kind this build cannot render. A retracted
@@ -1890,12 +2126,22 @@ type Pending = {
 
 function Composer({
   conversationId,
+  publicChannel,
   reply,
   onClearReply,
   edit,
   onClearEdit,
 }: {
   conversationId: string;
+  /**
+   * True in a public hub channel, where nothing is sealed: the message
+   * payload goes up readable (protocol v4 -- sync/engine.ts's enqueue
+   * decides that on its own from the stored conversation), and attachments
+   * skip the blob seal here for the same honesty -- a key that rides inside
+   * a readable payload protects nothing, so encrypting the blob would be
+   * decoration pretending to be a property.
+   */
+  publicChannel: boolean;
   /** The reply being composed, owned by the shell so Timeline can set it. */
   reply: ReplyDraft | null;
   onClearReply: () => void;
@@ -2015,8 +2261,14 @@ function Composer({
         // fresh single-use key that rides inside the message payload -- the
         // one place already encrypted to exactly this conversation's
         // readers. See crypto/blob.ts. The passthrough build keeps
-        // uploading plaintext, same as the messages around it.
-        const sealed = e2e.handshake ? await encryptBlob(prepared.bytes) : null;
+        // uploading plaintext, same as the messages around it -- and so
+        // does a public channel, whose payload is readable by design (see
+        // the publicChannel prop above): the ref then carries no key
+        // fields, which every client already reads as the plaintext form.
+        const sealed =
+          e2e.handshake && !publicChannel
+            ? await encryptBlob(prepared.bytes)
+            : null;
 
         const uploaded = await uploadAttachment(
           conversationId,
@@ -2216,6 +2468,9 @@ export function Chat({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
+  /** Which hub's panel is open, by hub id -- the channel-class sibling of
+   *  groupDetailsOpen. */
+  const [hubDetailsFor, setHubDetailsFor] = useState<string | null>(null);
   // Owned here rather than by Timeline or Composer, because it is the one
   // piece of state they share: the bar's Reply action sets it, the
   // composer renders and consumes it. Reset on switching conversations --
@@ -2338,6 +2593,20 @@ export function Chat({
     );
   }
 
+  if (hubDetailsFor !== null) {
+    return (
+      <HubDetails
+        hubId={hubDetailsFor}
+        selfUserId={session.user.id}
+        onClose={() => setHubDetailsFor(null)}
+        onOpenChannel={(conversationId) => {
+          setSelected(conversationId);
+          setHubDetailsFor(null);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
       {/* The app header is the LIST's header: a title and two controls, the
@@ -2388,6 +2657,7 @@ export function Chat({
             session={session}
             selected={selected}
             onSelect={setSelected}
+            onOpenHub={setHubDetailsFor}
           />
         )}
 
@@ -2410,10 +2680,24 @@ export function Chat({
                     />
                   )}
                   <span className="min-w-0 flex-1 truncate">
-                    <span className="block truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                      {current
-                        ? conversationTitle(current, session.user.id)
-                        : "Conversation"}
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                      <span className="min-w-0 truncate">
+                        {current?.kind === "channel" && (
+                          <span className="mr-0.5 text-neutral-400 dark:text-neutral-500">
+                            #
+                          </span>
+                        )}
+                        {current
+                          ? conversationTitle(current, session.user.id)
+                          : "Conversation"}
+                      </span>
+                      {/* The standing public-class label -- every surface a
+                          public channel has, per the rule-1/9 amendment. */}
+                      {current?.hubVisibility === "public" && (
+                        <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+                          Public
+                        </span>
+                      )}
                     </span>
                     <Presence
                       conversationId={selected}
@@ -2439,6 +2723,15 @@ export function Chat({
                       Details
                     </Button>
                   )}
+                  {current?.kind === "channel" && current.hubId && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => setHubDetailsFor(current.hubId!)}
+                      className="shrink-0"
+                    >
+                      Hub
+                    </Button>
+                  )}
                 </div>
                 <Timeline
                   conversationId={selected}
@@ -2459,6 +2752,7 @@ export function Chat({
                 />
                 <Composer
                   conversationId={selected}
+                  publicChannel={current?.hubVisibility === "public"}
                   reply={replyDraft}
                   onClearReply={() => setReplyDraft(null)}
                   edit={editDraft}

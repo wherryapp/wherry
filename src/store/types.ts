@@ -86,10 +86,19 @@ export type StoredBlob =
 
 export type StoredConversation = {
   id: string;
-  kind: "direct" | "group";
+  kind: "direct" | "group" | "channel";
   /** Null uses the default (member names joined) rather than a real name. */
   title: string | null;
   createdAt: string;
+  /** The owning hub for a channel; null (or absent, for rows stored before
+   * hubs existed) otherwise. Mirrors the wire field. */
+  hubId?: string | null;
+  /**
+   * The channel's content class, straight off the wire -- 'public' is what
+   * routes a send around the E2E seal (sync/engine.ts enqueue) and what the
+   * UI labels. Absent on pre-hubs rows, which are all sealed.
+   */
+  hubVisibility?: "private" | "public" | null;
   members: {
     userId: string;
     username: string;
@@ -386,6 +395,32 @@ export const META_ANNOUNCEMENTS = "announcements";
  * devices, which it does not yet.
  */
 export const META_ANNOUNCEMENTS_SEEN = "announcements.seen";
+
+/**
+ * The caller's hubs, as fetched (a HubSummary[] from api/types.ts). A meta
+ * entry rather than an object store for the same reasons announcements are:
+ * small, replaced whole, never queried by key -- and it spares a DB_VERSION
+ * bump. Written by the engine on the conversation-refresh cadence; read by
+ * useHubs in ui/hooks.ts. Empty while the `hubs` flag is off, which is
+ * indistinguishable from having none -- deliberately.
+ */
+export const META_HUBS = "hubs";
+
+/**
+ * Per-PUBLIC-channel sync watermarks: conversationId -> the newest v4
+ * message id this device holds. Public channels have no envelopes and no
+ * inbox -- delivery is a cursor read (`/archive?conversationId=&after=`) --
+ * so this is their whole "what have I seen" state. A channel absent from
+ * the map has never been synced and gets one newest-first page rather than
+ * the full backlog: the hydration-depth decision from the hubs plan, applied
+ * on day one. Older history loads on demand.
+ */
+export const META_PUBLIC_CHANNELS = "public.channels";
+
+export type PublicChannelState = Record<
+  string,
+  { latest: string | null }
+>;
 
 /**
  * Per-conversation delivered watermarks: `delivered.<conversationId>` holds

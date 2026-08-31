@@ -22,6 +22,11 @@ import type {
   DeviceDescriptor,
   EventsPage,
   HistoryKeyEntry,
+  HubDetail,
+  HubEventsPage,
+  HubSearchPage,
+  HubSummary,
+  HubVisibility,
   InboxEnvelope,
   MessagesPage,
   PasswordWrapWire,
@@ -826,7 +831,7 @@ export type AccountSettings = {
    * every time Settings opens rather than cached -- toggling one takes
    * effect on the next open, no reload or rebuild needed.
    */
-  features: { tipJar: boolean; announcements: boolean };
+  features: { tipJar: boolean; announcements: boolean; hubs: boolean };
 };
 
 export type AccountDevice = {
@@ -989,6 +994,169 @@ export function blockUser(userId: string): Promise<void> {
 
 export function unblockUser(userId: string): Promise<void> {
   return request<void>(`${API}/friends/unblock`, { method: "POST", body: { userId } });
+}
+
+// ---------------------------------------------------------------------------
+// Hubs
+// ---------------------------------------------------------------------------
+//
+// All flag-gated server-side (`hubs`, dark by default): the list answers
+// empty and everything else answers 404 while the flag is off, so none of
+// these need a capability check of their own -- but the UI entry points are
+// gated on AccountSettings.features.hubs so a person is never shown a door
+// that 404s.
+
+export async function fetchHubs(): Promise<HubSummary[]> {
+  const page = await request<{ hubs: HubSummary[] }>(`${API}/hubs`);
+  return page.hubs;
+}
+
+export function createHub(input: {
+  name: string;
+  /** Immutable after creation; 'public' means server-readable content. */
+  visibility: HubVisibility;
+}): Promise<HubDetail> {
+  return request<HubDetail>(`${API}/hubs`, { method: "POST", body: input });
+}
+
+export function fetchHub(hubId: string): Promise<HubDetail> {
+  return request<HubDetail>(`${API}/hubs/${hubId}`);
+}
+
+export function renameHub(input: {
+  hubId: string;
+  name: string;
+}): Promise<HubDetail> {
+  return request<HubDetail>(`${API}/hubs/${input.hubId}`, {
+    method: "PATCH",
+    body: { name: input.name },
+  });
+}
+
+/** Owner only. Soft-deletes the hub and every channel in it. */
+export function deleteHub(hubId: string): Promise<void> {
+  return request<void>(`${API}/hubs/${hubId}`, { method: "DELETE" });
+}
+
+export function createHubChannel(input: {
+  hubId: string;
+  name: string;
+}): Promise<{ id: string; title: string | null; createdAt: string }> {
+  return request(`${API}/hubs/${input.hubId}/channels`, {
+    method: "POST",
+    body: { name: input.name },
+  });
+}
+
+export function renameHubChannel(input: {
+  hubId: string;
+  conversationId: string;
+  name: string;
+}): Promise<{ id: string; title: string | null; createdAt: string }> {
+  return request(
+    `${API}/hubs/${input.hubId}/channels/${input.conversationId}`,
+    { method: "PATCH", body: { name: input.name } },
+  );
+}
+
+/**
+ * Moderator+ add, both classes. For a private hub the MLS Adds and the
+ * history backfill follow on the members' sweeps, exactly as for a group.
+ */
+export function addHubMembers(input: {
+  hubId: string;
+  memberUserIds: string[];
+  shareHistory?: boolean;
+}): Promise<HubDetail> {
+  return request<HubDetail>(`${API}/hubs/${input.hubId}/members`, {
+    method: "POST",
+    body: {
+      memberUserIds: input.memberUserIds,
+      shareHistory: input.shareHistory ?? false,
+    },
+  });
+}
+
+/** Self-serve, public hubs only; a private hub answers the same 404 a wrong
+ * id does. Idempotent. */
+export function joinHub(hubId: string): Promise<HubDetail> {
+  return request<HubDetail>(`${API}/hubs/${hubId}/join`, {
+    method: "POST",
+    body: {},
+  });
+}
+
+/** Self-removal. The owner cannot leave -- transfer ownership or delete. */
+export function leaveHub(hubId: string): Promise<void> {
+  return request<void>(`${API}/hubs/${hubId}/leave`, {
+    method: "POST",
+    body: {},
+  });
+}
+
+export function kickHubMember(input: {
+  hubId: string;
+  userId: string;
+  /** Also ban: they cannot self-serve rejoin a public hub afterward. */
+  ban?: boolean;
+}): Promise<HubDetail> {
+  return request<HubDetail>(
+    `${API}/hubs/${input.hubId}/members/${input.userId}${input.ban ? "?ban=true" : ""}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Owner only. Setting 'owner' transfers ownership (actor becomes moderator). */
+export function setHubRole(input: {
+  hubId: string;
+  userId: string;
+  role: "owner" | "moderator" | "member";
+}): Promise<HubDetail> {
+  return request<HubDetail>(
+    `${API}/hubs/${input.hubId}/members/${input.userId}`,
+    { method: "PATCH", body: { role: input.role } },
+  );
+}
+
+export function fetchHubEvents(input: {
+  hubId: string;
+  cursor?: string;
+  limit?: number;
+}): Promise<HubEventsPage> {
+  const params = new URLSearchParams();
+  if (input.cursor) params.set("cursor", input.cursor);
+  if (input.limit) params.set("limit", String(input.limit));
+  const query = params.size > 0 ? `?${params}` : "";
+  return request<HubEventsPage>(`${API}/hubs/${input.hubId}/events${query}`);
+}
+
+/**
+ * Full-text search over a public hub's channels -- the server-side feature
+ * the public class exists for. A private hub answers an empty page.
+ */
+export function searchHub(input: {
+  hubId: string;
+  query: string;
+  cursor?: string;
+  limit?: number;
+}): Promise<HubSearchPage> {
+  const params = new URLSearchParams({ q: input.query });
+  if (input.cursor) params.set("cursor", input.cursor);
+  if (input.limit) params.set("limit", String(input.limit));
+  return request<HubSearchPage>(`${API}/hubs/${input.hubId}/search?${params}`);
+}
+
+/** Moderator soft-delete in a public channel. Server-enforced from now on;
+ * clients that already synced the message keep their local copy. */
+export function deleteHubMessage(input: {
+  hubId: string;
+  conversationId: string;
+  messageId: string;
+}): Promise<void> {
+  return request<void>(
+    `${API}/hubs/${input.hubId}/channels/${input.conversationId}/messages/${input.messageId}`,
+    { method: "DELETE" },
+  );
 }
 
 // ---------------------------------------------------------------------------

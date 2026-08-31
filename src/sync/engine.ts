@@ -28,6 +28,7 @@ import {
   fetchHealth,
   fetchHistoryKeys,
   fetchAnnouncements,
+  fetchHubs,
   fetchInbox,
   isUnauthorized,
   isUnreachable,
@@ -39,8 +40,9 @@ import {
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { currentToken, loadSession } from "../api/session";
 import { decodeContent, isMessageOp } from "../api/payload";
-import type { ArchiveEntry, InboxEnvelope } from "../api/types";
+import type { ArchiveEntry, HubSummary, InboxEnvelope } from "../api/types";
 import { e2e, E2EError } from "../crypto";
+import { PROTOCOL_PUBLIC } from "../crypto/provider";
 import { KeysError } from "../crypto/keys";
 import { ingestWrappedKeys } from "../crypto/history";
 import { BlobCryptoError, openAttachmentBytes } from "../crypto/blob";
@@ -48,9 +50,12 @@ import { store } from "../store";
 import {
   META_ANNOUNCEMENTS,
   META_DELIVERED_PREFIX,
+  META_HUBS,
   META_HYDRATION,
+  META_PUBLIC_CHANNELS,
   type HydrationState,
   type OutboxEntry,
+  type PublicChannelState,
   type StoredMessage,
 } from "../store/types";
 import { Backoff, sleep } from "./backoff";
@@ -122,6 +127,11 @@ export const APP_VERSION: string =
 // (a locked account key). Either way, once per interval is plenty.
 const FORWARD_SYNC_INTERVAL_MS = 30_000;
 
+// A public channel's first contact fetches this many newest messages, not
+// the backlog -- the hydration-depth decision in docs/prompts/hubs-plan.md.
+// Older history is a deliberate on-demand read, never an automatic walk.
+const PUBLIC_FIRST_PAGE = 100;
+
 /** messageId -> conversationId of stored messages whose decrypt failed. */
 const META_PENDING_DECRYPT = "mls.pendingDecrypt";
 
@@ -184,6 +194,7 @@ export type SyncEvent =
   | { type: "messages"; conversationIds: string[] }
   | { type: "conversations" }
   | { type: "announcements" }
+  | { type: "hubs" }
   | { type: "receipts"; conversationId: string }
   /** Ephemeral, straight off the socket -- never stored, expires on the
    *  receiver's clock. Components hold these in their own state; there is
@@ -223,6 +234,15 @@ async function decryptForStorage(
   from: "envelope" | "archive",
   keyGeneration: number | null,
 ): Promise<{ payload: Uint8Array; decryptFailed: boolean }> {
+  // Protocol v4 -- public hub channel content -- is not encrypted, by
+  // design, so the provider is never asked: the wire bytes ARE the content.
+  // Short-circuited here rather than taught to the provider, deliberately:
+  // "not encrypted" is not a cipher, and the E2E seam stays crypto-only
+  // (rule 7). See PROTOCOL_PUBLIC's comment in crypto/provider.ts.
+  if (protocolVersion === PROTOCOL_PUBLIC) {
+    return { payload: wireBytes, decryptFailed: false };
+  }
+
   try {
     const payload = await e2e.decrypt({
       conversationId,
@@ -525,6 +545,22 @@ export class SyncEngine {
       ...(options.silent ? { silent: true as const } : {}),
     };
 
+    // A public hub channel never seals: the payload IS the content, sent
+    // with no crypto fields (the flush already omits absent ones), stored
+    // by the server readable as protocol v4. The class comes from the
+    // stored conversation -- the server's answer, never inferred.
+    const conversation = await store.getConversation(conversationId);
+    if (conversation?.hubVisibility === "public") {
+      await store.enqueueOutbox({
+        ...base,
+        protocolVersion: PROTOCOL_PUBLIC,
+        payload: plaintext,
+      });
+      this.#emit({ type: "messages", conversationIds: [conversationId] });
+      this.poke();
+      return;
+    }
+
     const sealed = await sealForOutbox(conversationId, plaintext);
     const entry: OutboxEntry = sealed
       ? { ...base, ...sealed }
@@ -643,6 +679,7 @@ export class SyncEngine {
 
         await this.#flushOutbox(signal);
         await this.#drainInbox(signal);
+        await this.#publicChannelSync(signal);
         await this.#forwardArchiveSync(signal);
         await this.#historyWalk(signal);
 
@@ -1056,6 +1093,115 @@ export class SyncEngine {
 
     void this.#checkForUpdate();
     void this.#refreshAnnouncements();
+    void this.#refreshHubs();
+  }
+
+  /**
+   * The caller's hubs, riding the conversation-refresh tick like the
+   * announcements read -- hubs change as often as membership does, which is
+   * rarely. Replaced whole; while the `hubs` flag is off the server answers
+   * an empty list and this stores exactly that, so the UI needs no flag
+   * logic of its own to render nothing.
+   */
+  async #refreshHubs(): Promise<void> {
+    let fetched: HubSummary[];
+    try {
+      fetched = await fetchHubs();
+    } catch {
+      return;
+    }
+
+    const previous = (await store.getMeta<HubSummary[]>(META_HUBS)) ?? [];
+    // Cheap structural compare: the list is small and ordered, and a rename,
+    // role change, member count change or channel change must all count as
+    // changed -- id comparison alone would miss them.
+    if (JSON.stringify(previous) === JSON.stringify(fetched)) return;
+
+    await store.setMeta(META_HUBS, fetched);
+    this.#emit({ type: "hubs" });
+    broadcast({ type: "hubs" });
+  }
+
+  /**
+   * Delivery for public hub channels, which have no envelopes and no inbox
+   * -- protocol v4 rows are fetched by cursor from `/archive`, per channel.
+   *
+   * First contact fetches one newest-first page and sets the watermark; from
+   * then on each pass catches up forward (`after`) until a short page. The
+   * backlog behind the first page is deliberately never walked -- the
+   * hydration-depth decision in docs/prompts/hubs-plan.md -- so joining a
+   * hub with years of history costs one page, not a bulk download.
+   *
+   * One channel's trouble is logged and skipped, the #refreshEvents
+   * tolerance: the poll loop must not back off because one hub hiccuped.
+   */
+  async #publicChannelSync(signal: AbortSignal): Promise<void> {
+    const conversations = await store.listConversations();
+    const channels = conversations.filter(
+      (conversation) => conversation.hubVisibility === "public",
+    );
+    if (channels.length === 0) return;
+
+    const state =
+      (await store.getMeta<PublicChannelState>(META_PUBLIC_CHANNELS)) ?? {};
+
+    for (const channel of channels) {
+      if (signal.aborted) return;
+
+      try {
+        let latest = state[channel.id]?.latest ?? null;
+
+        if (latest === null) {
+          const page = await fetchArchive(
+            { conversationId: channel.id, limit: PUBLIC_FIRST_PAGE },
+            { signal },
+          );
+          const messages = await Promise.all(
+            page.entries.map((entry) => toStored(entry, "archive")),
+          );
+          await store.putMessages(messages);
+          // Newest-first, so the first entry is the watermark. Persisted
+          // after the messages are durable, like every cursor here.
+          state[channel.id] = {
+            latest: page.entries[0]?.messageId ?? null,
+          };
+          await store.setMeta(META_PUBLIC_CHANNELS, state);
+
+          if (messages.length > 0) {
+            this.#emit({ type: "messages", conversationIds: [channel.id] });
+            broadcast({ type: "messages", conversationIds: [channel.id] });
+          }
+          continue;
+        }
+
+        for (;;) {
+          if (signal.aborted) return;
+
+          const page = await fetchArchive(
+            { conversationId: channel.id, after: latest, limit: ARCHIVE_PAGE },
+            { signal },
+          );
+          if (page.entries.length === 0) break;
+
+          const messages = await Promise.all(
+            page.entries.map((entry) => toStored(entry, "archive")),
+          );
+          await store.putMessages(messages);
+          // Ascending mode: the last entry is the newest.
+          latest = page.entries[page.entries.length - 1]!.messageId;
+          state[channel.id] = { latest };
+          await store.setMeta(META_PUBLIC_CHANNELS, state);
+
+          this.#emit({ type: "messages", conversationIds: [channel.id] });
+          broadcast({ type: "messages", conversationIds: [channel.id] });
+
+          if (page.entries.length < ARCHIVE_PAGE) break;
+        }
+      } catch (error) {
+        if (isUnauthorized(error)) throw error;
+        console.warn("public channel sync failed", channel.id, error);
+      }
+    }
   }
 
   /**
@@ -1229,7 +1375,11 @@ export class SyncEngine {
   ): Promise<void> {
     for (const conversation of conversations) {
       if (signal.aborted) return;
-      if (conversation.kind !== "group") continue;
+      // Channels rename like groups do (the hub service writes the same
+      // notice row), so they get the same sweep.
+      if (conversation.kind !== "group" && conversation.kind !== "channel") {
+        continue;
+      }
       try {
         const page = await fetchEvents({ conversationId: conversation.id });
         await store.putEvents(

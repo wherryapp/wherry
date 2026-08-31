@@ -9,7 +9,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
-import type { Announcement } from "../api/client";
+import { fetchAccountSettings, type Announcement } from "../api/client";
+import type { HubSummary } from "../api/types";
 import {
   decodeContent,
   isMessageOp,
@@ -20,6 +21,7 @@ import {
   META_ANNOUNCEMENTS,
   META_ANNOUNCEMENTS_SEEN,
   META_DELIVERED_PREFIX,
+  META_HUBS,
   type OutboxEntry,
   type StoredConversation,
   type StoredEvent,
@@ -49,6 +51,8 @@ function useSyncEvents(handler: (event: SyncEvent) => void): void {
         ref.current({ type: "conversations" });
       } else if (message.type === "announcements") {
         ref.current({ type: "announcements" });
+      } else if (message.type === "hubs") {
+        ref.current({ type: "hubs" });
       } else if (message.type === "receipts") {
         ref.current({
           type: "receipts",
@@ -641,6 +645,58 @@ export function useDeliveredMarks(
   });
 
   return marks;
+}
+
+/**
+ * The caller's hubs, as the engine last stored them. Same shape as every
+ * hook here: a view over META_HUBS, re-read when the engine says so. Empty
+ * while the `hubs` feature flag is off (the server answers an empty list),
+ * so a surface gated on `hubs.length > 0` is dark exactly when the feature
+ * is -- but the *create* entry point cannot be inferred from an empty list
+ * (no hubs yet and no capability look identical), which is what useFeatures
+ * below is for.
+ */
+export function useHubs(): { hubs: HubSummary[]; reload: () => void } {
+  const [hubs, setHubs] = useState<HubSummary[]>([]);
+
+  const reload = useCallback(() => {
+    void store.getMeta<HubSummary[]>(META_HUBS).then((list) => {
+      setHubs(list ?? []);
+    });
+  }, []);
+
+  useEffect(reload, [reload]);
+  useSyncEvents((event) => {
+    if (event.type === "hubs") reload();
+  });
+
+  return { hubs, reload };
+}
+
+/**
+ * The server-side feature flags, fetched once per mount of the app shell.
+ * Everything defaults to off until the answer arrives -- a briefly hidden
+ * entry point beats a door that 404s. Settings keeps its own fresh fetch;
+ * this one is for surfaces that need a flag outside the Settings panel.
+ */
+export function useFeatures(): { hubs: boolean } {
+  const [features, setFeatures] = useState({ hubs: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchAccountSettings()
+      .then((settings) => {
+        if (!cancelled) setFeatures({ hubs: settings.features.hubs });
+      })
+      .catch(() => {
+        // Off is the safe answer; the next mount tries again.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return features;
 }
 
 /**

@@ -234,6 +234,7 @@ export type SyncBroadcast =
   | { type: "messages"; conversationIds: string[] }
   | { type: "conversations" }
   | { type: "announcements" }
+  | { type: "hubs" }
   | { type: "receipts"; conversationId: string }
   /** Ephemeral relays between tabs: what the leader's socket heard... */
   | { type: "typing"; conversationId: string; byUserId: string }
