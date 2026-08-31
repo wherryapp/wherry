@@ -1,15 +1,20 @@
 // The HTTP surface, one function per endpoint in docs/api.md.
 //
-// Every URL is a relative path under /api. There is no host, no port and no
-// environment variable, because the app is always same-origin with the API:
-// Vite proxies /api to :3000 in development, and in production Caddy serves the
-// built assets and reverse-proxies /api on the same hostname. Same origin both
-// times means CORS does not exist in this system, and there is no base URL that
-// can be wrong in a build.
+// Every URL is a relative path under /api. There is no host and no port,
+// because the app is always same-origin with the API: Vite proxies /api to
+// :3000 in development, and in production Caddy serves the built assets and
+// reverse-proxies /api on the same hostname. Same origin both times means
+// CORS does not exist in this system, and there is no base URL that can be
+// wrong in a build.
+//
+// One exception since Phase 5: the desktop (Tauri) build cannot be
+// same-origin with anything, so base.ts resolves the prefix -- still "/api"
+// everywhere except that build. See its header for the whole story.
 //
 // The prefix is what lets one Caddy rule separate the API from the client's
 // static files. See server.ts, where it is applied.
 
+import { API_BASE, HEALTH_URL } from "./base";
 import { currentToken } from "./session";
 import type {
   AccountKeysResponse,
@@ -49,7 +54,7 @@ import type {
  * moving it is a one-line change on both sides -- this and API_PREFIX in the
  * server's server.ts.
  */
-const API = "/api";
+const API = API_BASE;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -249,7 +254,7 @@ export function fetchHealth(): Promise<{
   version?: string;
   time: string;
 }> {
-  return request("/health", { anonymous: true });
+  return request(HEALTH_URL, { anonymous: true });
 }
 
 export function me(): Promise<{

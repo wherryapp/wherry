@@ -38,6 +38,7 @@ import {
   downloadAttachment,
   type Announcement,
 } from "../api/client";
+import { socketUrl } from "../api/base";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { currentToken, loadSession } from "../api/session";
 import { decodeContent, isMessageOp } from "../api/payload";
@@ -627,6 +628,10 @@ export class SyncEngine {
     // leadership change, a fatal 401, a thrown bug -- runs the finally and
     // closes it. The next leader's loop opens its own.
     this.#socket = new SocketManager({
+      // Resolved here rather than by socket.ts's own default: the desktop
+      // build's socket lives on the API origin, not the page's -- base.ts
+      // owns that distinction.
+      url: socketUrl(),
       getToken: currentToken,
       notify: () => this.poke(),
       onFrame: (frame) => void this.#onSignalFrame(frame),

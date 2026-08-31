@@ -37,6 +37,7 @@ import type {
   HubRole,
   HubSearchResult,
 } from "../api/types";
+import { webOrigin } from "../api/base";
 import { sync } from "../sync/engine";
 import { mlsEnabled, mlsSync } from "../sync/mls";
 import { useConversations } from "./hooks";
@@ -596,7 +597,10 @@ export function HubDetails({
   }
 
   function inviteUrl(invite: HubInvite): string {
-    return `${window.location.origin}/join/${invite.token}`;
+    // webOrigin, not window.location.origin: an invite link is handed to
+    // someone else, and the desktop build's own origin (tauri://localhost)
+    // means nothing outside its webview.
+    return `${webOrigin()}/join/${invite.token}`;
   }
 
   async function copyInvite(invite: HubInvite): Promise<void> {
