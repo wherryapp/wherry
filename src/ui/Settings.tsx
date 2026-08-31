@@ -21,6 +21,7 @@ import {
 } from "../api/client";
 import type { StoredSession } from "../api/session";
 import { changePasswordWithRewrap } from "../crypto/account";
+import { APP_VERSION } from "../sync/engine";
 import {
   availability as pushAvailability,
   disable as disablePush,
@@ -393,6 +394,16 @@ export function Settings({
             Sign out
           </Button>
         </div>
+
+        {/* Below sign-out, not beside it -- this is trivia, not a control.
+            Absent entirely before tagging starts (APP_VERSION is "unknown"
+            in dev and in any build the deploy pipeline did not produce),
+            same convention as the tip jar section above hiding itself. */}
+        {APP_VERSION !== "unknown" && (
+          <p className="px-4 pb-4 text-center text-xs text-neutral-500 dark:text-neutral-400">
+            Version {APP_VERSION}
+          </p>
+        )}
       </div>
     </Panel>
   );

@@ -28,9 +28,15 @@ COPY src ./src
 # either exists. VITE_TIP_URL defaults to empty, which is what keeps the
 # tip-jar section out of the rendered Settings page entirely when an
 # operator has not configured one.
+#
+# GIT_VERSION/VITE_APP_VERSION is the same mechanism a second time, for the
+# tag-derived version (sync/engine.ts's APP_VERSION) -- "unknown" by default,
+# same as GIT_SHA, for exactly the same dev/plain-build cases.
 ARG GIT_SHA=unknown
+ARG GIT_VERSION=unknown
 ARG VITE_TIP_URL=
 ENV VITE_COMMIT_SHA=$GIT_SHA
+ENV VITE_APP_VERSION=$GIT_VERSION
 ENV VITE_TIP_URL=$VITE_TIP_URL
 RUN pnpm build
 

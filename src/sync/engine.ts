@@ -109,6 +109,14 @@ const TYPING_SEND_MS = 3_000;
 // server's build against.
 const BUILD_COMMIT: string = import.meta.env["VITE_COMMIT_SHA"] ?? "unknown";
 
+// Same mechanism, for the tag-derived version (docs/roadmap.md's "Version
+// numbers: soon, not yet") -- "unknown" until tagging starts, same as
+// BUILD_COMMIT is in dev. Exported, unlike BUILD_COMMIT: this module only
+// ever *compares* the commit, but Settings' footer displays the version
+// directly, so it needs the value itself rather than a derived boolean.
+export const APP_VERSION: string =
+  import.meta.env["VITE_APP_VERSION"] ?? "unknown";
+
 // The forward archive sync runs while any stored message is still
 // undecrypted -- a state that resolves within a sweep or two, or not at all
 // (a locked account key). Either way, once per interval is plenty.
@@ -160,6 +168,15 @@ export type SyncStatus = {
    * other field here.
    */
   updateAvailable: boolean;
+  /**
+   * The server's own tag-derived version, from the same `/health` check
+   * that sets `updateAvailable` -- only ever populated alongside it, and
+   * null whenever `/health` has nothing meaningful to report (no tag yet,
+   * or a build `/health` itself does not distinguish from one). Lets
+   * UpdateBanner name the version when it can, rather than only ever
+   * saying "a new version" -- see `#checkForUpdate`.
+   */
+  updateVersion: string | null;
 };
 
 export type SyncEvent =
@@ -343,6 +360,7 @@ export class SyncEngine {
     lastSyncAt: null,
     error: null,
     updateAvailable: false,
+    updateVersion: null,
   };
   #backoff = new Backoff();
   #wake: (() => void) | null = null;
@@ -1156,6 +1174,7 @@ export class SyncEngine {
     if (BUILD_COMMIT === "unknown") return;
 
     let stale: boolean;
+    let version: string | null;
     try {
       const health = await fetchHealth();
       // "unknown" on the server side means it was not built by the same
@@ -1163,14 +1182,24 @@ export class SyncEngine {
       // compare, so treat that the same as no mismatch rather than a false
       // positive that can never be resolved by reloading.
       stale = health.commit !== "unknown" && health.commit !== BUILD_COMMIT;
+      // Only kept when it is actually informative -- there is no tag to
+      // lag behind before the mismatch itself exists, so a version is
+      // never attached to a banner that would not otherwise appear.
+      version =
+        stale && health.version && health.version !== "unknown"
+          ? health.version
+          : null;
     } catch {
       // Best-effort. A failed health check must not affect anything else
       // this loop does, and must not flip the banner off on a blip.
       return;
     }
 
-    if (stale !== this.#status.updateAvailable) {
-      this.#setStatus({ updateAvailable: stale });
+    if (
+      stale !== this.#status.updateAvailable ||
+      version !== this.#status.updateVersion
+    ) {
+      this.#setStatus({ updateAvailable: stale, updateVersion: version });
     }
   }
 

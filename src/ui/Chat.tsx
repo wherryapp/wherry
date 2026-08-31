@@ -290,15 +290,24 @@ function StatusLine() {
  * running -- see sync/engine.ts's #checkForUpdate. Never auto-reloads: a
  * deploy landing mid-compose must not lose a draft on its own, so this only
  * ever offers the reload, same as the tab would ask a person to do by hand.
+ *
+ * Names the server's version when `/health` reported one worth naming
+ * (`status.updateVersion`, set only alongside `updateAvailable` -- see the
+ * type's comment in sync/engine.ts); otherwise falls back to today's
+ * wording, which is every build before tagging starts.
  */
 function UpdateBanner() {
   const status = useSyncStatus();
 
   if (!status.updateAvailable) return null;
 
+  const label = status.updateVersion
+    ? `Version ${status.updateVersion} is available.`
+    : "A new version is available.";
+
   return (
     <div className="flex items-center justify-between gap-2 border-b border-accent-100 bg-accent-50 px-4 py-1.5 text-xs text-accent-900 motion-safe:animate-fade-in dark:border-accent-900 dark:bg-accent-950 dark:text-accent-100">
-      <span>A new version is available.</span>
+      <span>{label}</span>
       <button
         onClick={() => window.location.reload()}
         className="shrink-0 font-medium underline"

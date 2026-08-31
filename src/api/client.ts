@@ -228,12 +228,15 @@ export function logout(): Promise<void> {
  * prefix or the client's SPA fallback. `commit` is what the sync engine
  * compares against this build's own `VITE_COMMIT_SHA` to prompt a reload;
  * see `docs/history-key-runbook.md` for why an open tab does not pick up a
- * deploy on its own otherwise.
+ * deploy on its own otherwise. `version` is the tag-derived counterpart
+ * (docs/roadmap.md's "Version numbers: soon, not yet") -- optional because
+ * older deployed servers (or a hand-rolled health check) may not send it.
  */
 export function fetchHealth(): Promise<{
   status: string;
   database: string;
   commit: string;
+  version?: string;
   time: string;
 }> {
   return request("/health", { anonymous: true });
