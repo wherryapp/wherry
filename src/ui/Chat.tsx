@@ -1303,6 +1303,7 @@ function HubsSection({
   canCreate,
   unread,
   mentions,
+  muted,
   selected,
   onSelect,
   onOpenHub,
@@ -1313,6 +1314,8 @@ function HubsSection({
   unread: Map<string, number>;
   /** Channels with an unread mention of this user -- the stronger badge. */
   mentions: Set<string>;
+  /** Channel conversation ids the user has muted. */
+  muted: Set<string>;
   selected: string | null;
   onSelect: (conversationId: string) => void;
   onOpenHub: (hubId: string) => void;
@@ -1368,6 +1371,9 @@ function HubsSection({
                       <LockIcon className="ml-1 inline h-3 w-3 align-[-1px] text-neutral-400 dark:text-neutral-500" />
                     )}
                   </span>
+                  {muted.has(channel.id) && (
+                    <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                  )}
                   {mentions.has(channel.id) && (
                     <span
                       aria-label="Mentions you"
@@ -1411,6 +1417,9 @@ function ConversationList({
   const latest = useLatestMessages(conversations);
   const unread = useUnread(conversations, session.user.id);
   const mentions = useMentions(conversations, session.user.id);
+  const muted = new Set(
+    conversations.filter((c) => c.muted).map((c) => c.id),
+  );
   const directsAndGroups = conversations.filter(
     (conversation) => conversation.kind !== "channel",
   );
@@ -1426,6 +1435,7 @@ function ConversationList({
         canCreate={features.hubs}
         unread={unread}
         mentions={mentions}
+        muted={muted}
         selected={selected}
         onSelect={onSelect}
         onOpenHub={onOpenHub}
