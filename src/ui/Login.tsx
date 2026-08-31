@@ -21,7 +21,7 @@ import {
   unlockAccountKey,
 } from "../crypto/account";
 import { KeysError } from "../crypto/keys";
-import { AuthShell, Button, ErrorText, Input, Note } from "./kit";
+import { AuthShell, Button, ErrorText, Field, Input, Note } from "./kit";
 
 /**
  * What stands between a successful auth call and entering the app.
@@ -206,10 +206,7 @@ export function Login({
         </div>
 
         {mode === "forgot" && (
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              Email
-            </span>
+          <Field label="Email">
             <Input
               type="email"
               value={email}
@@ -220,14 +217,11 @@ export function Login({
             <span className="block text-xs text-neutral-500 dark:text-neutral-400">
               Only a confirmed address can receive a reset link.
             </span>
-          </label>
+          </Field>
         )}
 
         {mode !== "forgot" && (
-        <label className="block space-y-1">
-          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            {mode === "login" ? "Username or email" : "Username"}
-          </span>
+        <Field label={mode === "login" ? "Username or email" : "Username"}>
           <Input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -244,28 +238,22 @@ export function Login({
                 }
               : {})}
           />
-        </label>
+        </Field>
         )}
 
         {mode === "register" && (
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              Display name
-            </span>
+          <Field label="Display name">
             <Input
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               required
               maxLength={100}
             />
-          </label>
+          </Field>
         )}
 
         {mode === "register" && (
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              Email
-            </span>
+          <Field label="Email">
             <Input
               type="email"
               value={email}
@@ -278,14 +266,11 @@ export function Login({
               You will need to confirm this before you can send or receive
               anything. It is also what lets you reset a forgotten password.
             </span>
-          </label>
+          </Field>
         )}
 
         {mode !== "forgot" && (
-        <label className="block space-y-1">
-          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Password
-          </span>
+        <Field label="Password">
           <Input
             type="password"
             value={password}
@@ -297,7 +282,7 @@ export function Login({
           <span className="text-xs text-neutral-500 dark:text-neutral-400">
             At least 12 characters.
           </span>
-        </label>
+        </Field>
         )}
 
         {sent && (
@@ -494,10 +479,7 @@ function RecoveryPrompt({
           </p>
         </div>
 
-        <label className="block space-y-1">
-          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Recovery code
-          </span>
+        <Field label="Recovery code">
           <Input
             value={code}
             onChange={(e) => setCode(e.target.value)}
@@ -507,7 +489,7 @@ function RecoveryPrompt({
             required
             className="font-mono"
           />
-        </label>
+        </Field>
 
         {error && <ErrorText boxed>{error}</ErrorText>}
 

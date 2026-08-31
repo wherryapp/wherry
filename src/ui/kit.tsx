@@ -397,6 +397,31 @@ export function Input({
 }
 
 /**
+ * A labelled form field: the label span above whatever goes below it.
+ * Repeated seven times across Login and VerifyGate, each a `<label>`
+ * wrapping the same span and an `Input` -- this pulls out only the label,
+ * not what follows it, because what follows (a footnote span, or nothing)
+ * differs at nearly every call site, and forcing that into a prop would
+ * just move the duplication into a `note` union instead of removing it.
+ */
+export function Field({
+  label,
+  children,
+}: {
+  label: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+/**
  * Inline problem text, next to the thing that failed. `boxed` swaps that
  * for the red banner treatment three auth screens each built by hand for a
  * form-level failure (as opposed to a per-field one) -- same slot, same

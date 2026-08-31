@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, me, resendVerification, setEmail } from "../api/client";
 import { markEmailVerified } from "../api/session";
 import type { StoredSession } from "../api/session";
-import { AuthShell, Button, ErrorText, Input, Note } from "./kit";
+import { AuthShell, Button, ErrorText, Field, Input, Note } from "./kit";
 
 // Frequent enough that finishing verification in another tab feels immediate
 // without switching back, cheap enough that it costs nothing sitting idle --
@@ -147,10 +147,7 @@ export function VerifyGate({
         )}
 
         <form onSubmit={submitEmail} className="space-y-2 border-t border-neutral-200 pt-4 dark:border-neutral-800">
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              {currentEmail ? "Use a different address" : "Email"}
-            </span>
+          <Field label={currentEmail ? "Use a different address" : "Email"}>
             <Input
               type="email"
               value={email}
@@ -159,7 +156,7 @@ export function VerifyGate({
               placeholder="you@example.com"
               required
             />
-          </label>
+          </Field>
           <Button
             type="submit"
             variant="secondary"
