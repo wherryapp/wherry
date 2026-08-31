@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
-import { fetchAccountSettings, type Announcement } from "../api/client";
+import { ApiError, fetchAccountSettings, type Announcement } from "../api/client";
 import type { HubSummary } from "../api/types";
 import {
   decodeContent,
@@ -723,25 +723,53 @@ export function useHubs(): { hubs: HubSummary[]; reload: () => void } {
 }
 
 /**
- * The server-side feature flags, fetched once per mount of the app shell.
- * Everything defaults to off until the answer arrives -- a briefly hidden
- * entry point beats a door that 404s. Settings keeps its own fresh fetch;
- * this one is for surfaces that need a flag outside the Settings panel.
+ * The server-side feature flags. Everything defaults to off until the
+ * answer arrives -- a briefly hidden entry point beats a door that 404s.
+ * Settings keeps its own fresh fetch; this one is for surfaces that need a
+ * flag outside the Settings panel.
+ *
+ * Retried until it succeeds, rather than the single attempt this started
+ * as. "Off is the safe answer, the next mount tries again" was true only
+ * if something remounts: when this one call lost to a 429 the New hub
+ * button simply never appeared, and the reported way to get it back was to
+ * open the New conversation form and cancel it -- a remount, by accident.
+ * A transient failure must not disable a feature for the rest of the
+ * session.
  */
 export function useFeatures(): { hubs: boolean } {
   const [features, setFeatures] = useState({ hubs: false });
 
   useEffect(() => {
     let cancelled = false;
-    void fetchAccountSettings()
-      .then((settings) => {
-        if (!cancelled) setFeatures({ hubs: settings.features.hubs });
-      })
-      .catch(() => {
-        // Off is the safe answer; the next mount tries again.
-      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+
+    const load = (): void => {
+      void fetchAccountSettings()
+        .then((settings) => {
+          if (cancelled) return;
+          setFeatures({ hubs: settings.features.hubs });
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          attempt += 1;
+          // Honour the server's own Retry-After when it sent one, so a
+          // rate-limited client waits exactly as told rather than adding
+          // to the pile. Otherwise a short backoff, capped -- this is one
+          // small read, and the flag it carries only gates a button.
+          const retryAfterMs =
+            error instanceof ApiError && error.retryAfterSeconds
+              ? error.retryAfterSeconds * 1000
+              : Math.min(2_000 * 2 ** (attempt - 1), 30_000);
+          timer = setTimeout(load, retryAfterMs);
+        });
+    };
+
+    load();
+
     return () => {
       cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
     };
   }, []);
 

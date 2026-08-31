@@ -103,6 +103,14 @@ export class MlsSync {
    * engine.ts's #delayAfter already applies to the outer poll loop.
    */
   #reconcileCooldownUntil = new Map<string, number>();
+  /**
+   * conversationId -> when this device first saw it with no group in it.
+   * Feeds planJoin's creation grace: deferring to the designated creator is
+   * right until it is clear nobody is coming. In memory deliberately -- a
+   * restart restarting the grace costs one more minute in a case that is
+   * already rare, and it is not worth a store write on every sweep.
+   */
+  #missingGroupSince = new Map<string, number>();
 
   /** Forces the next tick to run the full sweep. */
   invalidate(): void {
@@ -260,6 +268,10 @@ export class MlsSync {
     // No local state: join what exists, make it if it does not, or wait --
     // see planJoin for which and why.
     if (localEpoch === null) {
+      const now = Date.now();
+      const since = this.#missingGroupSince.get(conversationId) ?? now;
+      this.#missingGroupSince.set(conversationId, since);
+
       const plan = planJoin({
         serverEpoch: recipients.epoch,
         groupInfoEpoch: recipients.groupInfoEpoch,
@@ -267,6 +279,7 @@ export class MlsSync {
         memberDeviceIds: recipients.members.flatMap((member) =>
           member.devices.map((device) => device.deviceId),
         ),
+        msWaitingForCreation: now - since,
       });
 
       if (plan.action === "wait") return;
@@ -290,6 +303,10 @@ export class MlsSync {
         await this.#publishGroupInfo(conversationId);
         publishedThisPass = true;
       }
+
+      // In the group now, however we got here: the grace has nothing left
+      // to time.
+      this.#missingGroupSince.delete(conversationId);
     }
 
     // Catch up on commits before comparing rosters -- the roster of a stale
