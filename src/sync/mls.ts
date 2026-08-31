@@ -15,11 +15,13 @@ import {
   claimKeyPackages,
   countKeyPackages,
   fetchCommits,
+  fetchGroupInfo,
   fetchRecipients,
   fetchWelcomes,
   postCommit,
   postHistoryKeys,
   publishKeyPackages,
+  putGroupInfo,
   ApiError,
 } from "../api/client";
 import type { RecipientsResponse } from "../api/types";
@@ -249,18 +251,46 @@ export class MlsSync {
 
     let localEpoch = await handshake.epoch(conversationId);
 
+    // Tracks whether this sweep already published GroupInfo (after a
+    // commit, a join, or a creation), so the staleness self-heal at the
+    // bottom does not publish a second copy on top of it.
+    let publishedThisPass = false;
+
     // Nobody has made the group yet, per the server. One device must, and
     // exactly one: the member device with the smallest id -- a total order
     // every member computes identically from the same roster. Everyone
     // else waits for a welcome.
     if (localEpoch === null) {
-      if (recipients.epoch > 0) return; // group exists; wait to be added
-      const deviceIds = recipients.members
-        .flatMap((member) => member.devices.map((device) => device.deviceId))
-        .sort();
-      if (deviceIds[0] !== me.deviceId) return;
-      await handshake.createGroup(conversationId, me);
-      localEpoch = 0;
+      if (recipients.epoch > 0) {
+        // The group exists and this device is not in it. The old answer was
+        // to wait for some member device's sweep to add us -- a wait with
+        // no upper bound when every other device is asleep. With a current
+        // GroupInfo published, this device joins by external commit
+        // instead; without one (legacy committers, or nobody published
+        // yet), the wait-for-welcome fallback still stands.
+        if (recipients.groupInfoEpoch !== recipients.epoch) return;
+        const joined = await this.#tryExternalJoin(
+          conversationId,
+          me,
+          recipients.epoch,
+        );
+        if (joined === null) return;
+        localEpoch = joined;
+        publishedThisPass = true;
+      } else {
+        const deviceIds = recipients.members
+          .flatMap((member) => member.devices.map((device) => device.deviceId))
+          .sort();
+        if (deviceIds[0] !== me.deviceId) return;
+        await handshake.createGroup(conversationId, me);
+        localEpoch = 0;
+        // Published at epoch 0, deliberately: it lets every other member
+        // device -- ours and theirs -- join this brand-new group by
+        // external commit instead of waiting for this device's next sweep
+        // to add them one by one.
+        await this.#publishGroupInfo(conversationId);
+        publishedThisPass = true;
+      }
     }
 
     // Catch up on commits before comparing rosters -- the roster of a stale
@@ -298,7 +328,7 @@ export class MlsSync {
       // Devices that answered null have no packages right now; the next
       // sweep tries again after they replenish.
       if (usable.length > 0) {
-        await handshake.commitAdd(
+        const added = await handshake.commitAdd(
           conversationId,
           usable.map((entry) => decodeBase64(entry.keyPackage)),
           async ({ epoch, commit, welcome }) => {
@@ -315,11 +345,15 @@ export class MlsSync {
             });
           },
         );
+        if (added !== null) {
+          await this.#publishGroupInfo(conversationId);
+          publishedThisPass = true;
+        }
       }
     }
 
     if (toRemove.length > 0) {
-      await handshake.commitRemove(
+      const removed = await handshake.commitRemove(
         conversationId,
         toRemove.map((entry) => entry.leafIndex),
         async ({ epoch, commit }) =>
@@ -329,6 +363,23 @@ export class MlsSync {
             welcomes: [],
           }),
       );
+      if (removed !== null) {
+        await this.#publishGroupInfo(conversationId);
+        publishedThisPass = true;
+      }
+    }
+
+    // The staleness self-heal: this device holds the current epoch's state
+    // and the server's GroupInfo is behind it (or absent) -- a commit made
+    // by a build that predates publishing, or a conversation from before
+    // the feature. One publish from any current member closes the gap and
+    // quenches this branch for everybody.
+    if (
+      !publishedThisPass &&
+      localEpoch === recipients.epoch &&
+      recipients.groupInfoEpoch !== recipients.epoch
+    ) {
+      await this.#publishGroupInfo(conversationId);
     }
 
     // The history key, last: it rotates on USER membership change -- an
@@ -429,6 +480,66 @@ export class MlsSync {
           wrappedKey: encodeBase64(entry.wrappedKey),
         })),
       });
+    }
+  }
+
+  /**
+   * The external join: fetch the published GroupInfo, build an external
+   * commit on it locally, post it through the ordinary commit path. Returns
+   * the epoch joined at, or null when this sweep cannot join -- no current
+   * GroupInfo after all (it moved between the recipients read and this
+   * fetch), or the epoch race was lost. Both resolve on a later sweep, by
+   * this path again or by a welcome, whichever comes first.
+   */
+  async #tryExternalJoin(
+    conversationId: string,
+    me: Identity,
+    expectedEpoch: number,
+  ): Promise<number | null> {
+    const handshake = e2e.handshake!;
+
+    const { groupInfo } = await fetchGroupInfo(conversationId);
+    // Stale means the commit this join would build can only lose the epoch
+    // race -- don't bother building it.
+    if (!groupInfo || groupInfo.epoch !== expectedEpoch) return null;
+
+    const joined = await handshake.joinExternal(
+      conversationId,
+      me,
+      decodeBase64(groupInfo.payload),
+      async ({ epoch, commit }) =>
+        await this.#deliverCommit(conversationId, {
+          epoch,
+          payload: encodeBase64(commit),
+          welcomes: [],
+        }),
+    );
+    if (joined === null) return null;
+
+    // The joiner holds the newest state, so the next joiner's bootstrap is
+    // its to publish.
+    await this.#publishGroupInfo(conversationId);
+    return joined;
+  }
+
+  /**
+   * Publishes the current state's GroupInfo -- the external-join bootstrap.
+   * Best-effort by design: a failed publish costs nothing but the next new
+   * device's fast path, the sweep it rides on must not back off over it,
+   * and every later commit tries again.
+   */
+  async #publishGroupInfo(conversationId: string): Promise<void> {
+    const handshake = e2e.handshake!;
+    try {
+      const exported = await handshake.exportGroupInfo(conversationId);
+      if (!exported) return;
+      await putGroupInfo({
+        conversationId,
+        epoch: exported.epoch,
+        payload: encodeBase64(exported.groupInfo),
+      });
+    } catch (error) {
+      console.warn("group info publish failed", conversationId, error);
     }
   }
 

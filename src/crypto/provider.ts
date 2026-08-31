@@ -209,6 +209,29 @@ export interface HandshakeOps {
   ): Promise<{ epoch: number }>;
 
   /**
+   * The current state as a wire-encoded GroupInfo (external pub + ratchet
+   * tree riding inside), for the server's external-join bootstrap. Null when
+   * this device holds no state for the conversation.
+   */
+  exportGroupInfo(
+    conversationId: string,
+  ): Promise<{ epoch: number; groupInfo: Uint8Array } | null>;
+
+  /**
+   * Join a group by external commit, from a wire-encoded GroupInfo -- the
+   * path that needs no other device awake. Same delivery contract as
+   * commitAdd: local state persists only if `deliver` resolves true.
+   * Returns the epoch joined at, or null when delivery declined (the
+   * GroupInfo was stale, or somebody's commit won the epoch race).
+   */
+  joinExternal(
+    conversationId: string,
+    me: { userId: string; deviceId: string },
+    groupInfo: Uint8Array,
+    deliver: (out: { epoch: number; commit: Uint8Array }) => Promise<boolean>,
+  ): Promise<number | null>;
+
+  /**
    * Discard local group state. For the creation race's loser: a device that
    * made an epoch-0 group nobody else follows discards it and waits for a
    * welcome into the real one.

@@ -47,6 +47,7 @@ import {
   createApplicationMessage,
   createCommit,
   createGroup as mlsCreateGroup,
+  createGroupInfoWithExternalPubAndRatchetTree,
   decodeGroupState,
   decodeMlsMessage,
   defaultCapabilities,
@@ -58,6 +59,7 @@ import {
   getCiphersuiteFromName,
   getCiphersuiteImpl,
   joinGroup,
+  joinGroupExternal,
   processMessage,
   type ClientState,
   type Credential,
@@ -65,6 +67,7 @@ import {
   type Proposal,
 } from "ts-mls";
 import { defaultClientConfig } from "ts-mls/clientConfig.js";
+import { ratchetTreeFromExtension } from "ts-mls/groupInfo.js";
 import {
   deleteGroup,
   deleteKeyPackage,
@@ -400,8 +403,23 @@ class MlsHandshake implements HandshakeOps {
         throw new E2EError("NOT_IN_GROUP", "No group state to apply a commit to");
       }
 
-      const message = decodeWire(commit, "mls_private_message");
-      if (message.wireformat !== "mls_private_message") throw new Error("unreachable");
+      // Two legitimate shapes: a member's commit is a private message, and
+      // an external commit -- a device joining by itself off the published
+      // GroupInfo -- is a public one, per RFC 9420. Same feed, same apply.
+      const decoded = decodeMlsMessage(commit, 0);
+      if (!decoded) {
+        throw new E2EError("EPOCH_UNAVAILABLE", "Payload is not an MLS message");
+      }
+      const [message] = decoded;
+      if (
+        message.wireformat !== "mls_private_message" &&
+        message.wireformat !== "mls_public_message"
+      ) {
+        throw new E2EError(
+          "EPOCH_UNAVAILABLE",
+          `Expected a commit message, got ${message.wireformat}`,
+        );
+      }
 
       let result;
       try {
@@ -483,6 +501,122 @@ class MlsHandshake implements HandshakeOps {
         "NOT_IN_GROUP",
         "No stored key package matches this welcome",
       );
+    });
+  }
+
+  async exportGroupInfo(
+    conversationId: string,
+  ): Promise<{ epoch: number; groupInfo: Uint8Array } | null> {
+    // Read-only -- deriving and signing a GroupInfo advances nothing -- but
+    // still under the lock so the snapshot is of a settled state, not one
+    // mid-commit in another tab.
+    return await withGroupLock(conversationId, async () => {
+      const suite = await cs();
+      const state = await loadState(conversationId);
+      if (!state) return null;
+
+      // The ratchet tree rides inside as an extension, the same decision
+      // commitAdd makes for welcomes: a joiner needs nothing out of band.
+      const groupInfo = await createGroupInfoWithExternalPubAndRatchetTree(
+        state,
+        [],
+        suite,
+      );
+
+      return {
+        epoch: Number(state.groupContext.epoch),
+        groupInfo: encodeMlsMessage({
+          version: "mls10",
+          wireformat: "mls_group_info",
+          groupInfo,
+        }),
+      };
+    });
+  }
+
+  async joinExternal(
+    conversationId: string,
+    me: { userId: string; deviceId: string },
+    groupInfoWire: Uint8Array,
+    deliver: (out: { epoch: number; commit: Uint8Array }) => Promise<boolean>,
+  ): Promise<number | null> {
+    return await withGroupLock(conversationId, async () => {
+      // A welcome that arrived while this call waited on the lock has
+      // already given us the group; joining again would fork it.
+      const existing = await loadGroup(conversationId);
+      if (existing) return existing.epoch;
+
+      const suite = await cs();
+      const identity = await loadMlsIdentity();
+      if (!identity) {
+        throw new Error("ensureIdentity must run before joinExternal");
+      }
+
+      const message = decodeWire(groupInfoWire, "mls_group_info");
+      if (message.wireformat !== "mls_group_info") throw new Error("unreachable");
+
+      // Resync when a leaf signed by this device's identity key is already
+      // in the tree -- the group state behind it is gone but the identity
+      // survived, and RFC 9420's resync form removes the dead leaf in the
+      // same commit that adds the live one. The test MUST be the signature
+      // key, not the credential: ts-mls locates the leaf to remove by
+      // comparing our new package's signature key against each leaf, so a
+      // resync flagged on any weaker match (a credential naming this
+      // device, say, left by an identity that no longer exists) would send
+      // it hunting for a leaf it can never find. A dead leaf under a lost
+      // identity is left alone -- a plain join adds our live leaf beside
+      // it, and device management removes the stale one the day the old
+      // device id is revoked.
+      const tree = ratchetTreeFromExtension(message.groupInfo);
+      if (!tree) {
+        throw new E2EError(
+          "EPOCH_UNAVAILABLE",
+          "GroupInfo carries no ratchet tree",
+        );
+      }
+      const resync = tree.some((node) => {
+        if (!node || node.nodeType !== "leaf") return false;
+        const leafKey = node.leaf.signaturePublicKey;
+        if (leafKey.length !== identity.publicKey.length) return false;
+        return leafKey.every((byte, i) => byte === identity.publicKey[i]);
+      });
+
+      // A fresh package generated and consumed on the spot, exactly like
+      // createGroup's own leaf -- never published, so no welcome can ever
+      // reference it.
+      const pkg = await generateKeyPackageWithKey(
+        credentialFor(me),
+        defaultCapabilities(),
+        defaultLifetime,
+        [],
+        { signKey: identity.privateKey, publicKey: identity.publicKey },
+        suite,
+      );
+
+      const result = await joinGroupExternal(
+        message.groupInfo,
+        pkg.publicPackage,
+        pkg.privatePackage,
+        resync,
+        suite,
+      );
+
+      const epoch = Number(result.newState.groupContext.epoch);
+      const accepted = await deliver({
+        epoch,
+        commit: encodeMlsMessage({
+          version: "mls10",
+          wireformat: "mls_public_message",
+          publicMessage: result.publicMessage,
+        }),
+      });
+
+      // Only now, the discipline every commit here keeps: a rejected join
+      // (stale GroupInfo, or somebody's commit won the epoch) must leave
+      // this device exactly where it was -- outside.
+      if (!accepted) return null;
+      await persistState(conversationId, result.newState);
+      return epoch;
     });
   }
 

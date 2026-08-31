@@ -76,6 +76,13 @@ export type PasswordWrapWire = {
 /** GET /conversations/:id/recipients — the roster authority. */
 export type RecipientsResponse = {
   epoch: number;
+  /**
+   * The epoch of the server's stored GroupInfo, or null when none has been
+   * published. Current (=== epoch) means an external join is possible;
+   * anything else means wait for a welcome, and a member holding current
+   * state should re-publish.
+   */
+  groupInfoEpoch: number | null;
   /** The current history-key generation; 0 when none has been minted yet. */
   historyGeneration: number;
   /** True when this client should rotate: no generation exists, or user

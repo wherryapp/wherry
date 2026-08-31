@@ -566,6 +566,33 @@ export function fetchRecipients(
   );
 }
 
+/**
+ * The stored GroupInfo for an external join, or null when nobody has
+ * published one. Compare its epoch against what `recipients` reports before
+ * building a join on it -- a stale one can only lose the epoch race.
+ */
+export function fetchGroupInfo(
+  conversationId: string,
+): Promise<{ groupInfo: { epoch: number; payload: string } | null }> {
+  return request(`${API}/conversations/${conversationId}/group-info`);
+}
+
+/**
+ * Publish the current epoch's GroupInfo. Committers call this after every
+ * accepted commit; `stored: false` means a newer epoch's copy was already
+ * there, which is fine -- the point is that SOMEBODY current published.
+ */
+export function putGroupInfo(input: {
+  conversationId: string;
+  epoch: number;
+  payload: string;
+}): Promise<{ stored: boolean }> {
+  return request(`${API}/conversations/${input.conversationId}/group-info`, {
+    method: "PUT",
+    body: { epoch: input.epoch, payload: input.payload },
+  });
+}
+
 /** Post a commit and its welcomes. 409 EPOCH_CONFLICT means rebase and retry. */
 export function postCommit(input: {
   conversationId: string;
