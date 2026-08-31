@@ -20,7 +20,21 @@ type Status =
   /** A network problem rather than a verdict. Worth retrying, unlike the above. */
   | { state: "failed" };
 
-export function Attachment({ attachment }: { attachment: AttachmentRef }) {
+export function Attachment({
+  attachment,
+  onOpen,
+}: {
+  attachment: AttachmentRef;
+  /**
+   * Makes the loaded image tappable -- the timeline passes this to open the
+   * full-screen viewer. A *button* specifically, and that is the whole
+   * integration: Bubble's press handler already ignores any tap landing
+   * inside one (the same seam that lets the quote block coexist with the
+   * action bar), so a photo tap opens the photo instead of also toggling
+   * reactions. Omitted, the markup is exactly what it always was.
+   */
+  onOpen?: (() => void) | undefined;
+}) {
   const [status, setStatus] = useState<Status>({ state: "loading" });
 
   useEffect(() => {
@@ -94,13 +108,24 @@ export function Attachment({ attachment }: { attachment: AttachmentRef }) {
       : 1;
 
   if (status.state === "ok") {
-    return (
+    const image = (
       <img
         src={status.url}
         alt=""
         className="max-h-80 w-full rounded-lg object-cover"
         style={{ aspectRatio: String(ratio) }}
       />
+    );
+    if (!onOpen) return image;
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label="View photo"
+        className="block w-full"
+      >
+        {image}
+      </button>
     );
   }
 

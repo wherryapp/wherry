@@ -12,7 +12,12 @@ import {
   type ReactNode,
 } from "react";
 import { Attachment } from "./Attachment";
-import { encodeOp, type RenderableContent } from "../api/payload";
+import { PhotoViewer } from "./PhotoViewer";
+import {
+  encodeOp,
+  type AttachmentRef,
+  type RenderableContent,
+} from "../api/payload";
 import { deleteHubMessage, pinHubMessage } from "../api/client";
 import { store } from "../store";
 import { sync } from "../sync/engine";
@@ -225,6 +230,7 @@ function Bubble({
   quote,
   chips,
   mentionNames,
+  onOpenAttachment,
 }: {
   mine: boolean;
   /**
@@ -304,6 +310,9 @@ function Bubble({
     | undefined;
   /** Display names this message mentions, for the text highlight. */
   mentionNames?: readonly string[] | undefined;
+  /** Opens the full-screen viewer on a photo in this message. Undefined on
+   *  the pending bubble, whose bytes are not in the store yet. */
+  onOpenAttachment?: ((attachment: AttachmentRef) => void) | undefined;
 }) {
   const retracted = marks?.retracted === true;
   const edited = !retracted && marks?.editedText !== undefined;
@@ -492,7 +501,15 @@ function Bubble({
             {content.attachments.length > 0 && (
               <span className="mb-1 block space-y-1">
                 {content.attachments.map((attachment) => (
-                  <Attachment key={attachment.id} attachment={attachment} />
+                  <Attachment
+                    key={attachment.id}
+                    attachment={attachment}
+                    onOpen={
+                      onOpenAttachment
+                        ? () => onOpenAttachment(attachment)
+                        : undefined
+                    }
+                  />
                 ))}
               </span>
             )}
@@ -672,6 +689,13 @@ export function Timeline({
   const [actionsFor, setActionsFor] = useState<string | null>(null);
   useEffect(() => setActionsFor(null), [conversationId]);
   const { confirm, confirmDialog } = useConfirm();
+
+  // The photo the full-screen viewer is showing, if any. Cleared on a
+  // conversation switch, since the quick switcher can move under an open
+  // viewer and leaving it up would be showing one thread's photo over
+  // another's timeline.
+  const [viewing, setViewing] = useState<AttachmentRef | null>(null);
+  useEffect(() => setViewing(null), [conversationId]);
 
   /**
    * Delete for everyone: an ordinary send whose payload is a retract op --
@@ -1246,6 +1270,7 @@ export function Timeline({
                         )
                 }
                 chips={chips}
+                onOpenAttachment={setViewing}
                 receipt={
                   // A tombstone with "Delivered" under it would be receipts
                   // for a message that no longer says anything.
@@ -1294,6 +1319,12 @@ export function Timeline({
 
       <div ref={bottom} />
       {confirmDialog}
+      {viewing && (
+        <PhotoViewer
+          attachment={viewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
   );
 }
