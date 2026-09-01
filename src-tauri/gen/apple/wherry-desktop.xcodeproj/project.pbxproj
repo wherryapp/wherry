@@ -1,0 +1,465 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0E7736D78F3790F884176793 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0843574B0CE96F4573209C42 /* Security.framework */; };
+		3BFE9BC70D9C87D045B836CD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0E547C954A724E0FC8A4451B /* Assets.xcassets */; };
+		574378C5F036C1744950706D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 6DBCFCCFE6FE47777DCDCD83 /* LaunchScreen.storyboard */; };
+		7A99BEA0CB8B709182253A17 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 04FE0BED5E63930C92DEC043 /* QuartzCore.framework */; };
+		95318F215D78B2C13E808B5C /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 99814DCBFFF68B51FB0D347E /* main.mm */; };
+		A3371E11377A651999FE4FC6 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9A0565DC4ECDDD74E47F53CD /* libapp.a */; };
+		A86203746BB5DA560147CA3B /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28A426952F4A1C2D8DBDBF05 /* WebKit.framework */; };
+		B73F0E440F2B95B9D48F4D60 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2A13AD5ADD1737782028FCA6 /* UIKit.framework */; };
+		BD0A016394DED1960BDFEF8F /* assets in Resources */ = {isa = PBXBuildFile; fileRef = CDE656369324DE5CA2DB301F /* assets */; };
+		CAEF197CDF3B36B31D955EA4 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6D88F149CB2FFE9913822E3E /* MetalKit.framework */; };
+		F5B99B9BB7518097A66E2A67 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0279B66229A057314AD33842 /* CoreGraphics.framework */; };
+		FA6B246C894A5A142021B897 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 65DB3677684538C14657C68F /* Metal.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0279B66229A057314AD33842 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		04FE0BED5E63930C92DEC043 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		0843574B0CE96F4573209C42 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		0BB4F2CC16321EA1F6B57F5D /* wherry-desktop_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "wherry-desktop_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		0E547C954A724E0FC8A4451B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		28A426952F4A1C2D8DBDBF05 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		2A13AD5ADD1737782028FCA6 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		3E480FC2F3AEF083A053E7D4 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		65DB3677684538C14657C68F /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		6D88F149CB2FFE9913822E3E /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		6DBCFCCFE6FE47777DCDCD83 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		76AEBA3FF5B67ED565629DD3 /* wherry-desktop_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "wherry-desktop_iOS.entitlements"; sourceTree = "<group>"; };
+		84256FA1EB23076C825E53E7 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		99814DCBFFF68B51FB0D347E /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		9A0565DC4ECDDD74E47F53CD /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		C7BF49F628376EE248A96D97 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		CDE656369324DE5CA2DB301F /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		D51F6E0981A7C479BAF04E89 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C98C8399D81885EE00396518 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A3371E11377A651999FE4FC6 /* libapp.a in Frameworks */,
+				F5B99B9BB7518097A66E2A67 /* CoreGraphics.framework in Frameworks */,
+				FA6B246C894A5A142021B897 /* Metal.framework in Frameworks */,
+				CAEF197CDF3B36B31D955EA4 /* MetalKit.framework in Frameworks */,
+				7A99BEA0CB8B709182253A17 /* QuartzCore.framework in Frameworks */,
+				0E7736D78F3790F884176793 /* Security.framework in Frameworks */,
+				B73F0E440F2B95B9D48F4D60 /* UIKit.framework in Frameworks */,
+				A86203746BB5DA560147CA3B /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		021B427519F6B376F86DF492 /* wherry-desktop */ = {
+			isa = PBXGroup;
+			children = (
+				99814DCBFFF68B51FB0D347E /* main.mm */,
+				99DDAA7B18F9AA784973FA84 /* bindings */,
+			);
+			path = "wherry-desktop";
+			sourceTree = "<group>";
+		};
+		20A4316A88B1C510EA3F7D74 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0BB4F2CC16321EA1F6B57F5D /* wherry-desktop_iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		4DE43AB98AB7928ADE6D9997 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				0279B66229A057314AD33842 /* CoreGraphics.framework */,
+				9A0565DC4ECDDD74E47F53CD /* libapp.a */,
+				65DB3677684538C14657C68F /* Metal.framework */,
+				6D88F149CB2FFE9913822E3E /* MetalKit.framework */,
+				04FE0BED5E63930C92DEC043 /* QuartzCore.framework */,
+				0843574B0CE96F4573209C42 /* Security.framework */,
+				2A13AD5ADD1737782028FCA6 /* UIKit.framework */,
+				28A426952F4A1C2D8DBDBF05 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		62669F8B350EE9C35BC0C4CF = {
+			isa = PBXGroup;
+			children = (
+				CDE656369324DE5CA2DB301F /* assets */,
+				0E547C954A724E0FC8A4451B /* Assets.xcassets */,
+				6DBCFCCFE6FE47777DCDCD83 /* LaunchScreen.storyboard */,
+				869A590A063D78BFA845209E /* Externals */,
+				6B09ECF52C7E49B329E698EC /* Sources */,
+				812133DF8DF5F1001CC7F3F1 /* src */,
+				6BEFA6A8C42C482F05BECB14 /* wherry-desktop_iOS */,
+				4DE43AB98AB7928ADE6D9997 /* Frameworks */,
+				20A4316A88B1C510EA3F7D74 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		6B09ECF52C7E49B329E698EC /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				021B427519F6B376F86DF492 /* wherry-desktop */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		6BEFA6A8C42C482F05BECB14 /* wherry-desktop_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				D51F6E0981A7C479BAF04E89 /* Info.plist */,
+				76AEBA3FF5B67ED565629DD3 /* wherry-desktop_iOS.entitlements */,
+			);
+			path = "wherry-desktop_iOS";
+			sourceTree = "<group>";
+		};
+		812133DF8DF5F1001CC7F3F1 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				84256FA1EB23076C825E53E7 /* lib.rs */,
+				C7BF49F628376EE248A96D97 /* main.rs */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		869A590A063D78BFA845209E /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		99DDAA7B18F9AA784973FA84 /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				3E480FC2F3AEF083A053E7D4 /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		449B9509A2377049C0EA0E32 /* wherry-desktop_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C3B7090C45ACA2ACF89E0A5C /* Build configuration list for PBXNativeTarget "wherry-desktop_iOS" */;
+			buildPhases = (
+				C95E531F719785E29CE919D1 /* Build Rust Code */,
+				DF58B36CC24DC11292190492 /* Sources */,
+				5A55C78907DD5258582390B8 /* Resources */,
+				C98C8399D81885EE00396518 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "wherry-desktop_iOS";
+			packageProductDependencies = (
+			);
+			productName = "wherry-desktop_iOS";
+			productReference = 0BB4F2CC16321EA1F6B57F5D /* wherry-desktop_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C428E36A754FE5C1D81109BB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					449B9509A2377049C0EA0E32 = {
+						DevelopmentTeam = TD6R2M35QU;
+					};
+				};
+			};
+			buildConfigurationList = E589F957BF8FE8B5AA205925 /* Build configuration list for PBXProject "wherry-desktop" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 62669F8B350EE9C35BC0C4CF;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 20A4316A88B1C510EA3F7D74 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				449B9509A2377049C0EA0E32 /* wherry-desktop_iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5A55C78907DD5258582390B8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3BFE9BC70D9C87D045B836CD /* Assets.xcassets in Resources */,
+				574378C5F036C1744950706D /* LaunchScreen.storyboard in Resources */,
+				BD0A016394DED1960BDFEF8F /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C95E531F719785E29CE919D1 /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "export PATH=\"$HOME/.local/share/fnm/aliases/default/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH\"\npnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		DF58B36CC24DC11292190492 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				95318F215D78B2C13E808B5C /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		8C64CA7E9CA88F5CFA08EB3C /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+		9B2B52A65B5B6E51369EA52B /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "wherry-desktop_iOS/wherry-desktop_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "TD6R2M35QU";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "wherry-desktop_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = app.wherry;
+				PRODUCT_NAME = "Wherry";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		CB4F1DEB17026CC0B859BB19 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "wherry-desktop_iOS/wherry-desktop_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "TD6R2M35QU";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "wherry-desktop_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = app.wherry;
+				PRODUCT_NAME = "Wherry";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+		DF1EA11F66E3554F517D798D /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C3B7090C45ACA2ACF89E0A5C /* Build configuration list for PBXNativeTarget "wherry-desktop_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CB4F1DEB17026CC0B859BB19 /* debug */,
+				9B2B52A65B5B6E51369EA52B /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		E589F957BF8FE8B5AA205925 /* Build configuration list for PBXProject "wherry-desktop" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DF1EA11F66E3554F517D798D /* debug */,
+				8C64CA7E9CA88F5CFA08EB3C /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = C428E36A754FE5C1D81109BB /* Project object */;
+}
