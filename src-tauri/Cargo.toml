@@ -2,7 +2,7 @@
 name = "wherry-desktop"
 version = "0.1.0"
 description = "Desktop shell for the Wherry client"
-authors = ["Connor Tarabocchia"]
+authors = ["Wherry"]
 license = ""
 repository = ""
 edition = "2021"
