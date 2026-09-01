@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
+import { startStallDetector } from "./diagnostics";
 import { registerServiceWorker } from "./pwa";
 import { stripReloadMarker } from "./reload";
 import { trackVisualViewport } from "./ui/viewport";
@@ -15,6 +16,11 @@ trackVisualViewport();
 // call unconditionally -- it returns immediately when the marker is absent,
 // which is every ordinary load. See reload.ts.
 stripReloadMarker();
+
+// Before anything heavy runs, so the first pass after sign-in -- the one
+// the iPhone freeze reports point at -- is measured like any other. See
+// diagnostics.ts for what it is trying to settle.
+startStallDetector();
 
 // Not awaited: nothing on screen depends on it, and notifications are the
 // only thing that does.

@@ -22,6 +22,10 @@ import {
 } from "../api/client";
 import { markAvatarHue, type StoredSession } from "../api/session";
 import { changePasswordWithRewrap } from "../crypto/account";
+import {
+  clearDiagnostics,
+  readDiagnostics,
+} from "../diagnostics";
 import { APP_VERSION } from "../sync/engine";
 import {
   availability as pushAvailability,
@@ -55,6 +59,97 @@ const SWATCH_HUES = Array.from({ length: 12 }, (_, index) => index * 30);
  * unless the operator deliberately configures one.
  */
 const TIP_URL: string | undefined = import.meta.env["VITE_TIP_URL"];
+
+/**
+ * What the stall detector and the crypto timer have seen.
+ *
+ * In Settings because it has to be readable AFTER a freeze -- nothing can
+ * be read off a screen that has stopped repainting, so the findings are
+ * written to localStorage as they happen and looked at later. Hidden
+ * entirely when there is nothing to report, which for a healthy client is
+ * always: this is an instrument, not a feature, and an empty panel section
+ * inviting people to worry about their phone is not worth the space.
+ *
+ * Copy puts the whole record on the clipboard, because the useful thing to
+ * do with it is paste it into a message. `navigator.clipboard` needs a user
+ * gesture on iOS, which a button press is.
+ */
+function DiagnosticsSection() {
+  const [data, setData] = useState(() => readDiagnostics());
+  const [copied, setCopied] = useState(false);
+
+  if (data.stallCount === 0 && data.slowCallCount === 0) return null;
+
+  const worstStall = data.stalls[0];
+  const worstCall = data.slowCalls[0];
+
+  return (
+    <PanelSection
+      title="Diagnostics"
+      description="Recorded while the app was open. Useful when it has frozen or felt slow."
+    >
+      <dl className="space-y-1 text-sm text-neutral-700 dark:text-neutral-200">
+        {worstStall && (
+          <div className="flex justify-between gap-3">
+            <dt className="text-neutral-500 dark:text-neutral-400">
+              Longest freeze
+            </dt>
+            <dd className="font-medium">
+              {(worstStall.lateMs / 1000).toFixed(1)}s
+              <span className="ml-1 font-normal text-neutral-500 dark:text-neutral-400">
+                ({data.stallCount}&times;)
+              </span>
+            </dd>
+          </div>
+        )}
+        {worstCall && (
+          <div className="flex justify-between gap-3">
+            <dt className="text-neutral-500 dark:text-neutral-400">
+              Slowest crypto call
+            </dt>
+            <dd className="wrap-anywhere text-right font-medium">
+              {(worstCall.ms / 1000).toFixed(1)}s
+              <span className="ml-1 font-mono text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                {worstCall.label}
+              </span>
+            </dd>
+          </div>
+        )}
+      </dl>
+
+      <div className="mt-3 flex gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(JSON.stringify(readDiagnostics(), null, 2))
+              .then(() => {
+                setCopied(true);
+              })
+              .catch(() => {
+                // Denied or unavailable. The numbers above are still on
+                // screen to read out by hand.
+              });
+          }}
+        >
+          {copied ? "Copied" : "Copy details"}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            clearDiagnostics();
+            setData(readDiagnostics());
+            setCopied(false);
+          }}
+        >
+          Reset
+        </Button>
+      </div>
+    </PanelSection>
+  );
+}
 
 function bytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -465,6 +560,8 @@ export function Settings({
             </ul>
           </PanelSection>
         )}
+
+        <DiagnosticsSection />
 
         {TIP_URL && tipJarEnabled && (
           <PanelSection title="Support the project">
