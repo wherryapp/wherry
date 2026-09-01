@@ -1,7 +1,7 @@
 [package]
-name = "messenger-desktop"
+name = "wherry-desktop"
 version = "0.1.0"
-description = "Desktop shell for the messenger client"
+description = "Desktop shell for the Wherry client"
 authors = ["Connor Tarabocchia"]
 license = ""
 repository = ""

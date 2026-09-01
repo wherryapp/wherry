@@ -1,7 +1,7 @@
 {
-  "name": "messenger",
-  "short_name": "messenger",
-  "description": "A small self-hosted messenger.",
+  "name": "Wherry",
+  "short_name": "Wherry",
+  "description": "A small self-hosted, end-to-end encrypted messenger.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

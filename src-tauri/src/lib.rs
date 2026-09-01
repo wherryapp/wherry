@@ -26,7 +26,7 @@
 
 #[cfg(any(target_vendor = "apple", target_os = "windows"))]
 fn vault_entry(key: &str) -> Result<keyring::Entry, String> {
-  keyring::Entry::new("com.cjtechsystems.messenger", key).map_err(|e| e.to_string())
+  keyring::Entry::new("app.wherry", key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

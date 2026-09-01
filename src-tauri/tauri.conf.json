@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "messenger",
+  "productName": "Wherry",
   "version": "0.1.0",
-  "identifier": "com.cjtechsystems.messenger",
+  "identifier": "app.wherry",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "messenger",
+        "title": "Wherry",
         "width": 1100,
         "height": 750,
         "minWidth": 400,
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https://chat.cjtechsystems.com wss://chat.cjtechsystems.com http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https://wherry.app wss://wherry.app http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*"
     }
   },
   "bundle": {

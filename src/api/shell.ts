@@ -67,7 +67,7 @@ export type UpdateDestination =
 // ios arm below changes to `https://apps.apple.com/app/id<...>` and nothing
 // else moves -- that one-line swap being confined to this file is the
 // reason it exists.
-const RELEASES_URL = "https://github.com/ctarabocchia/messenger/releases/latest";
+const RELEASES_URL = "https://github.com/wherryapp/wherry/releases/latest";
 
 export function updateDestination(): UpdateDestination {
   switch (SHELL) {
