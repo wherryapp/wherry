@@ -53,5 +53,16 @@ pnpm tauri dev        # desktop shell (needs the Rust toolchain)
 
 ## Licence
 
-None yet — all rights reserved for now. Published for inspection and
-verification rather than reuse. If you want to do something with it, ask.
+[PolyForm Noncommercial 1.0.0](LICENSE.md) (`PolyForm-Noncommercial-1.0.0`).
+
+Read it, build it, check the cryptography, run it for yourself. Any
+noncommercial purpose is a permitted purpose, and that explicitly includes
+personal use, study, hobby projects and noncommercial organisations.
+
+Commercial use needs a separate licence — get in touch.
+
+This is **source-available, not open source**: PolyForm is not an
+OSI-approved licence, and the distinction is real rather than pedantic. The
+code is published so the encryption claims can be checked against something,
+which is the only honest basis for making them. It is not published for
+someone to run as a competing service.
