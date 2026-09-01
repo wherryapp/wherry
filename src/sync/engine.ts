@@ -1644,7 +1644,16 @@ export class SyncEngine {
       // pipeline either (a bare `pnpm build` on the host) -- nothing to
       // compare, so treat that the same as no mismatch rather than a false
       // positive that can never be resolved by reloading.
-      stale = health.commit !== "unknown" && health.commit !== BUILD_COMMIT;
+      // Both sides must be real: a shell build now bakes its *version* (for
+      // the floor below) while leaving the commit unstamped on purpose --
+      // the banner's reload/release prompt tracks web deploys, and an
+      // installed app going "stale" on every push to main would nag about
+      // updates that do not exist as installers. "unknown" on either side
+      // therefore means no comparison, never a mismatch.
+      stale =
+        BUILD_COMMIT !== "unknown" &&
+        health.commit !== "unknown" &&
+        health.commit !== BUILD_COMMIT;
       // Only kept when it is actually informative -- there is no tag to
       // lag behind before the mismatch itself exists, so a version is
       // never attached to a banner that would not otherwise appear.
