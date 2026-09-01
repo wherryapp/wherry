@@ -170,3 +170,30 @@ test("an empty payload is empty content", () => {
     attachments: [],
   });
 });
+
+test("an unsupported kind counts as unread — the constraint on any future kind", () => {
+  // store.countUnread skips a message only when isMessageOp says so, and
+  // ui/unread.ts mirrors countUnread exactly so the divider and the badge
+  // cannot name different numbers. Composing the two calls the way the store
+  // does is the point of this test: "unsupported" is not an op, so a client
+  // that predates a new kind COUNTS it, badges it, and can open the
+  // conversation onto a bubble reading "this message needs a newer version".
+  //
+  // That is correct for a kind meant to be read, and wrong for one that is
+  // not -- so an invisible new kind must be an OPERATION, added to decodeOp's
+  // switch, never merely a new kind name. Like the discriminator itself, that
+  // only protects clients shipped before the first such message is sent,
+  // which is why the rule is pinned here rather than remembered.
+  const unknown = structured({ kind: "voice", target: "t1", duration: 3 });
+  assert.equal(decodeContent(unknown), "unsupported");
+  assert.equal(isMessageOp(decodeContent(unknown)), false);
+
+  // The behaviour an invisible kind has to join: every op is skipped.
+  for (const op of [
+    { kind: "reaction", target: "t1", emoji: "👍" },
+    { kind: "edit", target: "t1", text: "fixed" },
+    { kind: "retract", target: "t1" },
+  ] as const) {
+    assert.equal(isMessageOp(decodeContent(encodeOp(op))), true);
+  }
+});
