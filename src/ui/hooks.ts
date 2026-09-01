@@ -664,6 +664,62 @@ export function usePresence(conversationId: string | null): string[] | null {
   return online;
 }
 
+/** The sidebar's first ask waits this long after mount, so it does not
+ *  land in the same relay-floor second as the open thread's own presence
+ *  ask and knock that snapshot out. Both re-ask on their intervals, so
+ *  the cost of the stagger is two seconds of dotlessness at startup. */
+const PRESENCE_BULK_STAGGER_MS = 2_000;
+
+/**
+ * Who is online across many conversations at once -- the sidebar's dots.
+ *
+ * One bulk ask (capped at 50 by the engine) on a stagger after mount and
+ * every PRESENCE_REFRESH_MS after that, accumulated from the same
+ * per-conversation presence events usePresence reads, so an open thread's
+ * answers keep the map warm for free. A conversation absent from the map
+ * is unknown, never everyone-offline -- a socket-down period simply means
+ * stale or absent dots, because presence deliberately has no stored form
+ * (see usePresence for why).
+ *
+ * Keyed on the joined id list so a new conversation triggers a fresh ask;
+ * the map resets with it, trading a beat of blankness for never showing
+ * one conversation's answer under another's row.
+ */
+export function useSidebarPresence(
+  conversationIds: readonly string[],
+): ReadonlyMap<string, readonly string[]> {
+  const [online, setOnline] = useState<ReadonlyMap<string, readonly string[]>>(
+    () => new Map(),
+  );
+
+  const key = conversationIds.join("\n");
+
+  useEffect(() => {
+    setOnline(new Map());
+    const ids = key.length === 0 ? [] : key.split("\n");
+    if (ids.length === 0) return;
+
+    const ask = (): void => sync.requestPresenceBulk(ids);
+    const first = setTimeout(ask, PRESENCE_BULK_STAGGER_MS);
+    const timer = setInterval(ask, PRESENCE_REFRESH_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [key]);
+
+  useSyncEvents((event) => {
+    if (event.type !== "presence") return;
+    setOnline((previous) => {
+      const next = new Map(previous);
+      next.set(event.conversationId, event.online);
+      return next;
+    });
+  });
+
+  return online;
+}
+
 /**
  * The delivered watermarks for one conversation: recipient user id -> the
  * newest of this account's message ids that user has acked. Fed by the

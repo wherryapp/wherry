@@ -448,6 +448,13 @@ export class SyncEngine {
             conversationId: message.conversationId,
           }),
         );
+      } else if (message.type === "presence-bulk-intent") {
+        this.#socket?.send(
+          JSON.stringify({
+            type: "presence_bulk",
+            conversationIds: message.conversationIds,
+          }),
+        );
       }
     });
   }
@@ -493,6 +500,30 @@ export class SyncEngine {
       JSON.stringify({ type: "presence", conversationId }),
     );
     if (!sent) broadcast({ type: "presence-intent", conversationId });
+  }
+
+  /**
+   * The same question about many conversations in one frame -- the
+   * sidebar's ask. Answers arrive as ordinary per-conversation presence
+   * events, so nothing downstream knows bulk exists. Same no-answer
+   * contract as requestPresence: a missing answer is no information,
+   * never everyone-offline.
+   *
+   * Capped at the protocol's 50, not chunked: the server floors relays to
+   * one per second per connection, so a second chunk fired in the same
+   * tick would be silently eaten -- sending it would be pretending.
+   * Callers pass their 50 most useful ids; the rest go dotless, which is
+   * what best-effort means.
+   */
+  requestPresenceBulk(conversationIds: readonly string[]): void {
+    if (conversationIds.length === 0) return;
+    const chunk = [...conversationIds.slice(0, 50)];
+    const sent = this.#socket?.send(
+      JSON.stringify({ type: "presence_bulk", conversationIds: chunk }),
+    );
+    if (!sent) {
+      broadcast({ type: "presence-bulk-intent", conversationIds: chunk });
+    }
   }
 
   /**

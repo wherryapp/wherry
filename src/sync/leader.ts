@@ -242,6 +242,7 @@ export type SyncBroadcast =
   /** ...and what a follower wants the leader's socket to say. */
   | { type: "typing-intent"; conversationId: string }
   | { type: "presence-intent"; conversationId: string }
+  | { type: "presence-bulk-intent"; conversationIds: string[] }
   | { type: "signed-out" }
   /** The leader saying it is still running. See the watchdog in runAsLeader. */
   | { type: "leader-alive" };

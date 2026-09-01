@@ -16,6 +16,7 @@ import {
   useHubs,
   useLatestMessages,
   useMentions,
+  useSidebarPresence,
   useUnread,
 } from "../hooks";
 import { avatarSeed, conversationTitle, listTime, memberName } from "../format";
@@ -63,6 +64,21 @@ export function ConversationList({
       ),
     [conversations, latest],
   );
+  // Online dots for 1:1 rows only in v1 -- a group's "2 of 7 online" is a
+  // different design, deferred. Two members rather than kind === "direct",
+  // matching the isGroup check below: groups shipped without a kind change.
+  // Sorted so a recency reorder does not look like a new id list to the
+  // hook, which would reset the map and re-ask on every incoming message.
+  const dmIds = useMemo(
+    () =>
+      directsAndGroups
+        .filter((conversation) => conversation.members.length === 2)
+        .map((conversation) => conversation.id)
+        .sort(),
+    [directsAndGroups],
+  );
+  const presence = useSidebarPresence(dmIds);
+
   const isDesktop = useIsDesktop();
   const { prefs, update } = useSidebarPrefs();
 
@@ -134,6 +150,18 @@ export function ConversationList({
 
           const title = conversationTitle(conversation, session.user.id);
 
+          // The other member's id in a 1:1, for the online dot. Absent from
+          // the presence map means unknown -- render nothing, never an
+          // "offline" treatment; presence has no stored form on purpose.
+          const otherId = !isGroup
+            ? conversation.members.find(
+                (member) => member.userId !== session.user.id,
+              )?.userId
+            : undefined;
+          const otherOnline =
+            otherId !== undefined &&
+            (presence.get(conversation.id)?.includes(otherId) ?? false);
+
           return (
             <button
               key={conversation.id}
@@ -146,10 +174,22 @@ export function ConversationList({
                     "hover:bg-neutral-50 dark:hover:bg-neutral-800"
               }`}
             >
-              <Avatar
-                name={title}
-                userId={avatarSeed(conversation, session.user.id)}
-              />
+              {/* A relative wrapper rather than a prop on kit's Avatar:
+                  the dot is this row's concern, not every avatar's. Styled
+                  like the announcement dot on the Settings avatar -- same
+                  shape and border, green for "here now". */}
+              <span className="relative shrink-0">
+                <Avatar
+                  name={title}
+                  userId={avatarSeed(conversation, session.user.id)}
+                />
+                {otherOnline && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full border-2 border-white bg-green-500 dark:border-neutral-900"
+                  />
+                )}
+              </span>
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-2">
                   <span
