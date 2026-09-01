@@ -4,3 +4,7 @@
 /tauri.build.gradle.kts
 /proguard-tauri.pro
 /tauri.properties
+# Play release signing -- both are secrets, never committed.
+/keystore.properties
+*.keystore
+*.jks

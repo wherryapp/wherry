@@ -13,6 +13,20 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing for the Play Store, keyed off an untracked
+// keystore.properties beside this file (gitignored, like the keystore it
+// points at -- both are real secrets). Absent the file, a release build
+// stays unsigned exactly as before, so nothing here gates local work.
+// Expected keys: storeFile (path, relative to app/), storePassword,
+// keyAlias, keyPassword. docs/mobile-setup.md carries the keytool recipe.
+val keystoreProperties = Properties().apply {
+    val propFile = file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseKeystore = keystoreProperties.containsKey("storeFile")
+
 android {
     compileSdk = 36
     namespace = "com.cjtechsystems.messenger"
@@ -23,6 +37,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -38,6 +62,9 @@ android {
             }
         }
         getByName("release") {
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
