@@ -416,6 +416,10 @@ export function Composer({
           type="submit"
           aria-label="Send"
           disabled={busy || (text.trim().length === 0 && pending.length === 0)}
+          // Deliberately not kit's Button: the round icon shape would have to
+          // fight Button's rounded-md and padding with same-specificity
+          // classes, which is the pointer-events bug's family. The palette is
+          // kit primary's (bg-accent-600, hover 700) -- keep them in step.
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-600 text-white transition hover:bg-accent-700 disabled:bg-neutral-300 motion-safe:active:scale-90 dark:disabled:bg-neutral-700"
         >
           <SendIcon className="h-4.5 w-4.5" />

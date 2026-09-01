@@ -280,9 +280,16 @@ export function PinIcon({ className }: IconProps) {
 // ---------------------------------------------------------------------------
 
 const BUTTON_VARIANTS = {
-  /** The one action a screen is for. */
+  /**
+   * The one action a screen is for. The accent fill, settled 2026-08-31:
+   * the send button had been the app's only accent-filled control while
+   * this variant was neutral-900, and the app's single most-used action is
+   * a better vote on what "primary" means than the kit's first draft was.
+   * One set of classes for both themes -- the accent is tuned to carry
+   * white text on light and dark alike (the send button always did).
+   */
   primary:
-    "bg-neutral-900 text-white disabled:opacity-50 hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300",
+    "bg-accent-600 text-white hover:bg-accent-700 disabled:opacity-50",
   /** Everything beside it. */
   secondary:
     "border border-neutral-300 text-neutral-700 hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800",
