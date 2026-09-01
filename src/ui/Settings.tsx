@@ -55,7 +55,7 @@ const SWATCH_HUES = Array.from({ length: 12 }, (_, index) => index * 30);
  * Stamped at build time the same way BUILD_COMMIT is (see sync/engine.ts) --
  * a bare VITE_-prefixed env var Vite embeds automatically, set via
  * client/Dockerfile and docker-compose.prod.yml. Unset by default, which is
- * what keeps dev and a self-hosted instance clean: no monetization ask
+ * what keeps dev and an unconfigured instance clean: no monetization ask
  * unless the operator deliberately configures one.
  */
 const TIP_URL: string | undefined = import.meta.env["VITE_TIP_URL"];

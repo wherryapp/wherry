@@ -1,7 +1,7 @@
 # Wherry — client
 
-The client for [Wherry](https://wherry.app), a small self-hosted,
-end-to-end encrypted messenger. React + Vite, wrapped in Tauri v2 for
+The client for [Wherry](https://wherry.app), a private, end-to-end
+encrypted messenger. React + Vite, wrapped in Tauri v2 for
 desktop, iOS and Android from this same source.
 
 ## This is a mirror
@@ -54,15 +54,14 @@ pnpm tauri dev        # desktop shell (needs the Rust toolchain)
 ## Licence
 
 [PolyForm Noncommercial 1.0.0](LICENSE.md) (`PolyForm-Noncommercial-1.0.0`).
-
-Read it, build it, check the cryptography, run it for yourself. Any
-noncommercial purpose is a permitted purpose, and that explicitly includes
-personal use, study, hobby projects and noncommercial organisations.
-
 Commercial use needs a separate licence — get in touch.
 
 This is **source-available, not open source**: PolyForm is not an
 OSI-approved licence, and the distinction is real rather than pedantic. The
 code is published so the encryption claims can be checked against something,
-which is the only honest basis for making them. It is not published for
-someone to run as a competing service.
+which is the only honest basis for making them.
+
+**Wherry is a hosted service, not a self-hosted product.** This repository
+is the client half; the server is not published, so there is nothing here to
+point a client at. Read it, build it, check the cryptography against what
+the app actually ships — that is what it is for.
