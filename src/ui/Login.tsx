@@ -21,7 +21,15 @@ import {
   unlockAccountKey,
 } from "../crypto/account";
 import { KeysError } from "../crypto/keys";
-import { AuthShell, Button, ErrorText, Field, Input, Note } from "./kit";
+import {
+  AuthShell,
+  Button,
+  ErrorText,
+  Field,
+  Input,
+  Note,
+  handleInputProps,
+} from "./kit";
 
 /**
  * What stands between a successful auth call and entering the app.
@@ -227,6 +235,9 @@ export function Login({
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
             required
+            // A handle is typed as typed, never "corrected" -- see
+            // handleInputProps in kit.tsx for the iOS bug this prevents.
+            {...handleInputProps}
             // An address field, mono like every other place a handle is
             // typed. Sign-in also accepts an email, which is an address too.
             className="font-mono"

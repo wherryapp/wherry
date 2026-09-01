@@ -24,6 +24,7 @@ import {
   Input,
   Panel,
   PanelSection,
+  handleInputProps,
 } from "./kit";
 
 /**
@@ -295,6 +296,7 @@ export function GroupDetails({
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Or add by username"
+              {...handleInputProps}
               className="font-mono"
             />
 

@@ -55,6 +55,7 @@ import {
   Select,
   useConfirm,
   usePrompt,
+  handleInputProps,
 } from "./kit";
 import { ContactCheckboxRow } from "./ContactRow";
 
@@ -1067,6 +1068,7 @@ export function HubDetails({
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Or add by username"
+                {...handleInputProps}
                 className="font-mono"
               />
               {isPrivate && (

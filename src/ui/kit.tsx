@@ -415,6 +415,21 @@ export function BackButton({
  * size. Focus is the border (no ring) -- a field already is a box, and the
  * global :focus-visible outline is for things that otherwise show nothing.
  */
+/**
+ * Spread into any input where a *handle* gets typed -- a username, a hub
+ * id, an invite code. iOS capitalizes the first letter of ordinary text
+ * inputs and squiggles anything not in its dictionary, which for an
+ * identifier means someone registers or searches "Ios-test-a" while
+ * reading it as what they typed (found live in the iOS shell, 2026-09-01,
+ * on both the register form and the friends add field). One constant so
+ * the next handle input cannot forget one of the three.
+ */
+export const handleInputProps = {
+  autoCapitalize: "none",
+  autoCorrect: "off",
+  spellCheck: false,
+} as const;
+
 export function Input({
   className,
   ...rest

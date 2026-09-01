@@ -5,7 +5,7 @@ import { useState, type FormEvent } from "react";
 import { ApiError, createHub, joinHub } from "../../api/client";
 import type { HubVisibility } from "../../api/types";
 import { sync } from "../../sync/engine";
-import { Button, ErrorText, Input } from "../kit";
+import { Button, ErrorText, Input, handleInputProps } from "../kit";
 
 /**
  * Creating a hub, or joining a public one by id -- the sidebar's second
@@ -148,6 +148,7 @@ export function NewHub({
           value={joinId}
           onChange={(e) => setJoinId(e.target.value)}
           placeholder="Or join with a hub ID"
+          {...handleInputProps}
         />
         <Button
           type="submit"

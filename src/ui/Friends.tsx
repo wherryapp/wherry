@@ -27,6 +27,7 @@ import {
   Note,
   Panel,
   PanelSection,
+  handleInputProps,
 } from "./kit";
 
 function Person({
@@ -165,6 +166,7 @@ export function Friends({
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             placeholder="Add by username"
+            {...handleInputProps}
             // An address gets typed here, so it renders as one.
             className="font-mono"
           />

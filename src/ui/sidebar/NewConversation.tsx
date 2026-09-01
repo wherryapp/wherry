@@ -12,7 +12,7 @@ import {
 } from "../../api/client";
 import type { StoredSession } from "../../api/session";
 import { sync } from "../../sync/engine";
-import { Button, ErrorText, Input } from "../kit";
+import { Button, ErrorText, Input, handleInputProps } from "../kit";
 
 /**
  * Username in, conversation out.
@@ -161,6 +161,7 @@ export function NewConversation({
             ? "Or add by username"
             : "username, or several for a group"
         }
+        {...handleInputProps}
         // An address gets typed here, so it renders as one -- the same
         // monospace the @handle wears everywhere it is displayed.
         className="font-mono"
