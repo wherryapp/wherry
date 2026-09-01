@@ -2,6 +2,8 @@ allowBuilds:
   # tsx bundles esbuild, whose install script places the platform binary.
   # Same approval the server already grants for the same reason.
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@tauri-apps/plugin-notification@2.4.0'
 patchedDependencies:
   '@hpke/common@1.10.1': patches/@hpke__common@1.10.1.patch
   ts-mls@1.6.4: patches/ts-mls@1.6.4.patch

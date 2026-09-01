@@ -3,5 +3,10 @@
     "beforeDevCommand": "pnpm dev --port 5183",
     "devUrl": "http://localhost:5183",
     "beforeBuildCommand": "pnpm build:ios"
+  },
+  "bundle": {
+    "iOS": {
+      "developmentTeam": "TD6R2M35QU"
+    }
   }
 }
