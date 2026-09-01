@@ -17,6 +17,7 @@ import {
   unsubscribeFromPush,
 } from "../api/client";
 import { isInstalled } from "../pwa";
+import { isTauriShell } from "../api/shell";
 
 /** Why notifications cannot be turned on, when they cannot. */
 export type PushAvailability =
@@ -41,6 +42,14 @@ export type PushState = PushAvailability["state"] | "on";
  * with no explanation is the kind of dead end people never get past.
  */
 export function availability(): PushAvailability {
+  // Inside a Tauri shell there is no push service to deliver to the webview
+  // at all -- notifications there are the plugin's, fed by the socket
+  // (desktop today; APNs is mobile's planned path). Checked first, because
+  // the iOS shell would otherwise fall into the needs-install branch below
+  // and tell somebody standing inside the installed app to add it to their
+  // home screen.
+  if (isTauriShell()) return { state: "unsupported" };
+
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     // Safari in a tab reports no PushManager on iOS, so an uninstalled iPhone
     // lands here rather than on the check below. Distinguish it, because the

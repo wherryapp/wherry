@@ -1,0 +1,7 @@
+{
+  "build": {
+    "beforeDevCommand": "pnpm dev --port 5183",
+    "devUrl": "http://localhost:5183",
+    "beforeBuildCommand": "pnpm build:ios"
+  }
+}
