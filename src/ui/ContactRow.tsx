@@ -24,7 +24,12 @@ export function ContactCheckboxRow({
         onChange={onToggle}
         className="h-4 w-4 shrink-0"
       />
-      <Avatar size="sm" name={contact.displayName} userId={contact.userId} />
+      <Avatar
+        size="sm"
+        name={contact.displayName}
+        userId={contact.userId}
+        hue={contact.avatarHue}
+      />
       <span className="min-w-0 truncate">
         {contact.displayName}
         <span className="ml-1 font-mono text-xs text-neutral-500 dark:text-neutral-400">

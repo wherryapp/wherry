@@ -18,6 +18,10 @@ export type PublicUser = {
   id: string;
   username: string;
   displayName: string;
+  /** Chosen oklch hue in [0, 360), or null for id-derived -- kit's Avatar
+   *  hashes the id when this is null, which is every account until it
+   *  touches the swatch row in Settings. */
+  avatarHue: number | null;
 };
 
 export type PublicDevice = {
@@ -137,6 +141,7 @@ export type ConversationMember = {
   userId: string;
   username: string;
   displayName: string;
+  avatarHue: number | null;
   /**
    * How far this member has read. Null if they never have.
    *
@@ -306,6 +311,7 @@ export type HubMember = {
   userId: string;
   username: string;
   displayName: string;
+  avatarHue: number | null;
   role: HubRole;
   joinedAt: string;
 };
@@ -314,6 +320,7 @@ export type HubBanned = {
   userId: string;
   username: string;
   displayName: string;
+  avatarHue: number | null;
   bannedAt: string;
 };
 

@@ -704,23 +704,35 @@ export function PanelSection({
  * device and every day, with nothing stored anywhere -- the id is the seed.
  * oklch keeps every hue at the same perceived lightness, so no one's colour
  * is unreadably light or dark in either scheme.
+ *
+ * `hue` overrides the derivation when the person has chosen a colour
+ * (users.avatar_hue) -- same formula, so a chosen hue and a derived one are
+ * indistinguishable in kind. Null and undefined both mean "derive".
  */
+/** The id-derived hue -- Avatar's fallback, exported so the Settings
+ *  "Default" swatch can paint the exact colour it stands for. */
+export function derivedHue(userId: string): number {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = (hash * 31 + userId.charCodeAt(i)) | 0;
+  }
+  return ((hash % 360) + 360) % 360;
+}
+
 export function Avatar({
   name,
   userId,
+  hue: chosenHue,
   size = "md",
   className,
 }: {
   name: string;
   userId: string;
+  hue?: number | null;
   size?: "sm" | "md" | "lg";
   className?: string;
 }) {
-  let hash = 0;
-  for (let i = 0; i < userId.length; i++) {
-    hash = (hash * 31 + userId.charCodeAt(i)) | 0;
-  }
-  const hue = ((hash % 360) + 360) % 360;
+  const hue = chosenHue ?? derivedHue(userId);
 
   const initials = name
     .split(/\s+/)

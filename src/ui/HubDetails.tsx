@@ -856,6 +856,7 @@ export function HubDetails({
                       size="sm"
                       name={member.displayName || member.username}
                       userId={member.userId}
+                      hue={member.avatarHue}
                     />
                     <span className="min-w-0 truncate">
                       {member.displayName || member.username}
@@ -940,6 +941,7 @@ export function HubDetails({
                       size="sm"
                       name={entry.displayName || entry.username}
                       userId={entry.userId}
+                      hue={entry.avatarHue}
                     />
                     <span className="min-w-0 truncate">
                       {entry.displayName || entry.username}

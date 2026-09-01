@@ -860,6 +860,7 @@ function safeParse(raw: string): unknown {
 
 export type AccountSettings = {
   displayName: string;
+  avatarHue: number | null;
   readReceiptsEnabled: boolean;
   email: string | null;
   emailVerified: boolean;
@@ -915,6 +916,15 @@ export function fetchAnnouncements(options?: {
   if (options?.limit) params.set("limit", String(options.limit));
   const query = params.size > 0 ? `?${params}` : "";
   return request(`${API}/announcements${query}`);
+}
+
+export function changeAvatarColor(
+  hue: number | null,
+): Promise<{ avatarHue: number | null }> {
+  return request(`${API}/account/avatar-color`, {
+    method: "POST",
+    body: JSON.stringify({ hue }),
+  });
 }
 
 export function changeDisplayName(
@@ -993,6 +1003,7 @@ export type Friend = {
   userId: string;
   username: string;
   displayName: string;
+  avatarHue: number | null;
   since: string | null;
 };
 

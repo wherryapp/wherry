@@ -54,4 +54,21 @@ function avatarSeed(
   return conversation.id;
 }
 
-export { conversationTitle, memberName, listTime, avatarSeed };
+/**
+ * The chosen hue for the person avatarSeed resolved to, or null when the
+ * avatar depicts the group/channel itself -- those stay id-derived, since a
+ * room is nobody's colour to pick. The same 1:1 test as avatarSeed, so the
+ * two answer about the same person.
+ */
+function avatarHue(
+  conversation: StoredConversation,
+  selfUserId: string,
+): number | null {
+  const others = conversation.members.filter((m) => m.userId !== selfUserId);
+  if (conversation.kind === "direct" && others.length === 1) {
+    return others[0]!.avatarHue ?? null;
+  }
+  return null;
+}
+
+export { conversationTitle, memberName, listTime, avatarSeed, avatarHue };

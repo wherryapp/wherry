@@ -19,7 +19,13 @@ import {
   useSidebarPresence,
   useUnread,
 } from "../hooks";
-import { avatarSeed, conversationTitle, listTime, memberName } from "../format";
+import {
+  avatarHue,
+  avatarSeed,
+  conversationTitle,
+  listTime,
+  memberName,
+} from "../format";
 import { useIsDesktop } from "../viewport";
 import { Avatar, Badge, BellOffIcon } from "../kit";
 import { HubsSection } from "./HubsSection";
@@ -182,6 +188,7 @@ export function ConversationList({
                 <Avatar
                   name={title}
                   userId={avatarSeed(conversation, session.user.id)}
+                  hue={avatarHue(conversation, session.user.id)}
                 />
                 {otherOnline && (
                   <span

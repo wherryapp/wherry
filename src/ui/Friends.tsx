@@ -41,7 +41,12 @@ function Person({
   return (
     <li className="flex items-center justify-between gap-2 py-2">
       <span className="flex min-w-0 items-center gap-2">
-        <Avatar size="sm" name={person.displayName} userId={person.userId} />
+        <Avatar
+          size="sm"
+          name={person.displayName}
+          userId={person.userId}
+          hue={person.avatarHue}
+        />
         <span className="min-w-0">
           <span className="block truncate text-sm text-neutral-900 dark:text-neutral-100">
             {person.displayName}

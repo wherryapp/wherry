@@ -147,6 +147,25 @@ export function markEmailVerified(session: StoredSession): StoredSession {
 }
 
 /**
+ * Updates the stored snapshot's avatar hue after the person picks one in
+ * Settings, markEmailVerified's pattern exactly: not a re-login, just
+ * keeping the snapshot honest so the header avatar is right on the next
+ * load instead of the next sign-in.
+ */
+export function markAvatarHue(
+  session: StoredSession,
+  avatarHue: number | null,
+): StoredSession {
+  const updated: StoredSession = {
+    ...session,
+    user: { ...session.user, avatarHue },
+  };
+  cached = updated;
+  writeKey(SESSION_KEY, JSON.stringify(updated));
+  return updated;
+}
+
+/**
  * Forgets the token but *keeps* the device id.
  *
  * Called on logout and on a 401. Clearing the device id here would recreate

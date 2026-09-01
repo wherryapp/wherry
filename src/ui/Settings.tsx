@@ -8,6 +8,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   ApiError,
+  changeAvatarColor,
   changeDisplayName,
   fetchAccountSettings,
   fetchAttachmentUsage,
@@ -19,7 +20,7 @@ import {
   type AccountDevice,
   type AttachmentUsage,
 } from "../api/client";
-import type { StoredSession } from "../api/session";
+import { markAvatarHue, type StoredSession } from "../api/session";
 import { changePasswordWithRewrap } from "../crypto/account";
 import { APP_VERSION } from "../sync/engine";
 import {
@@ -31,7 +32,9 @@ import {
 } from "../sync/push";
 import { useAnnouncements } from "./hooks";
 import {
+  Avatar,
   Button,
+  derivedHue,
   ErrorText,
   Input,
   LoadingLine,
@@ -39,6 +42,10 @@ import {
   Panel,
   PanelSection,
 } from "./kit";
+
+/** Twelve hues, 30 degrees apart -- the whole wheel with no near-duplicates.
+ *  Painted with Avatar's own formula, so the swatch IS the result. */
+const SWATCH_HUES = Array.from({ length: 12 }, (_, index) => index * 30);
 
 /**
  * Stamped at build time the same way BUILD_COMMIT is (see sync/engine.ts) --
@@ -68,6 +75,8 @@ export function Settings({
   onSignedOut: () => void;
 }) {
   const [displayName, setDisplayName] = useState(session.user.displayName);
+  // ?? null because a session stored before the field existed has undefined.
+  const [hue, setHue] = useState<number | null>(session.user.avatarHue ?? null);
   const [receipts, setReceipts] = useState<boolean | null>(null);
   const [emailAddress, setEmailAddress] = useState("");
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null);
@@ -105,6 +114,7 @@ export function Settings({
           fetchAttachmentUsage(),
         ]);
         setDisplayName(settings.displayName);
+        setHue(settings.avatarHue ?? null);
         setReceipts(settings.readReceiptsEnabled);
         setEmailAddress(settings.email ?? "");
         setSavedEmail(settings.email);
@@ -164,6 +174,25 @@ export function Settings({
       setNote("Sent again. The previous link no longer works.");
     } catch (caught) {
       report(caught, "Could not send that email.");
+    }
+  }
+
+  async function pickHue(next: number | null) {
+    setError(null);
+    const previous = hue;
+    // Optimistic: the preview repaints on the tap, and reverts on failure.
+    setHue(next);
+    try {
+      await changeAvatarColor(next);
+      // Keep the stored session snapshot honest too, so the header avatar
+      // is right on the next load rather than the next sign-in. The
+      // in-memory App session updates on reload -- same lag the display
+      // name already accepts.
+      markAvatarHue(session, next);
+      setNote("Saved. Other people will see it the next time their app syncs.");
+    } catch (caught) {
+      setHue(previous);
+      report(caught, "Could not save that colour.");
     }
   }
 
@@ -229,6 +258,51 @@ export function Settings({
               Save
             </Button>
           </form>
+        </PanelSection>
+
+        <PanelSection
+          title="Avatar colour"
+          description="Yours on every device — it saves to your account, not this browser."
+        >
+          <div className="flex items-center gap-3">
+            <Avatar
+              name={displayName || session.user.displayName}
+              userId={session.user.id}
+              hue={hue}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                aria-label="Default colour"
+                title="Default"
+                onClick={() => void pickHue(null)}
+                className={`h-7 w-7 rounded-full ${
+                  hue === null
+                    ? "ring-2 ring-accent-600 ring-offset-2 dark:ring-offset-neutral-900"
+                    : ""
+                }`}
+                // The colour "Default" actually produces for this account,
+                // not a grey placeholder -- the swatch is the result.
+                style={{
+                  backgroundColor: `oklch(0.55 0.13 ${derivedHue(session.user.id)})`,
+                }}
+              />
+              {SWATCH_HUES.map((swatch) => (
+                <button
+                  key={swatch}
+                  type="button"
+                  aria-label={`Hue ${swatch} degrees`}
+                  onClick={() => void pickHue(swatch)}
+                  className={`h-7 w-7 rounded-full ${
+                    hue === swatch
+                      ? "ring-2 ring-accent-600 ring-offset-2 dark:ring-offset-neutral-900"
+                      : ""
+                  }`}
+                  style={{ backgroundColor: `oklch(0.55 0.13 ${swatch})` }}
+                />
+              ))}
+            </div>
+          </div>
         </PanelSection>
 
         <PanelSection

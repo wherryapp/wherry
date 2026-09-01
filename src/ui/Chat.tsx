@@ -8,7 +8,7 @@ import { PinsPanel } from "./PinsPanel";
 import { Presence, Timeline, TypingLine } from "./Timeline";
 import { Composer } from "./Composer";
 import { type EditDraft, type ReplyDraft } from "./drafts";
-import { avatarSeed, conversationTitle } from "./format";
+import { avatarHue, avatarSeed, conversationTitle } from "./format";
 import { useIsDesktop } from "./viewport";
 import { ConversationList } from "./sidebar/Sidebar";
 import {
@@ -603,6 +603,7 @@ export function Chat({
                 size="sm"
                 name={session.user.displayName}
                 userId={session.user.id}
+                hue={session.user.avatarHue}
               />
               {unreadAnnouncements > 0 && (
                 <span className="absolute right-0 top-0 block h-2.5 w-2.5 rounded-full border-2 border-white bg-accent-600 dark:border-neutral-900" />
@@ -641,6 +642,7 @@ export function Chat({
                       size="sm"
                       name={conversationTitle(current, session.user.id)}
                       userId={avatarSeed(current, session.user.id)}
+                      hue={avatarHue(current, session.user.id)}
                     />
                   )}
                   <span className="min-w-0 flex-1 truncate">

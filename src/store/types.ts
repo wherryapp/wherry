@@ -103,6 +103,10 @@ export type StoredConversation = {
     userId: string;
     username: string;
     displayName: string;
+    /** Chosen avatar hue, or null for id-derived. Optional because rows
+     *  stored before the column existed come back without it -- treat
+     *  undefined exactly like null. */
+    avatarHue?: number | null;
     /** See the wire type in api/types.ts. Null until they have read anything. */
     lastReadMessageId: string | null;
     lastReadAt: string | null;

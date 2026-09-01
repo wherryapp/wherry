@@ -230,6 +230,7 @@ export function GroupDetails({
                     size="sm"
                     name={member.displayName || member.username}
                     userId={member.userId}
+                    hue={member.avatarHue}
                   />
                   <span className="truncate">
                     {member.displayName || member.username}
