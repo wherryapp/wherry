@@ -38,6 +38,9 @@ pub fn run() {
   }));
 
   builder
+    // Registration only -- the JS side (sync/desktop-notify.ts) owns every
+    // decision about when a notification is deserved.
+    .plugin(tauri_plugin_notification::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

@@ -42,6 +42,8 @@ import { socketUrl } from "../api/base";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { currentToken, loadSession } from "../api/session";
 import { decodeContent, isMessageOp } from "../api/payload";
+import { isTauriShell, notifyDesktop } from "./desktop-notify";
+import { shouldNotify } from "./notify-rules";
 import type { ArchiveEntry, HubSummary, InboxEnvelope } from "../api/types";
 import { e2e, E2EError } from "../crypto";
 import { PROTOCOL_PUBLIC } from "../crypto/provider";
@@ -985,6 +987,10 @@ export class SyncEngine {
       this.#emit({ type: "messages", conversationIds });
       broadcast({ type: "messages", conversationIds });
 
+      // Desktop-shell notifications, from the live path only. Not awaited:
+      // a notification must never delay the drain.
+      void this.#notifyDesktopArrivals(messages);
+
       // A message can be the first this device has heard of a conversation --
       // somebody else created it and sent to it. Storing the message is not
       // enough to make it visible, because the list is built from
@@ -1319,6 +1325,81 @@ export class SyncEngine {
   }
 
   /**
+   * OS notifications in the Tauri shell for a batch of just-arrived
+   * messages. Called only from the two *live* arrival paths -- the inbox
+   * drain and a public channel's forward catch-up -- never from archive
+   * hydration or history walks, which are old news by definition.
+   *
+   * The decision itself is notify-rules.ts's pure shouldNotify (tested);
+   * this method just gathers its inputs. One notification per conversation
+   * per batch, naming the newest eligible sender -- five messages are one
+   * fact ("something arrived there"), the same collapse the push tag does.
+   *
+   * Runs only in the leader (the engine loop is leader-only), so two open
+   * windows cannot double-notify. Fire-and-forget from the callers: a
+   * notification must never delay or fail a drain.
+   */
+  async #notifyDesktopArrivals(
+    messages: readonly StoredMessage[],
+  ): Promise<void> {
+    if (!isTauriShell()) return;
+    const session = loadSession();
+    if (!session) return;
+
+    try {
+      // Sampled once for the batch; a focus change mid-batch is noise.
+      const focused = document.hasFocus();
+
+      // conversationId -> the newest eligible sender in this batch.
+      const eligible = new Map<string, string>();
+      for (const message of messages) {
+        const conversation = await store.getConversation(
+          message.conversationId,
+        );
+        if (!conversation) continue;
+
+        const content = message.decryptFailed
+          ? null
+          : decodeContent(message.payload);
+        const renderable =
+          content !== null && content !== "unsupported" && !isMessageOp(content);
+
+        const notify = shouldNotify({
+          windowFocused: focused,
+          isOwn: message.senderUserId === session.user.id,
+          decryptFailed: message.decryptFailed === true,
+          kind:
+            content === null || content === "unsupported"
+              ? "unsupported"
+              : isMessageOp(content)
+                ? "op"
+                : "renderable",
+          muted: conversation.muted === true,
+          publicChannel: conversation.hubVisibility === "public",
+          mentionsSelf:
+            renderable &&
+            (content.mentions?.includes(session.user.id) ?? false),
+        });
+        if (notify) eligible.set(message.conversationId, message.senderUserId);
+      }
+
+      for (const [conversationId, senderUserId] of eligible) {
+        const conversation = await store.getConversation(conversationId);
+        const member = conversation?.members.find(
+          (candidate) => candidate.userId === senderUserId,
+        );
+        const name = member
+          ? member.displayName || member.username
+          : "Someone";
+        await notifyDesktop(name);
+      }
+    } catch {
+      // Never throw near the sync loop -- a lost notification is a glance
+      // at the dock, a wedged loop is the whole app.
+    }
+  }
+
+  /**
    * Delivery for public hub channels, which have no envelopes and no inbox
    * -- protocol v4 rows are fetched by cursor from `/archive`, per channel.
    *
@@ -1392,6 +1473,11 @@ export class SyncEngine {
 
           this.#emit({ type: "messages", conversationIds: [channel.id] });
           broadcast({ type: "messages", conversationIds: [channel.id] });
+
+          // Live arrivals for a public channel (the first-contact page
+          // above is hydration, not news, and deliberately does not
+          // notify). Mention gating happens inside the rules.
+          void this.#notifyDesktopArrivals(messages);
 
           if (page.entries.length < ARCHIVE_PAGE) break;
         }

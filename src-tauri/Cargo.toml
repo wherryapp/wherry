@@ -23,6 +23,10 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
+# Registration only, keeping the shell's "no IPC, no Rust logic" rule: the
+# client's sync engine decides when to notify; this just gives the webview
+# the OS notification API the PWA's service worker cannot reach in here.
+tauri-plugin-notification = "2"
 
 # Desktop only -- there is no second instance to guard against on mobile.
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
