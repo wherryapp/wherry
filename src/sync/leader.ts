@@ -239,6 +239,26 @@ export type SyncBroadcast =
   /** Ephemeral relays between tabs: what the leader's socket heard... */
   | { type: "typing"; conversationId: string; byUserId: string }
   | { type: "presence"; conversationId: string; online: string[] }
+  // Voice frames, relayed by the leader (which holds the socket) to the
+  // follower tabs, same as typing and presence.
+  | { type: "call_ring"; callId: string; conversationId: string; byUserId: string }
+  | {
+      type: "call_state";
+      callId: string;
+      conversationId: string;
+      status: "ringing" | "active" | "ended";
+      reason: string | null;
+      participants: { userId: string; deviceId: string | null; joined: boolean }[];
+    }
+  | { type: "voice_presence"; conversationId: string; occupants: string[] }
+  // Which tab holds the voice session, so the others can say "in a call in
+  // another window" instead of offering to start a second one.
+  | {
+      type: "voice-state";
+      phase: "idle" | "active";
+      callId: string | null;
+      conversationId: string | null;
+    }
   /** ...and what a follower wants the leader's socket to say. */
   | { type: "typing-intent"; conversationId: string }
   | { type: "presence-intent"; conversationId: string }

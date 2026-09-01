@@ -237,6 +237,22 @@ export interface HandshakeOps {
    * welcome into the real one.
    */
   forgetGroup(conversationId: string): Promise<void>;
+
+  /**
+   * RFC 9420 §8.5's exporter over the group's current epoch: `length`
+   * bytes derived from the epoch's exporter secret under `label` and
+   * `context`. Every member device derives the same bytes for the same
+   * epoch, which is what keys a call without a second key exchange
+   * (voice/keys.ts): the SFU relays frames it cannot open, and the server
+   * never sees a call key. Null when this device holds no state for the
+   * conversation. Never persisted, never sent anywhere.
+   */
+  exportSecret(
+    conversationId: string,
+    label: string,
+    context: Uint8Array,
+    length: number,
+  ): Promise<{ epoch: number; secret: Uint8Array } | null>;
 }
 
 export interface E2EProvider {

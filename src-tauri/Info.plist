@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the macOS bundle's Info.plist by the Tauri CLI. The one
+	     key voice needs (docs/prompts/voice-plan.md §8): without it macOS
+	     refuses getUserMedia outright, and with it the OS shows this string
+	     once. WKWebView's own permission prompt is auto-granted by wry. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Wherry uses the microphone for voice calls and voice rooms.</string>
+</dict>
+</plist>

@@ -39,11 +39,14 @@ export function ConversationList({
   selected,
   onSelect,
   onOpenHub,
+  voiceOccupancy,
 }: {
   session: StoredSession;
   selected: string | null;
   onSelect: (id: string) => void;
   onOpenHub: (hubId: string) => void;
+  /** Who is in each voice channel (voice_presence), for the hub rows. */
+  voiceOccupancy: ReadonlyMap<string, readonly string[]>;
 }) {
   const { conversations } = useConversations();
   const { hubs } = useHubs();
@@ -113,6 +116,7 @@ export function ConversationList({
       unread={unread}
       mentions={mentions}
       muted={muted}
+      occupancy={voiceOccupancy}
       selected={selected}
       onSelect={onSelect}
       onOpenHub={onOpenHub}

@@ -7,6 +7,7 @@ import {
   Badge,
   BellOffIcon,
   ChevronLeftIcon,
+  HeadphonesIcon,
   LockIcon,
   PublicPill,
 } from "../kit";
@@ -55,6 +56,7 @@ export function HubsSection({
   unread,
   mentions,
   muted,
+  occupancy,
   selected,
   onSelect,
   onOpenHub,
@@ -67,6 +69,8 @@ export function HubsSection({
   mentions: Set<string>;
   /** Channel conversation ids the user has muted. */
   muted: Set<string>;
+  /** Voice channels: who is in each right now. Empty when nobody is. */
+  occupancy: ReadonlyMap<string, readonly string[]>;
   selected: string | null;
   onSelect: (conversationId: string) => void;
   onOpenHub: (hubId: string) => void;
@@ -267,6 +271,8 @@ export function HubsSection({
               <div className="mt-0.5">
                 {hub.channels.map((channel) => {
                   const count = unread.get(channel.id) ?? 0;
+                  const inRoom = occupancy.get(channel.id)?.length ?? 0;
+                  const isVoice = channel.kind === "voice";
                   return (
                     <button
                       key={channel.id}
@@ -278,7 +284,11 @@ export function HubsSection({
                       }`}
                     >
                       <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
-                        #
+                        {isVoice ? (
+                          <HeadphonesIcon className="h-3.5 w-3.5" />
+                        ) : (
+                          "#"
+                        )}
                       </span>
                       <span
                         className={`min-w-0 flex-1 truncate ${
@@ -287,7 +297,16 @@ export function HubsSection({
                             : "text-neutral-700 dark:text-neutral-300"
                         }`}
                       >
-                        {channel.title ?? "channel"}
+                        {channel.title ?? (isVoice ? "voice" : "channel")}
+                        {isVoice && inRoom > 0 && (
+                          <span
+                            aria-label={`${inRoom} in voice`}
+                            className="ml-1.5 inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400"
+                          >
+                            <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                            {inRoom}
+                          </span>
+                        )}
                         {channel.posting === "moderators" && (
                           <LockIcon className="ml-1 inline h-3 w-3 align-[-1px] text-neutral-400 dark:text-neutral-500" />
                         )}

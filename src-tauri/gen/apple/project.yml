@@ -54,6 +54,14 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "0.1.0"
+        # Voice (docs/prompts/voice-plan.md §8). The prompt string iOS shows
+        # the first time getUserMedia asks; WKWebView's own permission
+        # delegate is auto-granted by wry, so this is the only ask a person
+        # sees. Background audio keeps the call's playback alive when the
+        # screen locks; capture in the background is a WebKit limit the
+        # plan records rather than works around.
+        NSMicrophoneUsageDescription: Wherry uses the microphone for voice calls and voice rooms.
+        UIBackgroundModes: [audio]
     entitlements:
       path: wherry-desktop_iOS/wherry-desktop_iOS.entitlements
     scheme:

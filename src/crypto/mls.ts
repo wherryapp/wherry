@@ -67,6 +67,7 @@ import {
   type Proposal,
 } from "ts-mls";
 import { defaultClientConfig } from "ts-mls/clientConfig.js";
+import { mlsExporter } from "ts-mls/keySchedule.js";
 import { ratchetTreeFromExtension } from "ts-mls/groupInfo.js";
 import {
   deleteGroup,
@@ -547,6 +548,29 @@ class MlsHandshake implements HandshakeOps {
           groupInfo,
         }),
       };
+    });
+  }
+
+  async exportSecret(
+    conversationId: string,
+    label: string,
+    context: Uint8Array,
+    length: number,
+  ): Promise<{ epoch: number; secret: Uint8Array } | null> {
+    // Read-only, like exportGroupInfo, and under the lock for the same
+    // reason: the epoch and the secret must come from one settled state.
+    return await withGroupLock(conversationId, async () => {
+      const suite = await cs();
+      const state = await loadState(conversationId);
+      if (!state) return null;
+      const secret = await mlsExporter(
+        state.keySchedule.exporterSecret,
+        label,
+        context,
+        length,
+        suite,
+      );
+      return { epoch: Number(state.groupContext.epoch), secret };
     });
   }
 

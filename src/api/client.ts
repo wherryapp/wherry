@@ -45,6 +45,10 @@ import type {
   RecipientsResponse,
   SendResult,
   WelcomeEntry,
+  ChannelKind,
+  Call,
+  JoinResult,
+  VoiceActive,
 } from "./types";
 
 /**
@@ -875,7 +879,14 @@ export type AccountSettings = {
    * every time Settings opens rather than cached -- toggling one takes
    * effect on the next open, no reload or rebuild needed.
    */
-  features: { tipJar: boolean; announcements: boolean; hubs: boolean };
+  features: {
+    tipJar: boolean;
+    announcements: boolean;
+    hubs: boolean;
+    /** The voice flag. Advisory: whether the server CAN do voice at all is
+     *  /health's `voice`; the controls show only when both say yes. */
+    voice: boolean;
+  };
 };
 
 export type AccountDevice = {
@@ -1095,10 +1106,12 @@ export function deleteHub(hubId: string): Promise<void> {
 export function createHubChannel(input: {
   hubId: string;
   name: string;
+  /** Absent means text -- what every client before voice sent. */
+  kind?: ChannelKind;
 }): Promise<HubChannel> {
   return request<HubChannel>(`${API}/hubs/${input.hubId}/channels`, {
     method: "POST",
-    body: { name: input.name },
+    body: { name: input.name, ...(input.kind ? { kind: input.kind } : {}) },
   });
 }
 
@@ -1114,6 +1127,8 @@ export function updateHubChannel(input: {
   topic?: string;
   posting?: ChannelPosting;
   slowmodeSeconds?: number | null;
+  /** Voice channels only, both hub classes. Null turns auto-mute off. */
+  joinMutedAbove?: number | null;
 }): Promise<HubChannel> {
   const { hubId, conversationId, ...body } = input;
   return request<HubChannel>(
@@ -1358,4 +1373,68 @@ export function confirmPasswordReset(
     method: "POST",
     body: { token, newPassword },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Voice (docs/prompts/voice-plan.md §5.6)
+// ---------------------------------------------------------------------------
+//
+// Every call here is the app server's side of a call: minting a token,
+// recording an answer, a decline, a leave. The media and the signalling go
+// to the SFU directly (voice/session.ts) -- nothing about a call in
+// progress needs these endpoints, which is what lets a call survive a
+// server deploy.
+
+/** Starts a call in a direct/group conversation, or joins the open one. */
+export function startCall(conversationId: string): Promise<JoinResult> {
+  return request<JoinResult>(`${API}/conversations/${conversationId}/call`, {
+    method: "POST",
+  });
+}
+
+export function answerCall(callId: string): Promise<JoinResult> {
+  return request<JoinResult>(`${API}/calls/${callId}/answer`, { method: "POST" });
+}
+
+export function declineCall(callId: string): Promise<void> {
+  return request<void>(`${API}/calls/${callId}/decline`, { method: "POST" });
+}
+
+/** Leaving is also the starter's cancel while it still rings. */
+export function leaveCall(callId: string): Promise<void> {
+  return request<void>(`${API}/calls/${callId}/leave`, { method: "POST" });
+}
+
+export function fetchCall(callId: string): Promise<{ call: Call }> {
+  return request<{ call: Call }>(`${API}/calls/${callId}`);
+}
+
+/** The self-heal read: everything voice-shaped about this account now. */
+export function fetchVoiceActive(): Promise<VoiceActive> {
+  return request<VoiceActive>(`${API}/voice/active`);
+}
+
+export function joinVoiceRoom(conversationId: string): Promise<JoinResult> {
+  return request<JoinResult>(`${API}/conversations/${conversationId}/voice/join`, {
+    method: "POST",
+  });
+}
+
+export function leaveVoiceRoom(conversationId: string): Promise<void> {
+  return request<void>(`${API}/conversations/${conversationId}/voice/leave`, {
+    method: "POST",
+  });
+}
+
+/** Moderator+ in the hub, seniority enforced server-side. */
+export function moderateVoice(input: {
+  hubId: string;
+  conversationId: string;
+  userId: string;
+  action: "mute" | "disconnect";
+}): Promise<void> {
+  const base = `${API}/hubs/${input.hubId}/voice/${input.conversationId}`;
+  return input.action === "mute"
+    ? request<void>(`${base}/mute/${input.userId}`, { method: "POST" })
+    : request<void>(`${base}/participants/${input.userId}`, { method: "DELETE" });
 }

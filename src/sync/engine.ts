@@ -225,7 +225,21 @@ export type SyncEvent =
    *  receiver's clock. Components hold these in their own state; there is
    *  deliberately nothing to re-read from IndexedDB. */
   | { type: "typing"; conversationId: string; byUserId: string }
-  | { type: "presence"; conversationId: string; online: string[] };
+  | { type: "presence"; conversationId: string; online: string[] }
+  /** Voice (docs/prompts/voice-plan.md §5.5): a ring, a call's roster
+   *  snapshot, a voice channel's occupancy. Ephemeral like typing and
+   *  presence -- nothing stored; voice/ holds the state and self-heals
+   *  from GET /voice/active when a frame was missed. */
+  | { type: "call_ring"; callId: string; conversationId: string; byUserId: string }
+  | {
+      type: "call_state";
+      callId: string;
+      conversationId: string;
+      status: "ringing" | "active" | "ended";
+      reason: string | null;
+      participants: { userId: string; deviceId: string | null; joined: boolean }[];
+    }
+  | { type: "voice_presence"; conversationId: string; occupants: string[] };
 
 type Listener = (event: SyncEvent) => void;
 
@@ -1592,6 +1606,82 @@ export class SyncEngine {
       return;
     }
 
+    // The three voice frames: validated, re-emitted to this tab's
+    // listeners and to the follower tabs, forgotten. voice/ decides what
+    // they mean (a ring shown, a bar updated, a room's avatars redrawn).
+    if (frame.type === "call_ring") {
+      const callId = frame["callId"];
+      const conversationId = frame["conversationId"];
+      const byUserId = frame["byUserId"];
+      if (
+        typeof callId !== "string" ||
+        typeof conversationId !== "string" ||
+        typeof byUserId !== "string"
+      ) {
+        return;
+      }
+      const event = { type: "call_ring", callId, conversationId, byUserId } as const;
+      this.#emit(event);
+      broadcast(event);
+      return;
+    }
+
+    if (frame.type === "call_state") {
+      const callId = frame["callId"];
+      const conversationId = frame["conversationId"];
+      const status = frame["status"];
+      const reason = frame["reason"];
+      const participants = frame["participants"];
+      if (
+        typeof callId !== "string" ||
+        typeof conversationId !== "string" ||
+        (status !== "ringing" && status !== "active" && status !== "ended") ||
+        !Array.isArray(participants)
+      ) {
+        return;
+      }
+      const cleaned = participants
+        .filter(
+          (p): p is { userId: string; deviceId: string | null; joined: boolean } =>
+            typeof p === "object" &&
+            p !== null &&
+            typeof (p as { userId?: unknown }).userId === "string" &&
+            typeof (p as { joined?: unknown }).joined === "boolean",
+        )
+        .map((p) => ({
+          userId: p.userId,
+          deviceId: typeof p.deviceId === "string" ? p.deviceId : null,
+          joined: p.joined,
+        }));
+      const event = {
+        type: "call_state",
+        callId,
+        conversationId,
+        status,
+        reason: typeof reason === "string" ? reason : null,
+        participants: cleaned,
+      } as const;
+      this.#emit(event);
+      broadcast(event);
+      return;
+    }
+
+    if (frame.type === "voice_presence") {
+      const conversationId = frame["conversationId"];
+      const occupants = frame["occupants"];
+      if (
+        typeof conversationId !== "string" ||
+        !Array.isArray(occupants) ||
+        !occupants.every((entry) => typeof entry === "string")
+      ) {
+        return;
+      }
+      const event = { type: "voice_presence", conversationId, occupants } as const;
+      this.#emit(event);
+      broadcast(event);
+      return;
+    }
+
     if (frame.type !== "delivered") return;
     const conversationId = frame["conversationId"];
     const byUserId = frame["byUserId"];
@@ -1727,6 +1817,8 @@ export class SyncEngine {
             targetDisplayName: event.targetDisplayName,
             title: event.title,
             historyShared: event.historyShared,
+          callId: event.callId ?? null,
+          call: event.call ?? null,
             createdAt: event.createdAt,
           })),
         );

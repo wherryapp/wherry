@@ -49,6 +49,11 @@ self.addEventListener("push", (event) => {
   let title = "New message";
   let body = "Open messenger to read it.";
   let tag = "messenger-message";
+  // Voice (docs/prompts/voice-plan.md §6.2): a ring is the one notification
+  // that must interrupt -- it stays up until acted on, re-alerts, and
+  // carries Answer/Decline. A missed call is an ordinary notification
+  // that replaces the ring's row (same tag, set by the server).
+  let kind = "message";
 
   // A push with no data at all is valid and is what a "wake up and check"
   // notification looks like. Anything that does arrive is untrusted input from
@@ -59,6 +64,7 @@ self.addEventListener("push", (event) => {
       if (typeof data.title === "string") title = data.title;
       if (typeof data.body === "string") body = data.body;
       if (typeof data.tag === "string") tag = data.tag;
+      if (data.kind === "call" || data.kind === "missed_call") kind = data.kind;
     } catch {
       // Not JSON. The defaults above are already the right answer.
     }
@@ -82,7 +88,32 @@ self.addEventListener("push", (event) => {
         type: "window",
         includeUncontrolled: true,
       });
-      if (clientList.some((client) => client.focused)) return;
+      // A ring is the exception to the focused-window rule: the app shows
+      // its own overlay when focused, but a ring's push and its socket frame
+      // race, and a notification that also rings the phone is worth one
+      // duplicate. Everything else keeps the rule.
+      if (kind !== "call" && clientList.some((client) => client.focused)) return;
+
+      if (kind === "call") {
+        await self.registration.showNotification(title, {
+          body,
+          icon: "/icon-192.png",
+          badge: "/icon-192.png",
+          tag,
+          renotify: true,
+          requireInteraction: true,
+          vibrate: [300, 150, 300, 150, 300],
+          // Answer opens the app, where the ring overlay is already showing
+          // if the call is still ringing. Decline only closes this
+          // notification: the worker holds no session token, so the
+          // decline itself is not posted, and the ring times out.
+          actions: [
+            { action: "answer", title: "Answer" },
+            { action: "decline", title: "Decline" },
+          ],
+        });
+        return;
+      }
 
       await self.registration.showNotification(title, {
         body,
@@ -104,6 +135,9 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+
+  // A declined ring: nothing to open. See the push handler above.
+  if (event.action === "decline") return;
 
   // Focus an open tab if there is one, rather than opening a second copy of an
   // app that is already running.

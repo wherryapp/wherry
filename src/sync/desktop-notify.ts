@@ -54,3 +54,29 @@ export async function notifyDesktop(senderName: string): Promise<void> {
     // Best effort by contract; see above.
   }
 }
+
+/**
+ * "Incoming call from <name>" in the desktop shell, for a ring that lands
+ * while the window is not focused -- the same who-but-never-what contract
+ * as above. The plugin has no notification actions on desktop; the
+ * window is where the call is answered, and the single-instance plugin
+ * brings it up.
+ */
+export async function notifyDesktopCall(callerName: string): Promise<void> {
+  if (!isTauriShell()) return;
+  try {
+    const plugin = await import("@tauri-apps/plugin-notification");
+    if (permission !== "granted") {
+      if (permission === "denied") return;
+      let granted = await plugin.isPermissionGranted();
+      if (!granted) {
+        granted = (await plugin.requestPermission()) === "granted";
+      }
+      permission = granted ? "granted" : "denied";
+      if (!granted) return;
+    }
+    plugin.sendNotification({ title: `Incoming call from ${callerName}` });
+  } catch {
+    // Best effort by contract; see above.
+  }
+}

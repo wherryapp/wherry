@@ -48,7 +48,10 @@ import {
   ReplyIcon,
   TrashIcon,
   useConfirm,
+  PhoneIcon,
 } from "./kit";
+import { callNotice } from "../voice/rules";
+import { voice } from "../voice/session";
 
 // ---------------------------------------------------------------------------
 // Rendering content
@@ -61,7 +64,11 @@ import {
 // aggregation notes on useTimeline in hooks.ts.
 
 /** The words for a notice line -- see StoredEvent in store/types.ts. */
-function eventText(event: StoredEvent, selfUserId: string): string {
+function eventText(
+  event: StoredEvent,
+  selfUserId: string,
+  names?: ReadonlyMap<string, string>,
+): string {
   const actor =
     event.actorUserId === selfUserId
       ? "You"
@@ -82,6 +89,28 @@ function eventText(event: StoredEvent, selfUserId: string): string {
       return event.title
         ? `${actor} named the group "${event.title}"`
         : `${actor} cleared the group name`;
+    case "call_started":
+      // Rendered as a join banner while open (see the item loop), and as
+      // nothing once the call_ended line exists to summarise it.
+      return `${actor} started a call`;
+    case "call_ended": {
+      const call = event.call;
+      if (!call) return `${actor} ended a call`;
+      const starterName =
+        call.startedByUserId === event.actorUserId
+          ? event.actorDisplayName || event.actorUsername
+          : (names?.get(call.startedByUserId) ?? "Someone");
+      return callNotice({
+        endReason: call.endReason,
+        startedByUserId: call.startedByUserId,
+        startedByName: starterName,
+        answeredAt: call.answeredAt,
+        startedAt: call.startedAt,
+        endedAt: call.endedAt,
+        participantUserIds: call.participantUserIds,
+        selfUserId,
+      });
+    }
   }
 }
 
@@ -1365,10 +1394,31 @@ export function Timeline({
 
       {items.flatMap((item: TimelineItem, index) => {
         if (item.kind === "event") {
+          // A call still open is a door, not a notice: "Call in progress ·
+          // Join". Once it has ended the call_ended line carries the
+          // summary and the started line renders nothing at all.
+          if (item.event.kind === "call_started") {
+            const open = item.event.call !== null && item.event.call.endedAt === null;
+            if (!open) return [];
+            return withDivider(
+              index,
+              <div key={item.event.id} className="mt-3 flex justify-center">
+                <button
+                  onClick={() => {
+                    if (conversation) void voice.startCall(conversation);
+                  }}
+                  className="flex items-center gap-2 rounded-full bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700"
+                >
+                  <PhoneIcon className="h-3.5 w-3.5" />
+                  Call in progress · Join
+                </button>
+              </div>,
+            );
+          }
           return withDivider(
             index,
             <div key={item.event.id} className="mt-3">
-              <Notice text={eventText(item.event, session.user.id)} />
+              <Notice text={eventText(item.event, session.user.id, names)} />
             </div>,
           );
         }

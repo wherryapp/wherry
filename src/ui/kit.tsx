@@ -257,6 +257,114 @@ export function LockIcon({ className }: IconProps) {
   );
 }
 
+export function PhoneIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M4.5 3.5h2.8l1.4 3.4-1.9 1.4a9.5 9.5 0 0 0 4.9 4.9l1.4-1.9 3.4 1.4v2.8a1.5 1.5 0 0 1-1.6 1.5A12.8 12.8 0 0 1 3 5.1a1.5 1.5 0 0 1 1.5-1.6Z" />
+    </svg>
+  );
+}
+
+export function PhoneOffIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M4.5 3.5h2.8l1.4 3.4-1.9 1.4a9.5 9.5 0 0 0 4.9 4.9l1.4-1.9 3.4 1.4v2.8a1.5 1.5 0 0 1-1.6 1.5A12.8 12.8 0 0 1 3 5.1a1.5 1.5 0 0 1 1.5-1.6Z" />
+      <path d="m3 17 14-14" />
+    </svg>
+  );
+}
+
+export function MicIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <rect x="7" y="2.5" width="6" height="9" rx="3" />
+      <path d="M4 9.5a6 6 0 0 0 12 0M10 15.5v2M7.5 17.5h5" />
+    </svg>
+  );
+}
+
+export function MicOffIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M13 8V5.5a3 3 0 0 0-6 0v1M7 8.5v0a3 3 0 0 0 5.2 2.1M4 9.5a6 6 0 0 0 9.7 4.7M16 9.5a6 6 0 0 1-.8 3M10 15.5v2M7.5 17.5h5" />
+      <path d="m3 17 14-14" />
+    </svg>
+  );
+}
+
+export function SpeakerIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M3 7.5h3l4-3v11l-4-3H3z" />
+      <path d="M13 7a4 4 0 0 1 0 6M15.5 4.5a7.5 7.5 0 0 1 0 11" />
+    </svg>
+  );
+}
+
+export function HeadphonesIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M3 12v-1.5a7 7 0 0 1 14 0V12" />
+      <rect x="3" y="11" width="3.5" height="5.5" rx="1.2" />
+      <rect x="13.5" y="11" width="3.5" height="5.5" rx="1.2" />
+    </svg>
+  );
+}
+
 export function PinIcon({ className }: IconProps) {
   return (
     <svg

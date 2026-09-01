@@ -40,7 +40,7 @@ import { broadcast, subscribeToBroadcasts } from "../sync/leader";
  * BroadcastChannel. Both say the same thing -- "local storage changed" -- and
  * a component should not have to care which tab it is in.
  */
-function useSyncEvents(handler: (event: SyncEvent) => void): void {
+export function useSyncEvents(handler: (event: SyncEvent) => void): void {
   const ref = useRef(handler);
   ref.current = handler;
 
@@ -71,6 +71,28 @@ function useSyncEvents(handler: (event: SyncEvent) => void): void {
           type: "presence",
           conversationId: message.conversationId,
           online: message.online,
+        });
+      } else if (message.type === "call_ring") {
+        ref.current({
+          type: "call_ring",
+          callId: message.callId,
+          conversationId: message.conversationId,
+          byUserId: message.byUserId,
+        });
+      } else if (message.type === "call_state") {
+        ref.current({
+          type: "call_state",
+          callId: message.callId,
+          conversationId: message.conversationId,
+          status: message.status,
+          reason: message.reason,
+          participants: message.participants,
+        });
+      } else if (message.type === "voice_presence") {
+        ref.current({
+          type: "voice_presence",
+          conversationId: message.conversationId,
+          occupants: message.occupants,
         });
       }
     });
@@ -814,8 +836,8 @@ export function useHubs(): { hubs: HubSummary[]; reload: () => void } {
  * A transient failure must not disable a feature for the rest of the
  * session.
  */
-export function useFeatures(): { hubs: boolean } {
-  const [features, setFeatures] = useState({ hubs: false });
+export function useFeatures(): { hubs: boolean; voice: boolean } {
+  const [features, setFeatures] = useState({ hubs: false, voice: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -826,7 +848,11 @@ export function useFeatures(): { hubs: boolean } {
       void fetchAccountSettings()
         .then((settings) => {
           if (cancelled) return;
-          setFeatures({ hubs: settings.features.hubs });
+          setFeatures({
+            hubs: settings.features.hubs,
+            // Older servers answer no `voice` at all: off, never undefined.
+            voice: settings.features.voice === true,
+          });
         })
         .catch((error: unknown) => {
           if (cancelled) return;

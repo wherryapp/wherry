@@ -1,3 +1,4 @@
+import type { ConversationEventCall, ConversationEventKind } from "../api/types";
 // What the client keeps locally, and the interface it keeps it behind.
 //
 // ---------------------------------------------------------------------------
@@ -99,6 +100,11 @@ export type StoredConversation = {
    * UI labels. Absent on pre-hubs rows, which are all sealed.
    */
   hubVisibility?: "private" | "public" | null;
+  /** 'voice' for a hub voice channel; absent on rows stored before voice
+   *  existed, which are all text. Mirrors the wire field. */
+  channelKind?: "text" | "voice";
+  /** The room's join-mute threshold; absent or null means none. */
+  joinMutedAbove?: number | null;
   members: {
     userId: string;
     username: string;
@@ -127,7 +133,7 @@ export type StoredConversation = {
 export type StoredEvent = {
   id: string;
   conversationId: string;
-  kind: "member_added" | "member_removed" | "renamed";
+  kind: ConversationEventKind;
   actorUserId: string;
   actorUsername: string;
   actorDisplayName: string;
@@ -136,6 +142,11 @@ export type StoredEvent = {
   targetDisplayName: string | null;
   title: string | null;
   historyShared: boolean;
+  /** call_started / call_ended only (voice); null otherwise. Mirrors the
+   *  wire event -- the server joins the call's facts at read time, so a
+   *  refresh after the call ends updates the stored row's `call`. */
+  callId: string | null;
+  call: ConversationEventCall | null;
   createdAt: string;
 };
 

@@ -169,6 +169,19 @@ export type Conversation = {
    * else.
    */
   hubVisibility: HubVisibility | null;
+  /**
+   * 'voice' for a hub voice channel -- a room with no timeline, rendered as
+   * a joinable room rather than a thread; 'text' for everything else,
+   * forever. Settings class, like topic. Never inferred from the title.
+   */
+  channelKind: ChannelKind;
+  /**
+   * Voice channels only: joining a room already holding MORE than this
+   * many people mutes you on entry (null: nobody is auto-muted). The
+   * server applies it and answers `joinMuted`; the client's own join-mute
+   * preference (voice/prefs.ts) can override either way.
+   */
+  joinMutedAbove: number | null;
   members: ConversationMember[];
   /**
    * Whether the caller has muted this conversation. Server column, per the
@@ -182,7 +195,23 @@ export type Conversation = {
 export type ConversationEventKind =
   | "member_added"
   | "member_removed"
-  | "renamed";
+  | "renamed"
+  /** A call opened here: a join banner while it is still open, nothing
+   *  once it has ended (the call_ended line carries the summary). */
+  | "call_started"
+  /** "Call · 12 min", "Missed call from …", "Declined call". */
+  | "call_ended";
+
+/** What a call_* event says about its call, joined server-side at read. */
+export type ConversationEventCall = {
+  startedByUserId: string;
+  startedAt: string;
+  answeredAt: string | null;
+  endedAt: string | null;
+  endReason: string | null;
+  /** Everyone who was handed a token or seen by the SFU. */
+  participantUserIds: string[];
+};
 
 /**
  * A notice line: who did what, server-authored so it stays consistent across
@@ -201,6 +230,9 @@ export type ConversationEvent = {
   targetDisplayName: string | null;
   title: string | null;
   historyShared: boolean;
+  /** call_started / call_ended only; null for every other kind. */
+  callId: string | null;
+  call: ConversationEventCall | null;
   createdAt: string;
 };
 
@@ -295,10 +327,16 @@ export type HubRole = "owner" | "moderator" | "member";
 /** 'moderators' makes a channel announcement-only. */
 export type ChannelPosting = "everyone" | "moderators";
 
+export type ChannelKind = "text" | "voice";
+
 export type HubChannel = {
   /** The channel's conversation id -- a channel IS a conversation. */
   id: string;
   title: string | null;
+  /** 'voice' is a room (join, no timeline); 'text' is a channel. */
+  kind: ChannelKind;
+  /** Voice channels only; see Conversation.joinMutedAbove. */
+  joinMutedAbove: number | null;
   /** Roster-class metadata like title; null when unset. */
   topic: string | null;
   posting: ChannelPosting;
@@ -459,6 +497,64 @@ export type HubPin = {
  * has never heard of, and a client that crashes on an unknown one is worse
  * than a client that reports it.
  */
+// ---------------------------------------------------------------------------
+// Voice (docs/prompts/voice-plan.md §5.6)
+// ---------------------------------------------------------------------------
+
+export type CallKind = "call" | "room";
+export type CallStatus = "ringing" | "active" | "ended";
+
+export type CallParticipant = {
+  userId: string;
+  /** The device that answered or joined; null while merely invited. */
+  deviceId: string | null;
+  invitedAt: string | null;
+  answeredAt: string | null;
+  declinedAt: string | null;
+  /** From the SFU's webhooks -- "actually in the room". */
+  joinedAt: string | null;
+  leftAt: string | null;
+};
+
+/**
+ * A call (direct/group, rings) or one occupied session of a hub voice
+ * channel (kind 'room', never rings). Metadata only; the media is E2EE or
+ * relayed unrecorded -- the server never holds content of a call.
+ */
+export type Call = {
+  id: string;
+  conversationId: string;
+  kind: CallKind;
+  status: CallStatus;
+  startedByUserId: string;
+  startedAt: string;
+  answeredAt: string | null;
+  endedAt: string | null;
+  endReason: string | null;
+  participants: CallParticipant[];
+};
+
+/** What every join hands back: the SFU to connect to, and a token for it. */
+export type JoinResult = {
+  call: Call;
+  token: string;
+  /** VOICE_PUBLIC_URL -- the hostname that survives the SFU moving. */
+  url: string;
+  /** The server's join-mute verdict for a room; always false for a call. */
+  joinMuted: boolean;
+};
+
+export type RoomOccupancy = { conversationId: string; occupants: string[] };
+
+/** GET /voice/active: every open call in the caller's conversations (rings
+ *  included -- a ring is an open call this user is merely invited to) and
+ *  who is in the voice channels they belong to. The self-heal read. */
+export type VoiceActive = {
+  enabled: boolean;
+  calls: Call[];
+  rooms: RoomOccupancy[];
+};
+
 export type ApiErrorCode =
   | "INVALID_REQUEST"
   | "UNAUTHORIZED"

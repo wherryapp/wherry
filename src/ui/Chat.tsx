@@ -5,6 +5,12 @@ import { HubDetails } from "./HubDetails";
 import { GroupDetails } from "./GroupDetails";
 import { JoinInvite } from "./JoinInvite";
 import { PinsPanel } from "./PinsPanel";
+import { CallBar } from "./voice/CallBar";
+import { CallButton } from "./voice/CallButton";
+import { IncomingCall } from "./voice/IncomingCall";
+import { VoiceRoom } from "./voice/VoiceRoom";
+import { useVoice, useVoiceSignals } from "../voice/hooks";
+import { voice } from "../voice/session";
 import { Presence, Timeline, TypingLine } from "./Timeline";
 import { Composer } from "./Composer";
 import { type EditDraft, type ReplyDraft } from "./drafts";
@@ -32,6 +38,7 @@ import {
   useSyncStatus,
   useTimeline,
   useUnread,
+  useFeatures,
 } from "./hooks";
 import { QuickSwitcher } from "./QuickSwitcher";
 import {
@@ -45,6 +52,7 @@ import {
   PinIcon,
   PublicPill,
   UsersIcon,
+  HeadphonesIcon,
 } from "./kit";
 
 // eventText, readCount, readLabel, deliveredCount, deliveredLabel, time,
@@ -310,6 +318,14 @@ export function Chat({
   const { conversations } = useConversations();
   const { hubs } = useHubs();
   const isDesktop = useIsDesktop();
+  // Voice: the flag gates every affordance; the signals hook is the one
+  // self-heal read (rings, open calls, room occupancy) for the whole tree.
+  const features = useFeatures();
+  const voiceState = useVoice();
+  const { rings, occupancy, openCalls, dismissRing } = useVoiceSignals(
+    session.user.id,
+    features.voice,
+  );
   // Only the count; the list itself renders in Settings. Zero whenever the
   // announcements flag is off, so the dot is dark exactly when the feature is.
   const { unread: unreadAnnouncements } = useAnnouncements();
@@ -348,6 +364,18 @@ export function Chat({
       hubDetailsFor !== null ||
       pinsFor !== null;
     const onKey = (event: KeyboardEvent) => {
+      // Ctrl/Cmd+Shift+M toggles the microphone while in a call. Escape
+      // never hangs up -- leaving a call is a deliberate click.
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "m"
+      ) {
+        if (voiceState.phase !== "connected") return;
+        event.preventDefault();
+        void voice.toggleMic();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         if (panelOpen) return;
         event.preventDefault();
@@ -378,6 +406,7 @@ export function Chat({
     groupDetailsOpen,
     hubDetailsFor,
     pinsFor,
+    voiceState.phase,
   ]);
 
   // Only when a thread is actually on screen. On a phone that is the same
@@ -658,6 +687,9 @@ export function Chat({
 
       <StatusLine />
       <UpdateBanner />
+      {features.voice && (
+        <CallBar conversations={conversations} selfUserId={session.user.id} />
+      )}
 
       <div className="flex min-h-0 flex-1">
         {showList && (
@@ -666,6 +698,7 @@ export function Chat({
             selected={selected}
             onSelect={setSelected}
             onOpenHub={setHubDetailsFor}
+            voiceOccupancy={occupancy}
           />
         )}
 
@@ -693,7 +726,11 @@ export function Chat({
                       <span className="min-w-0 truncate">
                         {current?.kind === "channel" && (
                           <span className="mr-0.5 text-neutral-400 dark:text-neutral-500">
-                            #
+                            {current.channelKind === "voice" ? (
+                              <HeadphonesIcon className="inline h-3.5 w-3.5 align-[-2px]" />
+                            ) : (
+                              "#"
+                            )}
                           </span>
                         )}
                         {channelInfo?.posting === "moderators" && (
@@ -715,6 +752,12 @@ export function Chat({
                       conversation={current}
                     />
                   </span>
+                  {features.voice && current && current.kind !== "channel" && (
+                    <CallButton
+                      conversation={current}
+                      openCall={openCalls.get(current.id)}
+                    />
+                  )}
                   {current?.kind === "channel" && current.hubId && (
                     <IconButton
                       label="Pinned messages"
@@ -753,6 +796,15 @@ export function Chat({
                     </Button>
                   )}
                 </div>
+                {current?.channelKind === "voice" ? (
+                  <VoiceRoom
+                    conversation={current}
+                    occupants={occupancy.get(current.id) ?? []}
+                    selfUserId={session.user.id}
+                    canModerate={canModerate}
+                  />
+                ) : (
+                  <>
                 <Timeline
                   conversationId={selected}
                   session={session}
@@ -805,6 +857,8 @@ export function Chat({
                     onClearEdit={() => setEditDraft(null)}
                   />
                 )}
+                  </>
+                )}
               </>
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">
@@ -814,6 +868,15 @@ export function Chat({
           </main>
         )}
       </div>
+
+      {rings[0] && (
+        <IncomingCall
+          ring={rings[0]}
+          conversation={conversations.find((c) => c.id === rings[0]!.conversationId)}
+          selfUserId={session.user.id}
+          onDismiss={dismissRing}
+        />
+      )}
 
       {switcherOpen && (
         <QuickSwitcher

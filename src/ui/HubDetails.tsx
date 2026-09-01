@@ -36,6 +36,7 @@ import type {
   HubInvite,
   HubRole,
   HubSearchResult,
+  ChannelKind,
 } from "../api/types";
 import { webOrigin } from "../api/base";
 import { sync } from "../sync/engine";
@@ -56,6 +57,7 @@ import {
   useConfirm,
   usePrompt,
   handleInputProps,
+  HeadphonesIcon,
 } from "./kit";
 import { ContactCheckboxRow } from "./ContactRow";
 
@@ -159,6 +161,7 @@ export function HubDetails({
   const [nameError, setNameError] = useState<string | null>(null);
 
   const [channelName, setChannelName] = useState("");
+  const [channelKind, setChannelKind] = useState<ChannelKind>("text");
   const [channelBusy, setChannelBusy] = useState(false);
   const [channelError, setChannelError] = useState<string | null>(null);
 
@@ -260,8 +263,9 @@ export function HubDetails({
     setChannelBusy(true);
     setChannelError(null);
     try {
-      await createHubChannel({ hubId, name: channelName.trim() });
+      await createHubChannel({ hubId, name: channelName.trim(), kind: channelKind });
       setChannelName("");
+      setChannelKind("text");
       nudge();
       load();
     } catch (caught) {
@@ -284,6 +288,7 @@ export function HubDetails({
       topic?: string;
       posting?: "everyone" | "moderators";
       slowmodeSeconds?: number | null;
+      joinMutedAbove?: number | null;
     },
   ): Promise<void> {
     setChannelError(null);
@@ -328,6 +333,27 @@ export function HubDetails({
     await changeChannel(channel.id, {
       slowmodeSeconds: seconds === 0 ? null : seconds,
     });
+  }
+
+  /** Voice channels: the join-mute threshold. Empty turns auto-mute off. */
+  async function editJoinMuted(channel: HubChannel): Promise<void> {
+    const next = await prompt({
+      message:
+        "Join muted when more than this many people are already in (empty: never)",
+      initial: channel.joinMutedAbove === null ? "" : String(channel.joinMutedAbove),
+    });
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (trimmed === "") {
+      await changeChannel(channel.id, { joinMutedAbove: null });
+      return;
+    }
+    const value = Number(trimmed);
+    if (!Number.isInteger(value) || value < 0 || value > 1000) {
+      setChannelError("The threshold must be a whole number from 0 to 1000.");
+      return;
+    }
+    await changeChannel(channel.id, { joinMutedAbove: value });
   }
 
   async function togglePosting(channel: HubChannel): Promise<void> {
@@ -701,10 +727,14 @@ export function HubDetails({
                     onClick={() => onOpenChannel(channel.id)}
                     className="min-w-0 flex-1 truncate text-left text-sm text-neutral-900 hover:underline dark:text-neutral-100"
                   >
-                    <span className="mr-1 text-neutral-400 dark:text-neutral-500">
-                      #
+                    <span className="mr-1 inline-block align-[-2px] text-neutral-400 dark:text-neutral-500">
+                      {channel.kind === "voice" ? (
+                        <HeadphonesIcon className="inline h-3.5 w-3.5" />
+                      ) : (
+                        "#"
+                      )}
                     </span>
-                    {channel.title ?? "channel"}
+                    {channel.title ?? (channel.kind === "voice" ? "voice" : "channel")}
                     {channel.posting === "moderators" && (
                       <LockIcon className="ml-1 inline h-3.5 w-3.5 align-[-2px] text-neutral-400 dark:text-neutral-500" />
                     )}
@@ -731,7 +761,19 @@ export function HubDetails({
                     )}
                   </p>
                 )}
-                {manages(myRole) && (
+                {manages(myRole) && channel.kind === "voice" && (
+                  <div className="ml-4 mt-0.5 flex gap-3 text-xs">
+                    <button
+                      onClick={() => editJoinMuted(channel)}
+                      className="text-neutral-500 hover:underline dark:text-neutral-400"
+                    >
+                      {channel.joinMutedAbove === null
+                        ? "Join-mute: off"
+                        : `Join-mute above ${channel.joinMutedAbove}`}
+                    </button>
+                  </div>
+                )}
+                {manages(myRole) && channel.kind !== "voice" && (
                   <div className="ml-4 mt-0.5 flex gap-3 text-xs">
                     <button
                       onClick={() => editTopic(channel)}
@@ -768,6 +810,15 @@ export function HubDetails({
                 placeholder="New channel name"
                 maxLength={100}
               />
+              <Select
+                value={channelKind}
+                onChange={(e) => setChannelKind(e.target.value as ChannelKind)}
+                aria-label="Channel kind"
+                className="shrink-0"
+              >
+                <option value="text">Text</option>
+                <option value="voice">Voice</option>
+              </Select>
               <Button
                 type="submit"
                 size="sm"

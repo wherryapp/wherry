@@ -34,7 +34,8 @@ import {
   isSubscribed,
   type PushState,
 } from "../sync/push";
-import { useAnnouncements } from "./hooks";
+import { useAnnouncements, useFeatures } from "./hooks";
+import { VoiceSettings } from "./voice/VoiceSettings";
 import {
   Avatar,
   Button,
@@ -191,6 +192,7 @@ export function Settings({
   // face is a UI-reform design question -- this is the framework's proof it
   // works, not the presentation.
   const { announcements, markSeen } = useAnnouncements();
+  const features = useFeatures();
 
   // Opening Settings with the section visible is what "seen" means. Keyed on
   // the newest id so a new announcement published while the panel is open is
@@ -467,6 +469,15 @@ export function Settings({
         >
           <NotificationSetting />
         </PanelSection>
+
+        {features.voice && (
+          <PanelSection
+            title="Voice"
+            description="Calls and voice rooms, on this device."
+          >
+            <VoiceSettings />
+          </PanelSection>
+        )}
 
         <PanelSection
           title="Devices"

@@ -47,6 +47,8 @@ function event(id: string): TimelineItem {
       targetDisplayName: "Self",
       title: null,
       historyShared: false,
+    callId: null,
+    call: null,
       createdAt: "2026-08-31T12:00:00.000Z",
     },
   };
