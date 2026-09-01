@@ -24,6 +24,7 @@ import type { StoredSession } from "../api/session";
 import { sync } from "../sync/engine";
 import { clearNotificationsFor } from "../sync/push";
 import { updateHref } from "../reload";
+import { openExternal, updateDestination } from "../api/shell";
 import {
   useAnnouncements,
   useConversations,
@@ -121,6 +122,33 @@ function UpdateBanner() {
     ? `Version ${status.updateVersion} is available.`
     : "A new version is available.";
 
+  // In a bundled shell (desktop, iOS, Android) the assets are baked into
+  // the installed app, so a reload serves the same stale build back and the
+  // banner returns -- a button that looks dead, which is the exact bug the
+  // anchor below was built to escape on the web. The update there is a new
+  // build from the release page (later, the store listing), handed to the
+  // system browser: an in-webview anchor would navigate the app itself
+  // away. api/shell.ts owns the destination.
+  const destination = updateDestination();
+
+  const actionClass =
+    "inline-flex shrink-0 items-center justify-center rounded-md bg-accent-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent-700 motion-safe:active:scale-[0.97] pointer-coarse:min-h-11 pointer-coarse:px-5";
+
+  if (destination.kind === "external") {
+    return (
+      <div className="flex items-center justify-between gap-3 border-b border-accent-100 bg-accent-50 px-4 py-2 text-xs text-accent-900 motion-safe:animate-fade-in dark:border-accent-900 dark:bg-accent-950 dark:text-accent-100">
+        <span>{label}</span>
+        <button
+          type="button"
+          className={actionClass}
+          onClick={() => void openExternal(destination.href).catch(() => {})}
+        >
+          {destination.label}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center justify-between gap-3 border-b border-accent-100 bg-accent-50 px-4 py-2 text-xs text-accent-900 motion-safe:animate-fade-in dark:border-accent-900 dark:bg-accent-950 dark:text-accent-100">
       <span>{label}</span>
@@ -138,10 +166,7 @@ function UpdateBanner() {
         44px a finger needs. `inline-flex` + `items-center` because an
         anchor does not centre its own text the way a button does.
       */}
-      <a
-        href={updateHref()}
-        className="inline-flex shrink-0 items-center justify-center rounded-md bg-accent-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent-700 motion-safe:active:scale-[0.97] pointer-coarse:min-h-11 pointer-coarse:px-5"
-      >
+      <a href={updateHref()} className={actionClass}>
         Reload
       </a>
     </div>

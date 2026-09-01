@@ -27,7 +27,23 @@ tauri-plugin-log = "2"
 # client's sync engine decides when to notify; this just gives the webview
 # the OS notification API the PWA's service worker cannot reach in here.
 tauri-plugin-notification = "2"
+# Hands external URLs (the release page, later a store listing) to the
+# system browser. In a webview an <a href> to another site navigates the
+# app itself away, so the update banner and the version-floor wall need
+# this to have anywhere to send people. Registration only, like the rest.
+tauri-plugin-opener = "2"
 
 # Desktop only -- there is no second instance to guard against on mobile.
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 tauri-plugin-single-instance = "2"
+
+# The OS keychain behind the vault_* commands in lib.rs -- the one place the
+# shell holds data rather than merely registering a plugin, and the reason
+# is iOS: WebKit may evict an inactive app's IndexedDB and localStorage,
+# and without a copy of the account keypair outside the webview that
+# eviction is the lost-device path (recovery code or another signed-in
+# device). Apple and Windows only: the Linux backend would drag a D-Bus
+# secret-service dependency into CI for a platform where eviction is not a
+# threat, so Linux builds compile the commands as no-ops instead.
+[target.'cfg(any(target_vendor = "apple", target_os = "windows"))'.dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native"] }

@@ -1,3 +1,76 @@
+// ---------------------------------------------------------------------------
+// The keychain vault
+// ---------------------------------------------------------------------------
+//
+// Three passthrough commands to the OS keychain (macOS/iOS Keychain,
+// Windows Credential Manager), for the handful of secrets that must
+// survive the webview's storage being evicted -- which WebKit is allowed
+// to do to an inactive iOS app's IndexedDB, and which would otherwise cost
+// the account keypair (the lost-device path) and the device id (a
+// phantom-device pile-up on the next login).
+//
+// This bends the shell's "no IPC, no Rust logic" rule as little as it can:
+// there is still no logic here -- what is stored, when, and what any of it
+// means lives entirely in client/src/vault.ts. These are dumb string
+// get/set/delete on a keychain entry, the same passthrough shape as the
+// notification plugin's registration.
+//
+// On Linux the commands exist but hold nothing (get answers None), so the
+// client code is identical everywhere: keyring's secret-service backend
+// would add a D-Bus system dependency to CI for the one desktop platform
+// whose webview storage is not under eviction pressure.
+
+#[cfg(any(target_vendor = "apple", target_os = "windows"))]
+fn vault_entry(key: &str) -> Result<keyring::Entry, String> {
+  keyring::Entry::new("com.cjtechsystems.messenger", key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn vault_get(key: String) -> Result<Option<String>, String> {
+  #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+  {
+    match vault_entry(&key)?.get_password() {
+      Ok(value) => Ok(Some(value)),
+      Err(keyring::Error::NoEntry) => Ok(None),
+      Err(e) => Err(e.to_string()),
+    }
+  }
+  #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+  {
+    let _ = key;
+    Ok(None)
+  }
+}
+
+#[tauri::command]
+fn vault_set(key: String, value: String) -> Result<(), String> {
+  #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+  {
+    vault_entry(&key)?.set_password(&value).map_err(|e| e.to_string())
+  }
+  #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+  {
+    let _ = (key, value);
+    Ok(())
+  }
+}
+
+#[tauri::command]
+fn vault_delete(key: String) -> Result<(), String> {
+  #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+  {
+    match vault_entry(&key)?.delete_credential() {
+      Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+      Err(e) => Err(e.to_string()),
+    }
+  }
+  #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+  {
+    let _ = key;
+    Ok(())
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let builder = tauri::Builder::default();
@@ -41,6 +114,10 @@ pub fn run() {
     // Registration only -- the JS side (sync/desktop-notify.ts) owns every
     // decision about when a notification is deserved.
     .plugin(tauri_plugin_notification::init())
+    // Registration only, same as notification: the client decides what to
+    // open and when (api/shell.ts's openExternal); this provides the API.
+    .plugin(tauri_plugin_opener::init())
+    .invoke_handler(tauri::generate_handler![vault_get, vault_set, vault_delete])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

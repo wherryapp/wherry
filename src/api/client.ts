@@ -252,6 +252,12 @@ export function fetchHealth(): Promise<{
   database: string;
   commit: string;
   version?: string;
+  /**
+   * The minimum client version, when the operator has set one -- the
+   * version floor's hard stop, normally null/absent. Optional for the same
+   * reason as `version`: older deployed servers do not send it.
+   */
+  minVersion?: string | null;
   time: string;
 }> {
   return request(HEALTH_URL, { anonymous: true });

@@ -42,6 +42,7 @@ import { socketUrl } from "../api/base";
 import { decodeBase64, encodeBase64 } from "../api/base64";
 import { currentToken, loadSession } from "../api/session";
 import { decodeContent, isMessageOp } from "../api/payload";
+import { belowFloor } from "../api/version-floor";
 import { isTauriShell, notifyDesktop } from "./desktop-notify";
 import { shouldNotify } from "./notify-rules";
 import type { ArchiveEntry, HubSummary, InboxEnvelope } from "../api/types";
@@ -195,6 +196,22 @@ export type SyncStatus = {
    * saying "a new version" -- see `#checkForUpdate`.
    */
   updateVersion: string | null;
+  /**
+   * This build is below the server's minimum client version -- the hard
+   * stop, as opposed to `updateAvailable`'s soft prompt. Decided by
+   * api/version-floor.ts (pure, tested, fail-safe: only a floor that was
+   * actually read and actually exceeded sets this), from the same /health
+   * response as the fields above. VersionWall in ui/ is what acts on it;
+   * nothing in the engine itself stops working, deliberately, so the wall
+   * owns the whole behaviour.
+   */
+  belowMinVersion: boolean;
+  /**
+   * The floor itself, populated only alongside `belowMinVersion` (the
+   * updateVersion pattern): the wall can then say which release satisfies
+   * it rather than only "too old".
+   */
+  minVersion: string | null;
 };
 
 export type SyncEvent =
@@ -389,6 +406,8 @@ export class SyncEngine {
     error: null,
     updateAvailable: false,
     updateVersion: null,
+    belowMinVersion: false,
+    minVersion: null,
   };
   #backoff = new Backoff();
   #wake: (() => void) | null = null;
@@ -1611,10 +1630,14 @@ export class SyncEngine {
    * ui/Chat.tsx for the reload prompt this only turns on.
    */
   async #checkForUpdate(): Promise<void> {
-    if (BUILD_COMMIT === "unknown") return;
+    // Nothing to compare on either axis: no commit for the banner and no
+    // version for the floor. Dev and any build outside the pipelines.
+    if (BUILD_COMMIT === "unknown" && APP_VERSION === "unknown") return;
 
     let stale: boolean;
     let version: string | null;
+    let blocked: boolean;
+    let floor: string | null;
     try {
       const health = await fetchHealth();
       // "unknown" on the server side means it was not built by the same
@@ -1629,17 +1652,33 @@ export class SyncEngine {
         stale && health.version && health.version !== "unknown"
           ? health.version
           : null;
+      // The hard stop, riding the same response. belowFloor fails safe on
+      // every unparseable input, so this can only be true when the server
+      // deliberately set MIN_CLIENT_VERSION above this build's tag.
+      blocked = belowFloor(APP_VERSION, health.minVersion);
+      // The floor itself, kept only when it is in force -- the
+      // updateVersion pattern above.
+      floor = blocked ? (health.minVersion ?? null) : null;
     } catch {
       // Best-effort. A failed health check must not affect anything else
-      // this loop does, and must not flip the banner off on a blip.
+      // this loop does, and must not flip the banner off on a blip -- and
+      // for the floor this branch is load-bearing: an unreachable server
+      // is a network problem, never a wall.
       return;
     }
 
     if (
       stale !== this.#status.updateAvailable ||
-      version !== this.#status.updateVersion
+      version !== this.#status.updateVersion ||
+      blocked !== this.#status.belowMinVersion ||
+      floor !== this.#status.minVersion
     ) {
-      this.#setStatus({ updateAvailable: stale, updateVersion: version });
+      this.#setStatus({
+        updateAvailable: stale,
+        updateVersion: version,
+        belowMinVersion: blocked,
+        minVersion: floor,
+      });
     }
   }
 

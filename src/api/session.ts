@@ -33,9 +33,43 @@
 // IndexedDB; see store/.
 
 import type { AuthResult, Platform, PublicDevice, PublicUser } from "./types";
+import { vaultDelete, vaultGet, vaultSet } from "../vault";
 
 const SESSION_KEY = "messenger.session";
 const DEVICE_KEY = "messenger.device";
+
+// The Tauri shells mirror both keys into the OS keychain and restore them
+// when the webview's localStorage comes up empty -- see vault.ts for why
+// (WebKit may evict an inactive iOS app's storage, and losing the device
+// id recreates the phantom-device fan-out this file exists to prevent).
+// Outside the shells every vault call is an inert no-op, so nothing here
+// branches on platform. Writes are fire-and-forget: this module's callers
+// are synchronous by design, and a keychain that cannot be written must
+// never break a login.
+const VAULT_SESSION = "session";
+const VAULT_DEVICE = "device";
+
+/**
+ * Restores what the vault holds and localStorage lost. Called once, before
+ * the first render (main.tsx), because loadSession below is synchronous
+ * and the login-or-chat decision is made on the first frame. Best-effort,
+ * like everything the vault does: on any failure the app simply behaves as
+ * if the storage really were gone.
+ */
+export async function restoreFromVault(): Promise<void> {
+  if (!readKey(DEVICE_KEY)) {
+    const device = await vaultGet(VAULT_DEVICE);
+    if (device) writeKey(DEVICE_KEY, device);
+  }
+  if (!readKey(SESSION_KEY)) {
+    const session = await vaultGet(VAULT_SESSION);
+    if (session) {
+      writeKey(SESSION_KEY, session);
+      // Drop the memoised null so the next loadSession re-reads.
+      cached = undefined;
+    }
+  }
+}
 
 export type StoredSession = {
   token: string;
@@ -127,9 +161,11 @@ export function saveSession(result: AuthResult): StoredSession {
   };
   cached = session;
   writeKey(SESSION_KEY, JSON.stringify(session));
+  void vaultSet(VAULT_SESSION, JSON.stringify(session));
 
   // The line this whole file exists for.
   writeKey(DEVICE_KEY, result.device.id);
+  void vaultSet(VAULT_DEVICE, result.device.id);
 
   return session;
 }
@@ -143,6 +179,7 @@ export function markEmailVerified(session: StoredSession): StoredSession {
   const updated: StoredSession = { ...session, emailVerified: true };
   cached = updated;
   writeKey(SESSION_KEY, JSON.stringify(updated));
+  void vaultSet(VAULT_SESSION, JSON.stringify(updated));
   return updated;
 }
 
@@ -162,6 +199,7 @@ export function markAvatarHue(
   };
   cached = updated;
   writeKey(SESSION_KEY, JSON.stringify(updated));
+  void vaultSet(VAULT_SESSION, JSON.stringify(updated));
   return updated;
 }
 
@@ -175,6 +213,9 @@ export function markAvatarHue(
 export function clearSession(): void {
   cached = null;
   removeKey(SESSION_KEY);
+  // The vault mirrors the lifetime exactly: token gone, keychain copy gone,
+  // device id kept in both places.
+  void vaultDelete(VAULT_SESSION);
 }
 
 export function currentToken(): string | null {
@@ -208,6 +249,9 @@ export function storedDeviceId(): string | null {
  */
 export function forgetDevice(): void {
   removeKey(DEVICE_KEY);
+  // Same reasoning as the localStorage removal: the server says this id is
+  // gone, so a keychain copy that would resurrect it is worse than none.
+  void vaultDelete(VAULT_DEVICE);
 }
 
 /**

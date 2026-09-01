@@ -8,6 +8,7 @@ import { broadcast, subscribeToBroadcasts } from "./sync/leader";
 import { Chat } from "./ui/Chat";
 import { Login } from "./ui/Login";
 import { VerifyGate } from "./ui/VerifyGate";
+import { VersionWall, useVersionFloor } from "./ui/VersionWall";
 import {
   ResetPassword,
   VerifyEmail,
@@ -27,6 +28,13 @@ export default function App() {
   // can be opened would be more machinery than the thing it serves. Caddy
   // already falls back to index.html for unknown paths, so both URLs load.
   const [emailRoute, setEmailRoute] = useState(routeFromLocation);
+
+  // The version floor's hard stop -- checked here, above every other
+  // screen, because a build the server no longer supports must not get to
+  // sync, send, or even show a login form that would sign into an
+  // incompatible API. Fail-safe by construction (see VersionWall.tsx), so
+  // rendering the wall means the floor was actually read and exceeded.
+  const floor = useVersionFloor();
 
   // An invite token is a bearer credential for a membership: taken out of
   // the URL immediately, so it survives in neither history nor whatever the
@@ -53,6 +61,11 @@ export default function App() {
   // starting it earlier would just be a poll loop generating 403s.
   useEffect(() => {
     if (!session || !session.emailVerified) return;
+    // A build below the version floor must stop talking to the server --
+    // that is the entire point of the wall. The engine is also what
+    // *noticed* a floor raised mid-session, so this cleanup (not the wall)
+    // is what actually quiets the client.
+    if (floor.blocked) return;
 
     void requestPersistentStorage();
 
@@ -66,7 +79,7 @@ export default function App() {
     });
 
     return () => sync.stop();
-  }, [session, signOutLocally]);
+  }, [session, signOutLocally, floor.blocked]);
 
   // A sign-out in one tab has to reach the others, or they keep rendering a
   // dead session's history.
@@ -95,6 +108,8 @@ export default function App() {
     await clearHistoryKeys();
     await signOutLocally();
   }, [signOutLocally]);
+
+  if (floor.blocked) return <VersionWall minVersion={floor.minVersion} />;
 
   // Ahead of the session check on purpose: both of these are reached from a
   // link in an email and neither needs a session. Somebody confirming an

@@ -8,15 +8,15 @@
 // practice, by the sync engine's post-store moment, which only the leader
 // tab runs, so the single-notifier property is inherited rather than built.
 //
-// Detection is by feature, not user agent: `__TAURI_INTERNALS__` exists
-// exactly when the shell injected its API. Outside the shell every export
+// Detection is by feature, not user agent -- `isTauriShell` in api/shell.ts,
+// which took the helper over when the iOS shell made "am I inside Tauri?"
+// about more than desktop notifications. Outside the shell every export
 // here is a cheap no-op, and the plugin module is imported dynamically so
 // the web bundle never even loads it.
 
-/** True inside the Tauri desktop shell. The one place that knows. */
-export function isTauriShell(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
+import { isTauriShell } from "../api/shell";
+
+export { isTauriShell };
 
 // The permission answer is sticky per process: asked at most once, and only
 // at the moment a notification is actually deserved -- an app requesting

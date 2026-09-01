@@ -2,6 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
+import { restoreFromVault } from "./api/session";
+import { isTauriShell } from "./api/shell";
 import { startStallDetector } from "./diagnostics";
 import { registerServiceWorker } from "./pwa";
 import { stripReloadMarker } from "./reload";
@@ -41,11 +43,32 @@ function render(): void {
 // first render so a traced sign-in captures everything from the first
 // crypto call. The guarded dynamic import means production bundles contain
 // none of it. See devtools.ts.
+/**
+ * In the Tauri shells, ask the OS keychain for anything the webview's
+ * storage lost to eviction *before* the first render -- loadSession is
+ * synchronous and App decides login-versus-chat on the first frame, so a
+ * restore after render would flash the login screen at a person who never
+ * signed out. One awaited hop, only in the shells; the web renders exactly
+ * as before. Failure falls through to rendering: the vault is best-effort
+ * everywhere, and a broken keychain must read as "storage really is
+ * empty", never as a hang on a blank page.
+ */
+async function restoreThenRender(): Promise<void> {
+  try {
+    await restoreFromVault();
+  } catch {
+    // As above: proceed as if there were nothing to restore.
+  }
+  render();
+}
+
 if (import.meta.env.DEV) {
   void import("./devtools")
     .then((devtools) => devtools.installDevtools())
     .catch((error: unknown) => console.error("devtools failed", error))
-    .then(render);
+    .then(() => (isTauriShell() ? restoreThenRender() : render()));
+} else if (isTauriShell()) {
+  void restoreThenRender();
 } else {
   render();
 }

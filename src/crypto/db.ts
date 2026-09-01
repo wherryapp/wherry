@@ -14,6 +14,19 @@
 // MLS group state and the device's MLS identity key land beside it.
 
 import { openDB, type IDBPDatabase } from "idb";
+import { decodeBase64, encodeBase64 } from "../api/base64";
+import { vaultDelete, vaultGet, vaultSet } from "../vault";
+
+// In the Tauri shells the account keypair is additionally mirrored into
+// the OS keychain -- see vault.ts. The reason lives here and not with the
+// session mirror: an evicted IndexedDB without this backup is the
+// lost-device path (recovery code or another signed-in device) for a
+// person who did nothing but leave the app closed too long. Only the
+// account keypair: everything else in this database is either
+// device-scoped and rebuilt by the external-commit join path (MLS state),
+// or account-scoped and re-fetchable once the account key exists again
+// (history keys, via GET /history-keys).
+const VAULT_ACCOUNT_KEYS = "accountKeys";
 
 const DB_NAME = "messenger-crypto";
 const DB_VERSION = 3;
@@ -65,6 +78,15 @@ export async function saveAccountKeypair(
   await tx.store.put(publicKey, ACCOUNT_PUBLIC_KEY);
   await tx.store.put(privateKey, ACCOUNT_PRIVATE_KEY);
   await tx.done;
+  // Fire-and-forget: the IndexedDB write above is the source of truth, and
+  // a keychain that cannot be written must not fail an unlock.
+  void vaultSet(
+    VAULT_ACCOUNT_KEYS,
+    JSON.stringify({
+      publicKey: encodeBase64(publicKey),
+      privateKey: encodeBase64(privateKey),
+    }),
+  );
 }
 
 /** Null when this browser has never unwrapped the key (or storage was cleared). */
@@ -80,8 +102,40 @@ export async function loadAccountKeypair(): Promise<{
   ]);
   await tx.done;
 
-  if (!publicKey || !privateKey) return null;
+  if (!publicKey || !privateKey) return restoreKeypairFromVault();
   return { publicKey, privateKey };
+}
+
+/**
+ * The eviction path: IndexedDB came up empty, so ask the keychain. On a
+ * hit the pair is written back to IndexedDB (the normal home) and returned
+ * as if it had never been gone. Null everywhere the vault is a no-op --
+ * the web, and any shell whose keychain has nothing -- which leaves the
+ * caller's contract exactly what it always was.
+ */
+async function restoreKeypairFromVault(): Promise<{
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+} | null> {
+  const raw = await vaultGet(VAULT_ACCOUNT_KEYS);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { publicKey: string; privateKey: string };
+    if (
+      typeof parsed?.publicKey !== "string" ||
+      typeof parsed?.privateKey !== "string"
+    ) {
+      return null;
+    }
+    const publicKey = decodeBase64(parsed.publicKey);
+    const privateKey = decodeBase64(parsed.privateKey);
+    await saveAccountKeypair(publicKey, privateKey);
+    return { publicKey, privateKey };
+  } catch {
+    // A corrupt keychain entry reads as no entry; the account unlock flow
+    // it falls back to (password or recovery code) rewrites both copies.
+    return null;
+  }
 }
 
 /**
@@ -101,6 +155,9 @@ export async function clearAccountKeypair(): Promise<void> {
   await tx.store.delete(ACCOUNT_PRIVATE_KEY);
   await tx.store.delete(ACCOUNT_PUBLIC_KEY);
   await tx.done;
+  // The keychain mirror obeys the same lifetime, for the same reason: the
+  // next person to sign in on this install must not inherit the key.
+  void vaultDelete(VAULT_ACCOUNT_KEYS);
 }
 
 // ---------------------------------------------------------------------------
