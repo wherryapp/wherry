@@ -21,13 +21,26 @@
 
 const MARKER = "r";
 
-/** Navigate onto whatever the server is serving now. */
-export function reloadForUpdate(): void {
+/**
+ * Where "reload onto the new build" points.
+ *
+ * A URL rather than an action, because the control that uses it is an
+ * ANCHOR and not a button. That is deliberate and it is the second thing
+ * tried on the iPhone report: a `<button onClick>` needs React's event
+ * dispatch to run before anything can happen, and an `<a href>` is followed
+ * by the browser itself. If the app's JavaScript is wedged, the link is the
+ * only one of the two that can still get somebody out.
+ *
+ * It is not a cure for a pegged main thread -- a browser cannot start a
+ * navigation it has no cycles to start -- but it removes one whole layer
+ * from the path, and which layer was at fault is exactly what is unknown.
+ */
+export function updateHref(): string {
   const params = new URLSearchParams(window.location.search);
   // Base 36 purely to keep it short; nothing reads the value, it exists to
   // be different from the last one.
   params.set(MARKER, Date.now().toString(36));
-  window.location.replace(`${window.location.pathname}?${params}`);
+  return `${window.location.pathname}?${params}`;
 }
 
 /**

@@ -23,7 +23,7 @@ import { store } from "../store";
 import type { StoredSession } from "../api/session";
 import { sync } from "../sync/engine";
 import { clearNotificationsFor } from "../sync/push";
-import { reloadForUpdate } from "../reload";
+import { updateHref } from "../reload";
 import {
   useAnnouncements,
   useConversations,
@@ -124,20 +124,26 @@ function UpdateBanner() {
   return (
     <div className="flex items-center justify-between gap-3 border-b border-accent-100 bg-accent-50 px-4 py-2 text-xs text-accent-900 motion-safe:animate-fade-in dark:border-accent-900 dark:bg-accent-950 dark:text-accent-100">
       <span>{label}</span>
-      <Button
-        size="sm"
-        onClick={reloadForUpdate}
-        // Underlined 12px text with no padding was a ~40x16 target that
-        // people reported missing on a phone, and that did not read as a
-        // button at all. The kit's filled primary answers the second half;
-        // `pointer-coarse` answers the first, lifting it to the 44px a
-        // finger needs WITHOUT making the banner chunky under a cursor.
-        // A media feature rather than a user-agent test, same principle as
-        // the action bar's pointerType trigger: ask what is pointing.
-        className="shrink-0 pointer-coarse:min-h-11 pointer-coarse:px-5"
+      {/*
+        An anchor, not a kit Button, and hand-rolled to the primary palette
+        the way the send button is -- for once the ELEMENT is the point.
+        A button needs React's event dispatch to run before the navigation
+        can start; a link is followed by the browser. On the iPhone report
+        a 44px filled button still did nothing, so removing JavaScript from
+        the path is the next thing to eliminate. Keep the palette in step
+        with kit's `primary` by hand; converting this to Button would put
+        the element back.
+
+        Sizing matches Button size="sm" plus the pointer-coarse lift to the
+        44px a finger needs. `inline-flex` + `items-center` because an
+        anchor does not centre its own text the way a button does.
+      */}
+      <a
+        href={updateHref()}
+        className="inline-flex shrink-0 items-center justify-center rounded-md bg-accent-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent-700 motion-safe:active:scale-[0.97] pointer-coarse:min-h-11 pointer-coarse:px-5"
       >
         Reload
-      </Button>
+      </a>
     </div>
   );
 }
