@@ -1,4 +1,4 @@
-package com.cjtechsystems.messenger
+package app.wherry
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge

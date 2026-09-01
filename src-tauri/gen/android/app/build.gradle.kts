@@ -29,10 +29,10 @@ val hasReleaseKeystore = keystoreProperties.containsKey("storeFile")
 
 android {
     compileSdk = 36
-    namespace = "com.cjtechsystems.messenger"
+    namespace = "app.wherry"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.cjtechsystems.messenger"
+        applicationId = "app.wherry"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
