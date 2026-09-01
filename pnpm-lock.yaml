@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@hpke/common@1.10.1': 432a30f7c8f38af137f7c986db55fee6335a4970ecafc2a2da1f02904972a506
-  ts-mls@1.6.4: e80c32e34a665d73055f4e2732d83588fa3252a391d96bd71ec793b8d153f7a9
+  ts-mls@1.6.4: 72f689e75317b70db4b758f6fe51d5c0a46cdd74eca7a98c009651df42f63d24
 
 importers:
 
@@ -18,6 +18,9 @@ importers:
       '@hpke/dhkem-x25519':
         specifier: ^1.8.0
         version: 1.8.0
+      '@noble/curves':
+        specifier: 2.0.1
+        version: 2.0.1
       '@noble/hashes':
         specifier: ^2.4.0
         version: 2.4.0
@@ -50,7 +53,7 @@ importers:
         version: 4.3.3
       ts-mls:
         specifier: ^1.6.4
-        version: 1.6.4(patch_hash=e80c32e34a665d73055f4e2732d83588fa3252a391d96bd71ec793b8d153f7a9)(@noble/ciphers@2.1.1)
+        version: 1.6.4(patch_hash=72f689e75317b70db4b758f6fe51d5c0a46cdd74eca7a98c009651df42f63d24)(@noble/ciphers@2.1.1)(@noble/curves@2.0.1)
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.11.4
@@ -268,6 +271,14 @@ packages:
 
   '@noble/ciphers@2.1.1':
     resolution: {integrity: sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw==}
+    engines: {node: '>= 20.19.0'}
+
+  '@noble/curves@2.0.1':
+    resolution: {integrity: sha512-vs1Az2OOTBiP4q0pwjW5aF0xp9n4MxVrmkFBxc6EKZc6ddYx5gaZiAsZoq0uRRXWbi3AT/sBqn05eRPtn1JCPw==}
+    engines: {node: '>= 20.19.0'}
+
+  '@noble/hashes@2.0.1':
+    resolution: {integrity: sha512-XlOlEbQcE9fmuXxrVTXCTlG2nlRXa9Rj3rr5Ue/+tX+nmkgbX720YHh0VR3hBF9xDvwnb8D2shVGOwNx+ulArw==}
     engines: {node: '>= 20.19.0'}
 
   '@noble/hashes@2.4.0':
@@ -1150,6 +1161,12 @@ snapshots:
 
   '@noble/ciphers@2.1.1': {}
 
+  '@noble/curves@2.0.1':
+    dependencies:
+      '@noble/hashes': 2.0.1
+
+  '@noble/hashes@2.0.1': {}
+
   '@noble/hashes@2.4.0': {}
 
   '@oxc-project/types@0.147.0': {}
@@ -1630,10 +1647,12 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
 
-  ts-mls@1.6.4(patch_hash=e80c32e34a665d73055f4e2732d83588fa3252a391d96bd71ec793b8d153f7a9)(@noble/ciphers@2.1.1):
+  ts-mls@1.6.4(patch_hash=72f689e75317b70db4b758f6fe51d5c0a46cdd74eca7a98c009651df42f63d24)(@noble/ciphers@2.1.1)(@noble/curves@2.0.1):
     dependencies:
       '@hpke/core': 1.9.0
       '@noble/ciphers': 2.1.1
+    optionalDependencies:
+      '@noble/curves': 2.0.1
 
   tsx@4.23.12:
     dependencies:

@@ -1,0 +1,7 @@
+{
+  "build": {
+    "beforeDevCommand": "pnpm dev --port 5184",
+    "devUrl": "http://localhost:5184",
+    "beforeBuildCommand": "pnpm build:android"
+  }
+}

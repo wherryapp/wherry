@@ -44,6 +44,9 @@ tauri-plugin-single-instance = "2"
 # eviction is the lost-device path (recovery code or another signed-in
 # device). Apple and Windows only: the Linux backend would drag a D-Bus
 # secret-service dependency into CI for a platform where eviction is not a
-# threat, so Linux builds compile the commands as no-ops instead.
+# threat, so Linux builds compile the commands as no-ops instead. Android
+# lands in that same no-op branch, and also deliberately: keyring has no
+# Android backend, and Chromium's WebView does not evict an installed
+# app's private storage the way WebKit may. See docs/mobile-setup.md.
 [target.'cfg(any(target_vendor = "apple", target_os = "windows"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }

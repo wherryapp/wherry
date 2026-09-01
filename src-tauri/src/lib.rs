@@ -15,10 +15,14 @@
 // get/set/delete on a keychain entry, the same passthrough shape as the
 // notification plugin's registration.
 //
-// On Linux the commands exist but hold nothing (get answers None), so the
-// client code is identical everywhere: keyring's secret-service backend
-// would add a D-Bus system dependency to CI for the one desktop platform
-// whose webview storage is not under eviction pressure.
+// On Linux and Android the commands exist but hold nothing (get answers
+// None), so the client code is identical everywhere: keyring's
+// secret-service backend would add a D-Bus system dependency to CI for the
+// one desktop platform whose webview storage is not under eviction
+// pressure, and it has no Android backend at all. Android is not a gap
+// being tolerated -- its WebView is Chromium, which keeps an installed
+// app's storage in the private data dir rather than evicting it the way
+// WebKit may for an inactive iOS app.
 
 #[cfg(any(target_vendor = "apple", target_os = "windows"))]
 fn vault_entry(key: &str) -> Result<keyring::Entry, String> {

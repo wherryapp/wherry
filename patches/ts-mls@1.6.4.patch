@@ -29,3 +29,34 @@ index b06cd58f39f1a20fccc2eb49858d3ed3cf1b23d6..2e212345d7a2d7e298a5e8de8e922c93
          case "DHKEM-X448-HKDF-SHA512": {
              try {
                  const { DhkemX448HkdfSha512 } = await import("@hpke/dhkem-x448");
+diff --git a/dist/src/crypto/implementation/default/makeNobleSignatureImpl.js b/dist/src/crypto/implementation/default/makeNobleSignatureImpl.js
+index 1dd4413b9e98f67eb922ffeba00980083ac7ecd9..b4d4ddb606fc11b34e81a39127dcf3755df4f76d 100644
+--- a/dist/src/crypto/implementation/default/makeNobleSignatureImpl.js
++++ b/dist/src/crypto/implementation/default/makeNobleSignatureImpl.js
+@@ -12,7 +12,25 @@ function rawEd25519ToPKCS8(rawKey) {
+ export async function makeNobleSignatureImpl(alg) {
+     switch (alg) {
+         case "Ed25519": {
+-            const subtle = globalThis.crypto?.subtle;
++            // Patched (messenger): probe WebCrypto Ed25519 before trusting it.
++            // The upstream check is only "does crypto.subtle exist" -- which is
++            // always true in a webview -- but Android System WebView 133 (and
++            // anything older) does not implement the "Ed25519" algorithm, so
++            // every generateKey/sign below throws "Unrecognized name" and MLS
++            // device init dies. Exactly the Safari X25519 story in makeDhKem,
++            // one algorithm over. A one-time probe keeps Safari and current
++            // Chrome on the native path (unchanged where it works) and drops
++            // old WebViews to the same @noble/curves fallback upstream already
++            // ships for the subtle-less case.
++            let subtle = globalThis.crypto?.subtle;
++            if (subtle !== undefined) {
++                try {
++                    await subtle.generateKey("Ed25519", true, ["sign", "verify"]);
++                }
++                catch (err) {
++                    subtle = undefined;
++                }
++            }
+             if (subtle !== undefined) {
+                 return {
+                     async sign(signKey, message) {
