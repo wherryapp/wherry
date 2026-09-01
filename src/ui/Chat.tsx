@@ -22,6 +22,7 @@ import { PROTOCOL_PUBLIC } from "../crypto/provider";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
 import { sync } from "../sync/engine";
+import { clearNotificationsFor } from "../sync/push";
 import {
   useAnnouncements,
   useConversations,
@@ -169,6 +170,11 @@ function useMarkRead(conversationId: string | null, selfUserId: string): void {
       // A thread open on a backgrounded tab is not being read, and marking it
       // would clear the badge on every device for messages nobody saw.
       if (cancelled || document.visibilityState !== "visible") return;
+
+      // Reading a conversation makes its OS notification stale -- close it
+      // now rather than when the person finds it later. Independent of the
+      // server call below succeeding: seen is seen.
+      clearNotificationsFor(conversationId);
 
       void markConversationRead(conversationId, newest)
         .then(async () => {

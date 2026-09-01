@@ -65,17 +65,40 @@ self.addEventListener("push", (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: "/icon-192.png",
-      badge: "/icon-192.png",
-      // Grouped per conversation by the server, so a second message from the
-      // same person replaces the first rather than stacking, while two
-      // different people produce two separate rows. A single fixed tag would
-      // have let one chatty conversation hide another entirely.
-      tag,
-      renotify: true,
-    }),
+    (async () => {
+      // A focused window means the person is inside the app right now, and
+      // the app is its own notification surface -- the timeline, the sidebar
+      // badge, the tab title. An OS toast on top of that is noise, and worse
+      // when it is for the very conversation being read. Decided 2026-08-31;
+      // the desktop shell's notifications follow the same rule.
+      //
+      // Chrome exempts exactly this case from the userVisibleOnly quota.
+      // Safari does not document an exemption and can revoke push after
+      // repeated silent handles -- accepted: on iOS a focused client means
+      // the installed app is foreground, where a toast is at its most
+      // pointless, and re-enabling push is one Settings toggle if it ever
+      // bites.
+      const clientList = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      if (clientList.some((client) => client.focused)) return;
+
+      await self.registration.showNotification(title, {
+        body,
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        // Grouped per conversation by the server, so a second message from
+        // the same person replaces the first rather than stacking, while two
+        // different people produce two separate rows. A single fixed tag
+        // would have let one chatty conversation hide another entirely.
+        tag,
+        // The first message alerts; replacements update the row quietly.
+        // `true` here made every message in a busy conversation buzz again,
+        // which is a stream of interruptions carrying one fact.
+        renotify: false,
+      });
+    })(),
   );
 });
 

@@ -71,6 +71,30 @@ function isIos(): boolean {
   return ios || iPadOS;
 }
 
+/**
+ * Closes any displayed notification for a conversation.
+ *
+ * Called when a conversation is marked read: a notification for messages the
+ * person has now seen is stale the moment the marker moves, and leaving it in
+ * the notification center means coming back to an alert about nothing. The
+ * tag is the conversation id -- the same grouping the server sends and the
+ * service worker displays under.
+ *
+ * Fire-and-forget and swallowed on purpose: this runs adjacent to the sync
+ * loop's read path, and a throw anywhere near that loop has wedged all tap
+ * input before. A notification that fails to close costs a swipe, never the
+ * UI.
+ */
+export function clearNotificationsFor(conversationId: string): void {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.ready
+    .then((registration) => registration.getNotifications({ tag: conversationId }))
+    .then((notifications) => {
+      for (const notification of notifications) notification.close();
+    })
+    .catch(() => {});
+}
+
 /** Whether this browser already has a subscription. */
 export async function isSubscribed(): Promise<boolean> {
   if (!("serviceWorker" in navigator)) return false;
