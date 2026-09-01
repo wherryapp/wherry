@@ -23,6 +23,7 @@ import { store } from "../store";
 import type { StoredSession } from "../api/session";
 import { sync } from "../sync/engine";
 import { clearNotificationsFor } from "../sync/push";
+import { reloadForUpdate } from "../reload";
 import {
   useAnnouncements,
   useConversations,
@@ -103,6 +104,9 @@ function StatusLine() {
  * deploy landing mid-compose must not lose a draft on its own, so this only
  * ever offers the reload, same as the tab would ask a person to do by hand.
  *
+ * The reload itself is reload.ts's, not `location.reload()`: the plain call
+ * left iOS on the old bundle, which is what made this button look dead there.
+ *
  * Names the server's version when `/health` reported one worth naming
  * (`status.updateVersion`, set only alongside `updateAvailable` -- see the
  * type's comment in sync/engine.ts); otherwise falls back to today's
@@ -118,14 +122,22 @@ function UpdateBanner() {
     : "A new version is available.";
 
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-accent-100 bg-accent-50 px-4 py-1.5 text-xs text-accent-900 motion-safe:animate-fade-in dark:border-accent-900 dark:bg-accent-950 dark:text-accent-100">
+    <div className="flex items-center justify-between gap-3 border-b border-accent-100 bg-accent-50 px-4 py-2 text-xs text-accent-900 motion-safe:animate-fade-in dark:border-accent-900 dark:bg-accent-950 dark:text-accent-100">
       <span>{label}</span>
-      <button
-        onClick={() => window.location.reload()}
-        className="shrink-0 font-medium underline"
+      <Button
+        size="sm"
+        onClick={reloadForUpdate}
+        // Underlined 12px text with no padding was a ~40x16 target that
+        // people reported missing on a phone, and that did not read as a
+        // button at all. The kit's filled primary answers the second half;
+        // `pointer-coarse` answers the first, lifting it to the 44px a
+        // finger needs WITHOUT making the banner chunky under a cursor.
+        // A media feature rather than a user-agent test, same principle as
+        // the action bar's pointerType trigger: ask what is pointing.
+        className="shrink-0 pointer-coarse:min-h-11 pointer-coarse:px-5"
       >
         Reload
-      </button>
+      </Button>
     </div>
   );
 }

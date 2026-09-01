@@ -3,11 +3,18 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import { registerServiceWorker } from "./pwa";
+import { stripReloadMarker } from "./reload";
 import { trackVisualViewport } from "./ui/viewport";
 
 // Before the first render, so the shell is sized correctly on the first
 // paint rather than jumping once the listeners attach.
 trackVisualViewport();
+
+// The update banner's reload navigates to a throwaway parameter to defeat the
+// page cache; this is the other half, putting the address bar back. Safe to
+// call unconditionally -- it returns immediately when the marker is absent,
+// which is every ordinary load. See reload.ts.
+stripReloadMarker();
 
 // Not awaited: nothing on screen depends on it, and notifications are the
 // only thing that does.
