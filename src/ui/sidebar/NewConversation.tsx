@@ -161,6 +161,9 @@ export function NewConversation({
             ? "Or add by username"
             : "username, or several for a group"
         }
+        // An address gets typed here, so it renders as one -- the same
+        // monospace the @handle wears everywhere it is displayed.
+        className="font-mono"
       />
 
       {picked.size > 1 && (

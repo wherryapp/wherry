@@ -27,7 +27,7 @@ export function ContactCheckboxRow({
       <Avatar size="sm" name={contact.displayName} userId={contact.userId} />
       <span className="min-w-0 truncate">
         {contact.displayName}
-        <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
+        <span className="ml-1 font-mono text-xs text-neutral-500 dark:text-neutral-400">
           @{contact.username}
         </span>
       </span>

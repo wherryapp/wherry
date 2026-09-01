@@ -233,6 +233,11 @@ export function GroupDetails({
                   />
                   <span className="truncate">
                     {member.displayName || member.username}
+                    {member.displayName && (
+                      <span className="ml-1 font-mono text-xs text-neutral-500 dark:text-neutral-400">
+                        @{member.username}
+                      </span>
+                    )}
                     {member.userId === selfUserId && (
                       <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
                         (you)
@@ -289,6 +294,7 @@ export function GroupDetails({
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Or add by username"
+              className="font-mono"
             />
 
             <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">

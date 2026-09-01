@@ -859,6 +859,11 @@ export function HubDetails({
                     />
                     <span className="min-w-0 truncate">
                       {member.displayName || member.username}
+                      {member.displayName && (
+                        <span className="ml-1 font-mono text-xs text-neutral-500 dark:text-neutral-400">
+                          @{member.username}
+                        </span>
+                      )}
                       {self && (
                         <span className="ml-1 text-xs text-neutral-500 dark:text-neutral-400">
                           (you)
@@ -938,6 +943,13 @@ export function HubDetails({
                     />
                     <span className="min-w-0 truncate">
                       {entry.displayName || entry.username}
+                      {entry.displayName && (
+                        // A ban list is exactly where "which Sam?" matters --
+                        // the unban targets the address, so show it.
+                        <span className="ml-1 font-mono text-xs text-neutral-500 dark:text-neutral-400">
+                          @{entry.username}
+                        </span>
+                      )}
                     </span>
                   </span>
                   <button
@@ -1053,6 +1065,7 @@ export function HubDetails({
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Or add by username"
+                className="font-mono"
               />
               {isPrivate && (
                 <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">

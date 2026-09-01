@@ -749,6 +749,7 @@ export function Chat({
                       .map((member) => ({
                         userId: member.userId,
                         name: member.displayName || member.username,
+                        username: member.username,
                       }))}
                     slowmodeSeconds={
                       canModerate ? null : (channelInfo?.slowmodeSeconds ?? null)

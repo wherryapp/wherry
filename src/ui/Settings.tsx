@@ -206,7 +206,15 @@ export function Settings({
             <Note className="px-4 py-2">{note}</Note>
           ))}
 
-        <PanelSection title="Display name" description={`Signed in as ${session.user.username}`}>
+        <PanelSection
+          title="Display name"
+          description={
+            <>
+              Signed in as{" "}
+              <span className="font-mono">@{session.user.username}</span>
+            </>
+          }
+        >
           <form onSubmit={submitName} className="flex gap-2">
             <Input
               value={displayName}

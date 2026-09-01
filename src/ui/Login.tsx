@@ -227,6 +227,9 @@ export function Login({
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
             required
+            // An address field, mono like every other place a handle is
+            // typed. Sign-in also accepts an email, which is an address too.
+            className="font-mono"
             {...(mode === "register"
               ? {
                   // Only when creating one. On sign-in this field also accepts

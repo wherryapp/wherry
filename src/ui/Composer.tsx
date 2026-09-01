@@ -38,7 +38,7 @@ export function Composer({
    * payload additively (api/payload.ts) -- highlight everywhere, and in a
    * public channel the server reads them to push exactly the people named.
    */
-  members: readonly { userId: string; name: string }[];
+  members: readonly { userId: string; name: string; username: string }[];
   /** Shown when set; the server enforces it (mods exempt, ops exempt). */
   slowmodeSeconds: number | null;
   /**
@@ -84,8 +84,17 @@ export function Composer({
     mentionQuery === null
       ? []
       : members
-          .filter((member) =>
-            member.name.toLowerCase().startsWith(mentionQuery.toLowerCase()),
+          .filter(
+            // Typing either the name or the handle finds the person --
+            // somebody who knows the address should not have to know what
+            // the display name currently is.
+            (member) =>
+              member.name
+                .toLowerCase()
+                .startsWith(mentionQuery.toLowerCase()) ||
+              member.username
+                .toLowerCase()
+                .startsWith(mentionQuery.toLowerCase()),
           )
           .slice(0, 5);
 
@@ -350,6 +359,15 @@ export function Composer({
               className="block w-full px-3 py-1.5 text-left text-sm text-neutral-900 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
             >
               @{member.name}
+              {member.username !== member.name && (
+                // The display name is what people recognise; the handle is
+                // the address that disambiguates two Sams. What gets
+                // inserted stays the name -- mentions ride the payload as
+                // ids, not as parsed text.
+                <span className="ml-1.5 font-mono text-xs text-neutral-500 dark:text-neutral-400">
+                  @{member.username}
+                </span>
+              )}
             </button>
           ))}
         </div>

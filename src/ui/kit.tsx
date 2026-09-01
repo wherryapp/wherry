@@ -673,7 +673,9 @@ export function PanelSection({
   children,
 }: {
   title: string;
-  description?: string;
+  // ReactNode rather than string so a description can style one word --
+  // Settings marks the @handle mono without a second description slot.
+  description?: ReactNode;
   children: ReactNode;
 }) {
   return (

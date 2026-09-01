@@ -47,7 +47,7 @@ function Person({
             {person.displayName}
           </span>
           <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">
-            @{person.username}
+            <span className="font-mono">@{person.username}</span>
             {detail ? ` · ${detail}` : ""}
           </span>
         </span>
@@ -160,6 +160,8 @@ export function Friends({
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             placeholder="Add by username"
+            // An address gets typed here, so it renders as one.
+            className="font-mono"
           />
           <Button
             type="submit"
