@@ -109,14 +109,36 @@ test("hand-over stops the anchor and hands arrivals the nearBottom gate", () => 
   );
 });
 
-test("a height change after hand-over never moves the scroll", () => {
+test("a height change after hand-over holds the reader's place", () => {
+  // The residual defect after the first fix: the open window closes about
+  // 700ms in, and a photo off the network or a message healing its decrypt
+  // lands later than that. Doing nothing here left the reader a picture's
+  // height out of place, repeatably, which is exactly what was reported.
   const settled = planAnchor(
     drive(freshAnchor(), [render(-1)]).state,
     { kind: "handover" },
   ).state;
-  // Even parked at the bottom: an image decoding is not an arrival, and
-  // Chromium's own scroll anchoring already handles the case it serves.
-  assert.equal(planAnchor({ ...settled, nearBottom: true }, { kind: "resize" }).action, "none");
+
+  assert.equal(
+    planAnchor({ ...settled, nearBottom: false }, { kind: "resize" }).action,
+    "hold-position",
+    "growth above a reader mid-conversation must not move them",
+  );
+  assert.equal(
+    planAnchor({ ...settled, nearBottom: true }, { kind: "resize" }).action,
+    "pin-bottom",
+    "somebody parked at the bottom follows the growth down instead",
+  );
+});
+
+test("hold-position is only ever a settled-state answer", () => {
+  // While the open still owns the scroll, a resize re-asserts the *target*.
+  // Holding the reader's place there would freeze the timeline wherever the
+  // first commit happened to leave it.
+  const opening = drive(freshAnchor(), [render(-1)]).state;
+  assert.equal(planAnchor(opening, { kind: "resize" }).action, "pin-bottom");
+  const onDivider = drive(freshAnchor(), [render(5)]).state;
+  assert.equal(planAnchor(onDivider, { kind: "resize" }).action, "centre-divider");
 });
 
 test("hand-over before the one shot leaves the scroll alone", () => {

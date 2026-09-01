@@ -1045,6 +1045,51 @@ export function Timeline({
   }, []);
 
   /**
+   * The row the reader is actually looking at, and where it sits.
+   *
+   * This is the state scroll anchoring needs: `scrollTop` alone is meaningless
+   * once content is inserted above it. Recorded after every scroll and after
+   * every anchor action -- i.e. whenever the reader's position last changed
+   * for a reason -- so that when the timeline grows, `holdPosition` can put
+   * the same row back under the same pixel.
+   */
+  const anchorRow = useRef<{ el: Element; top: number } | null>(null);
+
+  const recordAnchorRow = useCallback((): void => {
+    const scrollEl = scroller.current;
+    const contentEl = content.current;
+    if (!scrollEl || !contentEl) return;
+    const fold = scrollEl.getBoundingClientRect().top;
+    for (const child of contentEl.children) {
+      const rect = child.getBoundingClientRect();
+      // The first row not yet scrolled fully past the top of the viewport.
+      if (rect.bottom > fold) {
+        anchorRow.current = { el: child, top: rect.top - fold };
+        return;
+      }
+    }
+    anchorRow.current = null;
+  }, []);
+
+  /**
+   * Scroll anchoring, by hand, because Safari has none.
+   *
+   * Puts the recorded row back under the pixel it was under, absorbing
+   * whatever was inserted above it. On Chromium the native implementation has
+   * usually already done this, so the drift measures zero and this is a no-op
+   * -- which is the point: one behaviour on both engines rather than a bug
+   * that only reproduces on a phone.
+   */
+  const holdPosition = useCallback((): void => {
+    const scrollEl = scroller.current;
+    const row = anchorRow.current;
+    if (!scrollEl || !row || !row.el.isConnected) return;
+    const fold = scrollEl.getBoundingClientRect().top;
+    const drift = row.el.getBoundingClientRect().top - fold - row.top;
+    if (drift !== 0) scrollEl.scrollTop += drift;
+  }, []);
+
+  /**
    * One signal in, one scroll out. Every decision about where the open lands
    * lives in `planAnchor`, which is pure and tested; this is only the hands.
    */
@@ -1054,8 +1099,11 @@ export function Timeline({
       anchor.current = state;
       if (action === "pin-bottom") pinBottom();
       else if (action === "centre-divider") centreDivider();
+      else if (action === "hold-position") holdPosition();
+      // Whatever just happened, this is where the reader is now.
+      recordAnchorRow();
     },
-    [pinBottom, centreDivider],
+    [pinBottom, centreDivider, holdPosition, recordAnchorRow],
   );
 
   // A fresh conversation is a fresh anchor -- including `nearBottom`, which is
@@ -1151,11 +1199,18 @@ export function Timeline({
       quiet = setTimeout(takeOver, Math.max(QUIET_MS, SETTLE_FLOOR_MS - elapsed));
     };
 
-    const observer = new ResizeObserver(() => {
-      if (anchor.current.settled) return;
+    // Note this keeps observing after hand-over rather than stopping. Before,
+    // the window closed at ~700ms and every later height change went
+    // uncorrected -- which is the whole of the residual defect: a photo
+    // arriving off the network, or a message healing its decrypt, a second or
+    // two in. `planAnchor` decides what a resize *means*; after hand-over that
+    // is "hold the reader's place", not "re-assert the open".
+    const onResize = (): void => {
       dispatchAnchor({ kind: "resize" });
-      scheduleHandover();
-    });
+      if (!anchor.current.settled) scheduleHandover();
+    };
+
+    const observer = new ResizeObserver(onResize);
     observer.observe(el);
     scheduleHandover();
     ceiling = setTimeout(takeOver, SETTLE_CEILING_MS);
@@ -1165,12 +1220,21 @@ export function Timeline({
     scrollEl?.addEventListener("touchmove", takeOver, { passive: true });
     window.addEventListener("keydown", takeOver);
 
+    // An image finishing is the height change this exists for, and it is worth
+    // hearing about directly rather than only through the observer above:
+    // ResizeObserver is driven by the rendering pipeline and does not run at
+    // all while the document is hidden -- which is exactly the state an app
+    // being brought back to the foreground is in while its backlog lands.
+    // `load` does not bubble, so this listens in the capture phase.
+    scrollEl?.addEventListener("load", onResize, true);
+
     return () => {
       observer.disconnect();
       clearTimeout(quiet);
       clearTimeout(ceiling);
       scrollEl?.removeEventListener("wheel", takeOver);
       scrollEl?.removeEventListener("touchmove", takeOver);
+      scrollEl?.removeEventListener("load", onResize, true);
       window.removeEventListener("keydown", takeOver);
     };
   }, [conversationId, jumpTo, dispatchAnchor, sampleNearBottom]);
@@ -1261,7 +1325,11 @@ export function Timeline({
   return (
     <div
       ref={scroller}
-      onScroll={() => sampleNearBottom()}
+      onScroll={() => {
+        sampleNearBottom();
+        // Where the reader put themselves, for holdPosition to restore.
+        recordAnchorRow();
+      }}
       className="flex-1 overflow-y-auto bg-neutral-50 p-4 dark:bg-transparent"
       onClick={(event) => {
         // A tap inside a message's own press-bounded wrapper already

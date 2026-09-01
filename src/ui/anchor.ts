@@ -46,7 +46,13 @@
  *  rather than re-deriving it from a timeline that is still filling in. */
 export type AnchorTarget = "divider" | "bottom";
 
-export type AnchorAction = "centre-divider" | "pin-bottom" | "none";
+export type AnchorAction =
+  | "centre-divider"
+  | "pin-bottom"
+  /** Keep the row the reader is looking at where it is, absorbing whatever
+   *  was inserted above it. Scroll anchoring, which Safari does not do. */
+  | "hold-position"
+  | "none";
 
 export type AnchorState = {
   /** The open's one shot has been taken, and `target` records what it chose. */
@@ -87,10 +93,23 @@ export function planAnchor(
     return { state: { ...state, settled: true }, action: "none" };
   }
 
-  // The reader is driving. Only an arrival can move the scroll now, and only
-  // for somebody already at the bottom.
+  // The reader is driving.
   if (state.settled) {
-    if (signal.kind === "resize") return { state, action: "none" };
+    // A bare height change is not an arrival, and this is the case that was
+    // still landing people mid-conversation: the open window closes after
+    // about 700ms, and a photo coming off the network or a message healing
+    // its decrypt lands well after that. Doing nothing meant the reader
+    // silently kept whatever scroll offset they had while content grew above
+    // them -- so the same conversation opened four times sat in three
+    // different places, each a picture's height apart.
+    //
+    // Chromium absorbs this natively (scroll anchoring); Safari implements
+    // none, which is why it read as an iPhone bug. At the bottom, follow the
+    // growth down -- that is what somebody parked at the bottom wants.
+    // Otherwise hold the row they are actually looking at.
+    if (signal.kind === "resize") {
+      return { state, action: state.nearBottom ? "pin-bottom" : "hold-position" };
+    }
     return { state, action: state.nearBottom ? "pin-bottom" : "none" };
   }
 
