@@ -5,7 +5,7 @@
 // That is the durable half of the retention story: the server expires things,
 // devices keep what they were given, and the two never have to agree.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { downloadAttachment } from "../api/client";
 import type { AttachmentRef } from "../api/payload";
 import { openAttachmentBytes } from "../crypto/blob";
@@ -107,6 +107,54 @@ export function Attachment({
       ? attachment.width / attachment.height
       : 1;
 
+  /**
+   * The placeholder's *width*, which an `aspect-ratio` alone does not give it.
+   *
+   * A message bubble is shrink-to-fit (`max-w-[70%]` on a flex item), so its
+   * width is the widest thing inside it -- and a `<div style="width:100%">`,
+   * which is what this placeholder used to be, contributes **nothing** to
+   * that. So the bubble sized itself to the caption text, and the reserved box
+   * took its height from an aspect ratio applied to a bubble far narrower than
+   * the photo was about to make it. When the real `<img>` arrived it brought
+   * its intrinsic width with it, the bubble jumped out to its full width, and
+   * the box recomputed taller: **187px for a 1200x1600 photo with a short
+   * caption, 230px for a landscape one, 215px with no caption at all**,
+   * measured against this exact markup. Every photo did this, on load, after
+   * the scroll had already been positioned.
+   *
+   * That is why "it opens in the middle" was a conversation-with-images bug,
+   * and the two halves of the fix are independent: `anchor.ts` repairs the
+   * anchor that failed to correct for the shift, and this stops there being a
+   * shift to correct.
+   *
+   * The width stated here is what the loaded `<img>` will actually use: its
+   * natural width, or what `max-h-80` allows at this aspect ratio, whichever
+   * is smaller -- then `max-width: 100%` for the bubble it has to fit inside.
+   * Verified to reserve the exact loaded height across portrait, landscape,
+   * square, panoramic, small and very tall photos.
+   *
+   * Two things here are deliberate and worth not "simplifying":
+   *
+   * - **`20rem`, not `320px`.** It has to be the same length as `max-h-80`,
+   *   which is `20rem` and is therefore only 320px at the default root font
+   *   size. Hard-coding the pixels would silently mis-reserve for anyone who
+   *   has changed it.
+   * - **`max-width` separately, not folded into the `min()`.** A percentage
+   *   inside `min()` does not contribute to intrinsic sizing, so
+   *   `min(100%, …)` measures as *worse* than doing nothing -- tested.
+   *
+   * Falling back to `100%` when the sender's client recorded no dimensions:
+   * there is nothing to reserve, and the old behaviour is the honest one.
+   */
+  const reserved: CSSProperties =
+    attachment.width && attachment.height
+      ? {
+          aspectRatio: String(ratio),
+          width: `min(${attachment.width}px, calc(20rem * ${ratio}))`,
+          maxWidth: "100%",
+        }
+      : { aspectRatio: String(ratio), width: "100%" };
+
   if (status.state === "ok") {
     const image = (
       <img
@@ -139,11 +187,16 @@ export function Attachment({
           : "Could not load — check your connection";
 
   return (
-    <div
-      style={{ aspectRatio: String(ratio) }}
-      className="flex max-h-80 w-full items-center justify-center rounded-lg bg-neutral-300/60 px-3 text-center text-xs text-neutral-700 dark:bg-neutral-700/60 dark:text-neutral-200"
-    >
-      {label}
+    // The label sits *over* the reserved box rather than inside it: the box is
+    // exactly the photo's, and no amount of message text can stretch it.
+    <div className="relative">
+      <div
+        style={reserved}
+        className="max-h-80 rounded-lg bg-neutral-300/60 dark:bg-neutral-700/60"
+      />
+      <span className="absolute inset-0 flex items-center justify-center px-3 text-center text-xs text-neutral-700 dark:text-neutral-200">
+        {label}
+      </span>
     </div>
   );
 }

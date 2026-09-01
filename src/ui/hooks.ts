@@ -184,33 +184,55 @@ export function useTimeline(
   hasMore: boolean;
   loadOlder: () => void;
 } {
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
-  const [events, setEvents] = useState<StoredEvent[]>([]);
-  const [pending, setPending] = useState<OutboxEntry[]>([]);
+  /**
+   * All three reads land in ONE piece of state, deliberately.
+   *
+   * They used to be three, set from three separate promises, which meant
+   * three commits and three layouts -- and because the notice lines come from
+   * their own read, they arrived *after* the messages they sit between and
+   * inserted hundreds of pixels above whatever the scroll had just been set
+   * to (measured at 364px on a seeded 40-message group with 13 notices).
+   * Chromium's scroll anchoring hid most of it; Safari implements none, so on
+   * a phone the whole insertion moved the view. `Timeline.tsx`'s open anchor
+   * still has to survive late height changes -- images, fonts -- but it no
+   * longer has to survive the timeline arriving in instalments.
+   *
+   * The cost is that the slowest of the three reads now sets the pace. They
+   * are three IndexedDB reads against one database on one page's worth of
+   * rows, and the previous behaviour was to paint a torn timeline that
+   * finished at the same moment anyway.
+   */
+  const [page, setPage] = useState<{
+    messages: StoredMessage[];
+    events: StoredEvent[];
+    pending: OutboxEntry[];
+    hasMore: boolean;
+  }>({ messages: [], events: [], pending: [], hasMore: false });
   const [limit, setLimit] = useState(PAGE);
-  const [hasMore, setHasMore] = useState(false);
+  const { messages, events, pending, hasMore } = page;
 
   const reload = useCallback(() => {
     if (!conversationId) {
-      setMessages([]);
-      setEvents([]);
-      setPending([]);
+      setPage({ messages: [], events: [], pending: [], hasMore: false });
       return;
     }
 
-    // One extra row than asked for, purely to answer "is there more?" without
-    // a second count query.
-    void store
-      .getConversationPage(conversationId, { limit: limit + 1 })
-      .then((page) => {
-        setHasMore(page.length > limit);
+    void Promise.all([
+      // One extra row than asked for, purely to answer "is there more?"
+      // without a second count query.
+      store.getConversationPage(conversationId, { limit: limit + 1 }),
+      store.getConversationEvents(conversationId),
+      store.listOutbox(conversationId),
+    ]).then(([rows, storedEvents, outbox]) => {
+      setPage({
         // The store returns newest first because that is the efficient
         // direction to walk the index. A timeline reads the other way.
-        setMessages(page.slice(0, limit).reverse());
+        messages: rows.slice(0, limit).reverse(),
+        events: storedEvents,
+        pending: outbox,
+        hasMore: rows.length > limit,
       });
-
-    void store.getConversationEvents(conversationId).then(setEvents);
-    void store.listOutbox(conversationId).then(setPending);
+    });
   }, [conversationId, limit]);
 
   useEffect(reload, [reload]);

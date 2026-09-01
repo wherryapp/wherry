@@ -7,6 +7,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -35,6 +36,12 @@ import {
 import { memberName } from "./format";
 import { excerptOf, type EditDraft, type ReplyDraft } from "./drafts";
 import { unreadBoundary } from "./unread";
+import {
+  freshAnchor,
+  planAnchor,
+  type AnchorSignal,
+  type AnchorState,
+} from "./anchor";
 import {
   PencilIcon,
   PinIcon,
@@ -612,11 +619,19 @@ const RUN_GAP_MS = 5 * 60_000;
  *  down rather than wait to be scrolled to. About one bubble's worth. */
 const NEAR_BOTTOM_PX = 120;
 
-/** How long after opening a conversation the anchor keeps re-applying itself
- *  as content settles in above it. Long enough for three store reads and the
- *  images they reference; short enough that it cannot be mistaken for the
- *  scroll fighting back. Ends early the moment the reader touches anything. */
-const SETTLE_MS = 1200;
+/** The open anchor's window, which ends on a *condition* rather than a clock:
+ *  the content has stopped changing height. See the settle effect below.
+ *
+ *  - QUIET_MS          how still the content has to be to count as arrived.
+ *  - SETTLE_FLOOR_MS   the window never closes before this, so a slow first
+ *                      commit cannot beat it.
+ *  - SETTLE_CEILING_MS and never after it, so nothing -- a typing indicator,
+ *                      an animation -- can hold the scroll indefinitely.
+ *
+ *  A real gesture ends the window immediately, whichever came first. */
+const QUIET_MS = 400;
+const SETTLE_FLOOR_MS = 700;
+const SETTLE_CEILING_MS = 4000;
 
 /** store.countUnread's default ceiling. A count equal to it is a floor. */
 const UNREAD_COUNT_CAP = 99;
@@ -988,14 +1003,22 @@ export function Timeline({
    *
    * Neither event moves scrollTop, so the last sample is still the truth
    * about where the reader put themselves.
+   *
+   * **It is not sampled while the open still owns the scroll.** `scroll`
+   * fires for our own programmatic scrolls too, a frame after the fact, so
+   * the geometry it reads mid-open is whatever the timeline had settled to by
+   * dispatch time -- which is how a sample taken *because* the anchor moved
+   * the scroll used to record the reader as scrolled up. See `anchor.ts`.
+   * One honest sample is taken at hand-over instead.
    */
-  const nearBottom = useRef(true);
-  const sampleNearBottom = (): void => {
+  const anchor = useRef<AnchorState>(freshAnchor());
+  const sampleNearBottom = useCallback((force = false): void => {
     const el = scroller.current;
     if (!el) return;
-    nearBottom.current =
+    if (!force && !anchor.current.settled) return;
+    anchor.current.nearBottom =
       el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
-  };
+  }, []);
 
   /**
    * The true bottom, by assignment rather than `scrollIntoView` on a trailing
@@ -1022,27 +1045,32 @@ export function Timeline({
   }, []);
 
   /**
-   * One shot per conversation: the open lands on the divider, or on the
-   * bottom when there is nothing unread. Latched, so everything after it is
-   * an *arrival*, which is a different question. `anchorTarget` records which
-   * of the two it chose, so the settle observer below can re-apply the same
-   * decision rather than re-deriving it.
+   * One signal in, one scroll out. Every decision about where the open lands
+   * lives in `planAnchor`, which is pure and tested; this is only the hands.
    */
-  const anchored = useRef(false);
-  const anchorTarget = useRef<"divider" | "bottom">("bottom");
-  const settled = useRef(false);
-  useEffect(() => {
-    anchored.current = false;
-    anchorTarget.current = "bottom";
-    settled.current = false;
-  }, [conversationId]);
+  const dispatchAnchor = useCallback(
+    (signal: AnchorSignal): void => {
+      const { state, action } = planAnchor(anchor.current, signal);
+      anchor.current = state;
+      if (action === "pin-bottom") pinBottom();
+      else if (action === "centre-divider") centreDivider();
+    },
+    [pinBottom, centreDivider],
+  );
 
-  /** Puts the scroll back on whatever the open aimed at. */
-  const reapplyAnchor = useCallback((): void => {
-    if (settled.current || !anchored.current) return;
-    if (anchorTarget.current === "divider") centreDivider();
-    else if (nearBottom.current) pinBottom();
-  }, [centreDivider, pinBottom]);
+  // A fresh conversation is a fresh anchor -- including `nearBottom`, which is
+  // a fact about the reader's position in *this* conversation. It used to
+  // survive the switch, so opening a chat after scrolling up in another one
+  // started with the arrival gate already shut.
+  //
+  // A layout effect, and declared *above* the one that anchors, because
+  // effects run in declaration order and both now run before paint: as a
+  // passive effect this reset landed after the new conversation's first
+  // commit had already been handled with the old conversation's latched
+  // state.
+  useLayoutEffect(() => {
+    anchor.current = freshAnchor();
+  }, [conversationId]);
 
   // True while the divider's existence is still undecided -- the conversation
   // list has not caught up, or a clamped count is still in flight. Pin to the
@@ -1051,81 +1079,46 @@ export function Timeline({
   const dividerPending =
     snapshot === null || !itemsAreCurrent || (clamped && deepCount === null);
 
-  useEffect(() => {
+  // A layout effect, so the scroll is in place before the frame is painted.
+  // As a passive effect this ran *after* paint, which showed the timeline at
+  // the wrong offset for one frame on every open -- cheap to see on a phone,
+  // and easy to mistake for the anchor itself moving.
+  useLayoutEffect(() => {
     // A jump in progress owns the scroll position; pinning or anchoring here
     // would yank the reader away from the very message they asked for. A
     // search jump into a conversation beats the divider.
     if (jumpTo) return;
-
-    if (!anchored.current) {
-      // Keyed off the rendered row rather than the divider value, so this
-      // can only latch on a line that is actually in the DOM to scroll to.
-      if (dividerIndex >= 0) {
-        anchored.current = true;
-        anchorTarget.current = "divider";
-        centreDivider();
-        return;
-      }
-      pinBottom();
-      if (!dividerPending) {
-        anchored.current = true;
-        anchorTarget.current = "bottom";
-      }
-      return;
-    }
-
-    // Still settling. `items` changing this soon after the anchor ran is the
-    // rest of the timeline arriving, not somebody sending something: notices
-    // come from their own store read and land after the messages they sit
-    // between, inserting hundreds of pixels above the anchor. Put the anchor
-    // back rather than reading this as an arrival.
-    if (!settled.current) {
-      reapplyAnchor();
-      return;
-    }
-
-    // An arrival. Following it is right for somebody reading at the bottom
-    // and wrong for anybody else -- the unconditional pin this replaces is
-    // what yanked a reader who had scrolled up back down again.
-    if (!nearBottom.current) return;
-    pinBottom();
-  }, [
-    count,
-    conversationId,
-    jumpTo,
-    dividerIndex,
-    dividerPending,
-    centreDivider,
-    pinBottom,
-    reapplyAnchor,
-  ]);
+    dispatchAnchor({ kind: "render", dividerIndex, dividerPending });
+  }, [count, conversationId, jumpTo, dividerIndex, dividerPending, dispatchAnchor]);
 
   /**
    * The anchor has to survive the timeline settling underneath it.
    *
-   * `useTimeline` fills messages, notices and the outbox from three separate
-   * store reads and sets three separate pieces of state, so the notice lines
-   * land *after* the messages they sit between. In a group with a lot of them
-   * that is hundreds of pixels inserted above an anchor that has already been
-   * scrolled to and latched — measured at 364px on a seeded 40-message group
-   * with 13 notices, which is how a conversation opens "somewhere in the
-   * middle" instead of on its divider. Images, fonts and the receipt line do
-   * the same thing on a smaller scale.
+   * `useTimeline` now lands messages, notices and the outbox in one commit,
+   * which removes the largest of these by far -- three store reads used to
+   * set three pieces of state, so the notice lines arrived *after* the
+   * messages they sit between and inserted hundreds of pixels above an anchor
+   * that had already been scrolled to (measured at 364px on a seeded
+   * 40-message group with 13 notices). What is left is everything that
+   * changes height *without* changing the item list: images decoding, fonts
+   * swapping, a receipt line appearing, the typing indicator.
    *
    * Chromium's scroll anchoring absorbs most of it, which is exactly why this
    * is worse on a phone: Safari does not implement scroll anchoring at all,
    * so there the full insertion moves the view.
    *
-   * Notices arriving change `items`, so the effect above already re-runs for
-   * the big case and re-applies the anchor there. This observer is the net
-   * under everything that changes height *without* changing the item list:
-   * images decoding, fonts swapping, a receipt line appearing. Note it is
-   * driven by the rendering pipeline, so it does not fire while the document
-   * is hidden -- which is fine, since nobody is looking at the scroll then.
+   * **The window ends on a condition, not on a clock.** It used to be a flat
+   * 1200 ms, which is both too long for a conversation that settled in 40 ms
+   * (the anchor could still move a second later, which reads as the scroll
+   * fighting back) and too short for one whose photo comes off the network on
+   * a phone. Instead: re-anchor whenever the content actually changes height,
+   * and hand over once it has been still for QUIET_MS -- with a floor, so a
+   * slow first commit cannot settle the window before the timeline has
+   * arrived, and a ceiling, so nothing can hold the scroll indefinitely.
+   * Any real gesture ends it immediately, whichever came first.
    *
-   * Both ends of the window are needed: without the take-over check a fast
-   * reader gets yanked back, and without the timer every later arrival would
-   * re-centre the divider for the life of the conversation.
+   * Note it is driven by the rendering pipeline, so it does not fire while the
+   * document is hidden -- fine, since nobody is looking at the scroll then.
    */
   useEffect(() => {
     const el = content.current;
@@ -1133,29 +1126,54 @@ export function Timeline({
     // this must never do.
     if (!el || jumpTo) return;
 
-    const observer = new ResizeObserver(() => reapplyAnchor());
-    observer.observe(el);
+    const openedAt = performance.now();
+    let quiet: ReturnType<typeof setTimeout> | undefined;
+    let ceiling: ReturnType<typeof setTimeout> | undefined;
 
     // Any of these means the reader is driving now. `scroll` is not among
     // them: it fires for our own programmatic scrolls too, so it cannot tell
-    // the reader apart from the anchor.
+    // the reader apart from the anchor. `touchmove` rather than `touchstart`,
+    // because on a phone the tap that opened the conversation is followed by a
+    // finger that is merely *resting* at least as often as one that is
+    // scrolling -- and a tap on a photo is not a request to move the view.
     const takeOver = (): void => {
-      settled.current = true;
+      if (anchor.current.settled) return;
+      clearTimeout(quiet);
+      clearTimeout(ceiling);
+      dispatchAnchor({ kind: "handover" });
+      // The one sample that matters: from here on, arrivals are gated on it.
+      sampleNearBottom(true);
     };
-    const timer = setTimeout(takeOver, SETTLE_MS);
+
+    const scheduleHandover = (): void => {
+      clearTimeout(quiet);
+      const elapsed = performance.now() - openedAt;
+      quiet = setTimeout(takeOver, Math.max(QUIET_MS, SETTLE_FLOOR_MS - elapsed));
+    };
+
+    const observer = new ResizeObserver(() => {
+      if (anchor.current.settled) return;
+      dispatchAnchor({ kind: "resize" });
+      scheduleHandover();
+    });
+    observer.observe(el);
+    scheduleHandover();
+    ceiling = setTimeout(takeOver, SETTLE_CEILING_MS);
+
     const scrollEl = scroller.current;
     scrollEl?.addEventListener("wheel", takeOver, { passive: true });
-    scrollEl?.addEventListener("touchstart", takeOver, { passive: true });
+    scrollEl?.addEventListener("touchmove", takeOver, { passive: true });
     window.addEventListener("keydown", takeOver);
 
     return () => {
       observer.disconnect();
-      clearTimeout(timer);
+      clearTimeout(quiet);
+      clearTimeout(ceiling);
       scrollEl?.removeEventListener("wheel", takeOver);
-      scrollEl?.removeEventListener("touchstart", takeOver);
+      scrollEl?.removeEventListener("touchmove", takeOver);
       window.removeEventListener("keydown", takeOver);
     };
-  }, [conversationId, jumpTo, reapplyAnchor]);
+  }, [conversationId, jumpTo, dispatchAnchor, sampleNearBottom]);
 
   // The jump: scroll once the target renders; page older store content
   // until it does (the target is already stored by the caller). Bounded so
@@ -1195,7 +1213,7 @@ export function Timeline({
       // the keyboard shortened the pane (see nearBottom). The case this
       // exists for -- somebody at the bottom about to reply -- passes it by
       // definition; a reader parked further up is left where they were.
-      if (!nearBottom.current) return;
+      if (!anchor.current.nearBottom) return;
       pinBottom();
     };
 
@@ -1243,7 +1261,7 @@ export function Timeline({
   return (
     <div
       ref={scroller}
-      onScroll={sampleNearBottom}
+      onScroll={() => sampleNearBottom()}
       className="flex-1 overflow-y-auto bg-neutral-50 p-4 dark:bg-transparent"
       onClick={(event) => {
         // A tap inside a message's own press-bounded wrapper already
