@@ -157,3 +157,61 @@ body {
     background: #171717;
   }
 }
+
+/* -------------------------------------------------------------------------
+   Touch surfaces: the app should not behave like a document
+   -------------------------------------------------------------------------
+
+   Everything below is gated on `pointer: coarse` -- the primary input being a
+   finger -- and nothing below applies to the desktop app, the desktop web, or
+   a laptop with a touchscreen it does not primarily use. That gate is the CSS
+   spelling of the rule CLAUDE.md already states for JavaScript: decide on
+   pointer capability, never on a user agent. It also matters on the merits.
+   The behaviours being removed here are *wanted* with a mouse -- dragging a
+   selection across a message to copy it is how copying works on a desktop --
+   and this client is shared by the web, the desktop app and both phones. */
+
+@media (pointer: coarse) {
+  #root {
+    /* Long-pressing a conversation row, a header or a button selected its
+       text and raised the Copy/Look Up callout, which is what makes a touch
+       build read as a web page in a frame rather than an app. The timeline's
+       bubbles already opted out of this one message at a time (Timeline.tsx's
+       press target); this is the same trade taken once, for the chrome.
+
+       -webkit-touch-callout as well as user-select: they are separate
+       switches on iOS, and suppressing the selection without the callout
+       leaves the long-press menu appearing over an empty selection. */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+
+    /* No double-tap-to-zoom, and no 300ms wait to find out whether a tap was
+       one. The pinch half of the lock cannot be expressed here -- `none`
+       would take scrolling with it -- and lives in index.html's viewport meta
+       and ui/zoom.ts. */
+    touch-action: manipulation;
+  }
+
+  /* Text entry is the exception, and has to be: a field with no selection has
+     no caret to place and no way to correct a word in the middle of a line.
+     `.select-text` is the opt-in for anything else worth copying by hand. */
+  #root :where(input, textarea, [contenteditable="true"], .select-text) {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+
+  /* `select-all` marks the three things in this app that exist to be copied
+     whole -- the recovery code, a hub id, an invite link. Their own
+     declaration already survives the block above (an explicit user-select
+     beats an inherited one), so only the callout needs giving back: without
+     it iOS selects the text on a long press and then offers no Copy to do
+     anything with it, which is a worse state than either end. Listed
+     separately rather than folded into the group above because that group
+     sets `text`, and `text` would undo the one-tap-selects-everything that
+     is the entire point of the class. */
+  #root .select-all {
+    -webkit-touch-callout: default;
+  }
+}

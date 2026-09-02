@@ -68,6 +68,11 @@ export function Composer({
   // this, and the action bar's tap trigger it points at). A touch keyboard's
   // Return breaks the line; a hardware keyboard's Enter sends.
   const touchInput = useRef(false);
+  // When the field last lost focus, for keepKeyboardOpen below. `-Infinity`
+  // rather than 0 so "never focused" is never mistaken for "blurred at the
+  // epoch", which on a clock read as a number is 56 years ago and on a
+  // performance timeline would be 0ms ago.
+  const blurredAt = useRef(-Infinity);
 
   // The @-token being typed at the caret, or null. Suggestion picks insert
   // "@Name " and remember name -> id here; at send time only the names still
@@ -168,8 +173,38 @@ export function Composer({
     });
   }
 
+  /**
+   * Puts the caret back in the composer, so sending does not dismiss the
+   * keyboard.
+   *
+   * Two mechanisms, because neither is sufficient alone. The send button
+   * carries `onMouseDown={preventDefault}`, which is what stops the tap
+   * from moving focus in the first place -- on iOS the blur happens during
+   * the tap, long before this handler runs, so nothing done here could
+   * bring the keyboard back if it had already gone. Where that holds, this
+   * call is a no-op on an already-focused element.
+   *
+   * Where it does not hold, this is the recovery, and it has to happen
+   * *synchronously inside the submit handler* -- iOS only opens the
+   * keyboard for a `focus()` that is still inside the user gesture, so a
+   * refocus after the awaits below would be silently ignored. That is why
+   * it is the first thing submit does rather than the last.
+   *
+   * The blur window is what keeps an attachment-only send from summoning a
+   * keyboard nobody asked for: no recent focus means the field was never in
+   * use, and the tap was on the paperclip.
+   */
+  function keepKeyboardOpen(): void {
+    const el = textarea.current;
+    if (!el) return;
+    if (document.activeElement === el) return;
+    if (performance.now() - blurredAt.current > 700) return;
+    el.focus({ preventScroll: true });
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
+    keepKeyboardOpen();
 
     const trimmed = text.trim();
     if (busy) return;
@@ -418,6 +453,9 @@ export function Composer({
           onPointerDown={(e) => {
             touchInput.current = e.pointerType !== "mouse";
           }}
+          onBlur={() => {
+            blurredAt.current = performance.now();
+          }}
           onKeyDown={(e) => {
             if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
             // Touch keyboard: Return breaks the line, and only the send
@@ -433,6 +471,24 @@ export function Composer({
         <button
           type="submit"
           aria-label="Send"
+          // The whole reason sending used to close the keyboard: pressing
+          // any other element moves focus out of the textarea, and on a
+          // phone losing focus *is* the keyboard going away. Cancelling the
+          // default of mousedown suppresses that focus change without
+          // touching the click, which is the standard way a toolbar button
+          // acts on a field it must not take the caret from. See
+          // keepKeyboardOpen above for the half that handles browsers where
+          // this does not hold.
+          //
+          // Cancelling mousedown does NOT cancel the click -- the click is
+          // part of activation behaviour and is not conditioned on
+          // mousedown's canceled flag, which is why editor toolbars have
+          // used this for years. Confirmed here in Chromium (the message
+          // sends and the caret stays in one test), reasoned from the spec
+          // for WebKit. If sending ever stops working on a phone, this line
+          // is the first thing to try removing -- keepKeyboardOpen alone
+          // still covers most of the behaviour.
+          onMouseDown={(e) => e.preventDefault()}
           disabled={busy || (text.trim().length === 0 && pending.length === 0)}
           // Deliberately not kit's Button: the round icon shape would have to
           // fight Button's rounded-md and padding with same-specificity

@@ -20,20 +20,29 @@ function memberName(conversation: StoredConversation, userId: string): string {
 }
 
 /**
- * A conversation-list timestamp: the time today, the weekday within a week,
- * a date beyond that. The list answers "how stale is this thread" at a
- * glance; the exact minute of last Tuesday answers nothing.
+ * A conversation-list timestamp: the time today, a date on any other day.
+ *
+ * The weekday used to fill the week in between ("Tue"), and that is the part
+ * that was removed. A bare weekday is ambiguous in the one direction that
+ * matters -- "Tue" is either two days ago or nearly a week ago, and the list
+ * exists to answer exactly that -- so it managed to look precise while
+ * saying less than the date it replaced. The year is appended only when it
+ * is not this one, since "3/14" reads as this March until it does not.
+ *
+ * `now` is a parameter so the boundaries can be tested; nothing passes it.
  */
-function listTime(iso: string): string {
+function listTime(iso: string, now: Date = new Date()): string {
   const then = new Date(iso);
-  const now = new Date();
   if (then.toDateString() === now.toDateString()) {
     return then.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
-  if (now.getTime() - then.getTime() < 6 * 86_400_000) {
-    return then.toLocaleDateString([], { weekday: "short" });
-  }
-  return then.toLocaleDateString([], { month: "numeric", day: "numeric" });
+  // Calendar days, not elapsed hours: a message sent at 23:50 yesterday is
+  // "yesterday" at 00:10 today, and showing it a time would say today.
+  return then.toLocaleDateString([], {
+    month: "numeric",
+    day: "numeric",
+    ...(then.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  });
 }
 
 /**

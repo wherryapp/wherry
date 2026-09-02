@@ -8,9 +8,19 @@
          and scrolling it out of the way. Where it is honoured the app compacts on
          its own and src/ui/viewport.ts has nothing left to correct; where it is
          not, it is ignored and that file is the fallback. -->
+    <!-- maximum-scale/user-scalable are the half of the pinch-zoom lock that
+         a browser can honour declaratively: Chrome, the Android WebView and
+         WKWebView (so the iOS and Android shells) all do. Safari the browser
+         has ignored them since iOS 10 on accessibility grounds, which is why
+         src/ui/zoom.ts exists -- it cancels WebKit's gesture events, and
+         between them the two cover every surface. Page zoom is not the
+         accessibility answer here in any case: it zooms a fixed-position
+         shell into a cropped, unusable layout rather than reflowing it (see
+         ui/viewport.ts's scale guard). A text-size control is, and is still
+         owed -- docs/roadmap.md's tier 4. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <link rel="manifest" href="/manifest.webmanifest" />
 

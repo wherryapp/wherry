@@ -8,10 +8,16 @@ import { startStallDetector } from "./diagnostics";
 import { registerServiceWorker } from "./pwa";
 import { stripReloadMarker } from "./reload";
 import { trackVisualViewport } from "./ui/viewport";
+import { lockPageZoom } from "./ui/zoom";
 
 // Before the first render, so the shell is sized correctly on the first
 // paint rather than jumping once the listeners attach.
 trackVisualViewport();
+
+// Beside it, and for the same reason it is a startup call rather than a
+// component effect: the gesture it cancels is available from the first frame,
+// and a lock that attaches after the tree mounts is a lock with a gap in it.
+lockPageZoom();
 
 // The update banner's reload navigates to a throwaway parameter to defeat the
 // page cache; this is the other half, putting the address bar back. Safe to

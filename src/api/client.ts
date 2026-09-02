@@ -938,9 +938,13 @@ export function fetchAnnouncements(options?: {
 export function changeAvatarColor(
   hue: number | null,
 ): Promise<{ avatarHue: number | null }> {
+  // `body` is the value, not the serialised body -- `request` above does the
+  // JSON.stringify. Passing a string here double-encoded it, so the server
+  // parsed a JSON *string* where the schema wanted an object and answered
+  // "body must be object", which reads like a schema bug and is not one.
   return request(`${API}/account/avatar-color`, {
     method: "POST",
-    body: JSON.stringify({ hue }),
+    body: { hue },
   });
 }
 
