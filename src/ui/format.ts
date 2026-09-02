@@ -80,4 +80,36 @@ function avatarHue(
   return null;
 }
 
-export { conversationTitle, memberName, listTime, avatarSeed, avatarHue };
+
+/**
+ * A file size somebody can read at a glance.
+ *
+ * Binary units with decimal names, which is the lie every operating system
+ * tells and therefore the one that matches what a person sees next to the
+ * file on their own machine. One decimal place below 10 units and none above,
+ * because "9.4 MB" is informative and "9.4 kB" past a hundred of them is
+ * noise.
+ */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+
+  const units = ["kB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rounded = value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
+  return `${rounded} ${units[unit]}`;
+}
+
+export {
+  conversationTitle,
+  memberName,
+  listTime,
+  avatarSeed,
+  avatarHue,
+  formatBytes,
+};

@@ -17,13 +17,15 @@ import { e2e } from "../crypto";
 import { encryptBlob } from "../crypto/blob";
 import { sync } from "../sync/engine";
 import {
-  acceptImages,
+  acceptFiles,
   filesFromTransfer,
   intakeError,
   transferHasFiles,
 } from "./attach-intake";
+import { acceptAttribute, fileExtension, type FilePolicy } from "./file-policy";
+import { useFilePolicy } from "./hooks";
 import { type EditDraft, type ReplyDraft } from "./drafts";
-import { ErrorText, IconButton, Note, PlusIcon, SendIcon, XIcon } from "./kit";
+import { ErrorText, FileIcon, IconButton, Note, PlusIcon, SendIcon, XIcon } from "./kit";
 import { useCanDropFiles } from "./viewport";
 import { WidgetBar } from "./widgets/WidgetBar";
 
@@ -108,6 +110,10 @@ export function Composer({
   // a clipboard, and an image on it pastes here like anywhere else.
   const canDrop = useCanDropFiles();
   const editing = edit !== null;
+  // The operator's file rule, from GET /attachments/usage. Advisory -- the
+  // server cannot see attachment types -- so this is what stops somebody
+  // attaching the wrong thing, not what stops the wrong thing arriving.
+  const filePolicy = useFilePolicy();
 
   // Which widgets the bar may show. A Set rather than a boolean per widget
   // so adding the second one does not change this component's shape --
@@ -203,7 +209,7 @@ export function Composer({
    * its markup. See attach-intake.ts for the rule itself.
    */
   const addFiles = useCallback((incoming: readonly File[]): void => {
-    const intake = acceptImages(incoming);
+    const intake = acceptFiles(incoming, filePolicy);
 
     // Null when nothing was refused, which is also how the previous error
     // gets cleared on a clean pick -- the behaviour choose() had.
@@ -217,7 +223,7 @@ export function Composer({
         url: URL.createObjectURL(file),
       })),
     ]);
-  }, []);
+  }, [filePolicy]);
 
   function choose(event: FormEvent<HTMLInputElement>): void {
     const input = event.currentTarget;
@@ -437,6 +443,16 @@ export function Composer({
           byteSize: uploaded.byteSize,
           ...(prepared.width ? { width: prepared.width } : {}),
           ...(prepared.height ? { height: prepared.height } : {}),
+          // The filename, but only when the bytes are the ones that were
+          // picked. `prepareForUpload` re-encodes photos to JPEG, and an
+          // iPhone's "IMG_0001.HEIC" would then name a file that is no
+          // longer a HEIC -- somebody downloads it, the extension lies, and
+          // whatever opens it fails for a reason nothing on screen explains.
+          // Re-encoded images lose the name instead, which costs nothing:
+          // a photo renders inline and is never shown by name.
+          ...(prepared.mediaType === item.file.type && item.file.name
+            ? { name: item.file.name }
+            : {}),
           ...(sealed ? sealed.ref : {}),
         });
       }
@@ -499,7 +515,7 @@ export function Composer({
               Drop to attach
             </p>
             <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
-              Images only
+              {dropHint(filePolicy)}
             </p>
           </div>
         </div>
@@ -513,11 +529,24 @@ export function Composer({
           <div className="mb-2 flex gap-2 overflow-x-auto">
             {pending.map((item, index) => (
               <div key={item.url} className="relative shrink-0">
-                <img
-                  src={item.url}
-                  alt=""
-                  className="h-16 w-16 rounded-md object-cover"
-                />
+                {item.file.type.startsWith("image/") ? (
+                  <img
+                    src={item.url}
+                    alt=""
+                    className="h-16 w-16 rounded-md object-cover"
+                  />
+                ) : (
+                  // Not an <img> with a PDF in it, which is a broken-image
+                  // icon and nothing else. The extension is the useful thing
+                  // at this size -- the full name is unreadable in 64px and
+                  // the person picked the file a second ago.
+                  <span className="flex h-16 w-16 flex-col items-center justify-center gap-1 rounded-md bg-neutral-200 px-1 dark:bg-neutral-700">
+                    <FileIcon className="h-5 w-5 text-neutral-500 dark:text-neutral-400" />
+                    <span className="w-full truncate text-center text-[10px] uppercase text-neutral-600 dark:text-neutral-300">
+                      {fileExtension(item.file.name) ?? "file"}
+                    </span>
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => remove(index)}
@@ -600,13 +629,22 @@ export function Composer({
             and the row itself has room for a mic button beside the attach one
             for the same reason. */}
         <div className="flex items-center gap-2">
-          {/* accept without capture. `capture` forces the camera and removes the
-              photo library, which on a phone is where the photo somebody wants
-              to send almost always already is. */}
+          {/* No `capture`: it forces the camera and removes the photo
+              library, which on a phone is where the thing somebody wants to
+              send almost always already is. Leaving it off keeps both -- the
+              OS sheet offers "Take Photo" alongside the library.
+
+              `accept` now comes from the policy, and is usually absent: a
+              blocklist has no `accept` expression, since the attribute can
+              only say what is permitted. That is exactly why the rule has to
+              be applied to what comes back (attach-intake.ts) rather than
+              trusted to the markup. */}
           <input
             ref={fileInput}
             type="file"
-            accept="image/*"
+            {...(acceptAttribute(filePolicy)
+              ? { accept: acceptAttribute(filePolicy) }
+              : {})}
             multiple
             onInput={choose}
             className="hidden"
@@ -615,7 +653,7 @@ export function Composer({
               target's attachments stay exactly as sent. */}
           {!edit && (
             <IconButton
-              label="Attach a photo"
+              label="Attach a file"
               onClick={() => fileInput.current?.click()}
               className="rounded-full"
             >
@@ -705,4 +743,20 @@ export function Composer({
       </form>
     </>
   );
+}
+
+/**
+ * The line under "Drop to attach".
+ *
+ * It used to read "Images only", which was true and is not any more. Under a
+ * blocklist there is nothing short and honest to say -- "anything except
+ * thirty-odd executable extensions" is not a caption -- so it says what the
+ * limit actually is from the reader's point of view: nothing in particular.
+ * An allowlist has a genuinely useful caption and gets one.
+ */
+function dropHint(policy: FilePolicy): string {
+  if (policy.mode === "allow" && policy.extensions.length > 0) {
+    return policy.extensions.map((extension) => `.${extension}`).join(" ");
+  }
+  return "Most file types";
 }

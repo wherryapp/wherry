@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { listTime } from "./format.ts";
+import { formatBytes, listTime } from "./format.ts";
 
 // A fixed "now" so the boundaries are the test's, not the clock's. Local time
 // throughout, because the function compares calendar days the way a person
@@ -56,4 +56,22 @@ test("the boundary is the calendar day, not 24 hours", () => {
   // read as a time. An elapsed-hours rule gets both of these backwards.
   assert.ok(!listTime(at(2026, 8, 1, 23, 50), now).includes(":"));
   assert.ok(listTime(at(2026, 8, 2, 9, 15), now).includes(":"));
+});
+
+test("formatBytes reads the way an operating system reports a file", () => {
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(999), "999 B");
+  assert.equal(formatBytes(1024), "1 kB");
+  assert.equal(formatBytes(1536), "1.5 kB");
+  // One decimal below ten units, none above -- "9.4 MB" informs, "512.3 kB"
+  // is noise.
+  assert.equal(formatBytes(9.4 * 1024 * 1024), "9.4 MB");
+  assert.equal(formatBytes(512.3 * 1024), "512 kB");
+  assert.equal(formatBytes(25 * 1024 * 1024), "25 MB");
+  assert.equal(formatBytes(2 * 1024 ** 3), "2 GB");
+});
+
+test("formatBytes refuses to render nonsense as a size", () => {
+  assert.equal(formatBytes(-1), "");
+  assert.equal(formatBytes(Number.NaN), "");
 });

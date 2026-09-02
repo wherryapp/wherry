@@ -10,6 +10,7 @@ import { downloadAttachment } from "../api/client";
 import type { AttachmentRef } from "../api/payload";
 import { openAttachmentBytes } from "../crypto/blob";
 import { store } from "../store";
+import { FileChip } from "./FileChip";
 import type { StoredBlob } from "../store/types";
 
 type Status =
@@ -102,6 +103,23 @@ export function Attachment({
 
   // Hold the right shape while loading, so a timeline does not jump about as
   // images arrive. Falls back to a square when the sender's client did not say.
+  // Everything below this point is about reserving and filling a photo's box.
+  // Anything else is a file chip, which has a fixed height and therefore none
+  // of the placeholder arithmetic -- and, deliberately, no inline preview of
+  // any kind. See FileChip.tsx.
+  if (!attachment.mediaType.startsWith("image/")) {
+    return (
+      <FileChip
+        // Old attachments predate the payload's `name` field and will never
+        // have one; the media type is the only thing left to say about them.
+        name={attachment.name ?? `Attachment (${attachment.mediaType})`}
+        byteSize={attachment.byteSize}
+        url={status.state === "ok" ? status.url : null}
+        note={fileNote(status.state)}
+      />
+    );
+  }
+
   const ratio =
     attachment.width && attachment.height
       ? attachment.width / attachment.height
@@ -199,4 +217,26 @@ export function Attachment({
       </span>
     </div>
   );
+}
+
+/**
+ * What a file chip says instead of its size while there are no bytes.
+ *
+ * Undefined once loaded, so the chip falls back to showing the size -- which
+ * is the useful thing when the file is actually there, and useless while it
+ * is not.
+ */
+function fileNote(state: Status["state"]): string | undefined {
+  switch (state) {
+    case "ok":
+      return undefined;
+    case "loading":
+      return "Loading…";
+    case "expired":
+      return "This attachment has expired";
+    case "unknown":
+      return "This attachment is no longer available";
+    case "failed":
+      return "Could not load — check your connection";
+  }
 }

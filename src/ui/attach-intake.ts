@@ -1,17 +1,25 @@
-// What a paste or a drop is allowed to put in the composer.
+// What a paste, a drop, a picker or a widget is allowed to put in the
+// composer.
 //
-// The file picker never had to think about this: `accept="image/*"` in the
-// markup did it, and the browser's dialog enforced it before anything
-// reached us. Paste and drop have no such filter -- a DataTransfer can
-// carry a folder, a PDF, a .zip, or the `text/html` fragment that rides
-// along whenever an image is copied out of a web page -- so the rule the
-// picker implied is written out here, in the one place both new paths
-// share.
+// The picker used to answer this by itself: `accept="image/*"` in the markup,
+// enforced by the browser's dialog before anything reached us. That stopped
+// being enough twice. First because paste and drop have no markup to inherit
+// from -- a DataTransfer can carry a folder, a PDF, a .zip, or the
+// `text/html` fragment that rides along whenever an image is copied out of a
+// web page. Then because attachments stopped being images at all, and the
+// rule became an operator's policy served from `GET /attachments/usage`,
+// which `accept` cannot express in its blocklist form at all (see
+// file-policy.ts's acceptAttribute).
+//
+// So the rule lives here, applied to whatever comes back, and the four
+// gestures share it.
 //
 // Pure and tested for the usual reason: the interesting part is a decision
 // about a handful of items, and the part that is hard to test is the DOM
 // event that carries them. Keeping the decision out of the handler means
 // the handler has nothing left to get wrong.
+
+import { isFileAllowed, type FilePolicy } from "./file-policy";
 
 export type Intake = {
   accepted: File[];
@@ -53,29 +61,43 @@ export function filesFromTransfer(transfer: TransferLike | null | undefined): Fi
 /**
  * Splits what arrived into what can be attached and how much cannot.
  *
- * A dropped *folder* lands here as a file with an empty type, so it is
- * rejected by the same check that rejects a PDF -- which is the honest
- * answer, since nothing downstream could upload one.
+ * A dropped *folder* lands here as a file with an empty type and no
+ * extension, which the default blocklist would happily permit -- so folders
+ * are refused explicitly rather than left to the policy. Nothing downstream
+ * could upload one, and that is true whatever an operator has configured.
  */
-export function acceptImages(files: readonly File[]): Intake {
-  const accepted = files.filter((file) => file.type.startsWith("image/"));
+export function acceptFiles(
+  files: readonly File[],
+  policy: FilePolicy,
+): Intake {
+  const accepted = files.filter((file) => !isFolder(file) && isFileAllowed(file.name, policy));
   return { accepted, rejected: files.length - accepted.length };
 }
 
 /**
- * What to tell somebody about the part that was refused, or null when
- * there is nothing to say.
+ * A directory, as far as anything here can tell.
  *
- * Silence is the wrong answer here. Dropping four photos and a PDF and
- * getting four thumbnails looks like it worked, and the missing one is
- * only noticed by the person who was expecting it at the other end.
+ * There is no reliable flag: a dropped folder arrives as a `File` with an
+ * empty `type` and a size the browser makes up. An empty type plus no
+ * extension is the closest honest test, and it costs an extensionless file
+ * like `Makefile` -- which is the right way round to be wrong, since letting
+ * a folder through produces an upload that fails much later with nothing
+ * useful to say.
  */
+function isFolder(file: File): boolean {
+  return file.type === "" && !file.name.includes(".");
+}
+
 export function intakeError(intake: Intake): string | null {
   if (intake.rejected === 0) return null;
-  if (intake.accepted.length === 0) return "Only images can be attached.";
+  if (intake.accepted.length === 0) {
+    return intake.rejected === 1
+      ? "That file type cannot be attached."
+      : "Those file types cannot be attached.";
+  }
   return intake.rejected === 1
-    ? "One of those was not an image, so it was left out."
-    : `${intake.rejected} of those were not images, so they were left out.`;
+    ? "One of those cannot be attached, so it was left out."
+    : `${intake.rejected} of those cannot be attached, so they were left out.`;
 }
 
 /**

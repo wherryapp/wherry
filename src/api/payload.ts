@@ -30,6 +30,22 @@ const STRUCTURED = 0x01;
 export type AttachmentRef = {
   id: string;
   /**
+   * The original filename, for anything that is not shown inline.
+   *
+   * Additive, like `replyTo` on the text shape and for the same reason: a
+   * client without this code renders the attachment exactly as it did before
+   * and merely has nothing to label it with. It was absent while attachments
+   * were photos, where the name is noise -- a photo is its own preview. The
+   * moment a PDF can be sent it becomes the only thing distinguishing one
+   * download from another, so every non-image attachment needs it and old
+   * ones will never have it (`ui/format.ts`'s fallback covers those).
+   *
+   * Untrusted text: it comes from the sender's filesystem, so it is
+   * sanitised before display (`ui/file-policy.ts`'s displayFileName) rather
+   * than rendered as-is.
+   */
+  name?: string;
+  /**
    * The real type of the file, which the *server* never learns.
    *
    * It lives here, inside the payload, because it is content: knowing an

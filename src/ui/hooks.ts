@@ -9,7 +9,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
-import { ApiError, fetchAccountSettings, type Announcement } from "../api/client";
+import { DEFAULT_FILE_POLICY, type FilePolicy } from "./file-policy";
+import { ApiError, fetchAccountSettings, type Announcement,
+  fetchAttachmentUsage,
+} from "../api/client";
 import type { HubSummary } from "../api/types";
 import {
   decodeContent,
@@ -960,4 +963,51 @@ export function useAnnouncements(): {
   }, [announcements]);
 
   return { announcements, unread, markSeen };
+}
+
+/**
+ * Which file types this account may attach.
+ *
+ * Cached at module scope rather than fetched per mount: the composer
+ * remounts on every conversation switch, and this answer is per *account* and
+ * does not change between them. One request per session, shared by whatever
+ * asks.
+ *
+ * The fallback matters more than it looks. Until the answer arrives -- and
+ * forever, against a server too old to send one -- this returns the default
+ * block policy from file-policy.ts rather than something permissive, so a
+ * failed fetch cannot quietly turn the rule off. It is advisory either way
+ * (the server cannot see attachment types), so the worst case of the
+ * fallback being wrong is a file refused locally that the operator would
+ * have allowed.
+ */
+let filePolicyRequest: Promise<FilePolicy> | null = null;
+
+function loadFilePolicy(): Promise<FilePolicy> {
+  filePolicyRequest ??= fetchAttachmentUsage()
+    .then((usage) => usage.files ?? DEFAULT_FILE_POLICY)
+    .catch(() => {
+      // Not cached as a failure: clearing it means the next mount tries
+      // again, the same lesson useFeatures learned when one lost race
+      // disabled a feature for the whole session.
+      filePolicyRequest = null;
+      return DEFAULT_FILE_POLICY;
+    });
+  return filePolicyRequest;
+}
+
+export function useFilePolicy(): FilePolicy {
+  const [policy, setPolicy] = useState<FilePolicy>(DEFAULT_FILE_POLICY);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadFilePolicy().then((next) => {
+      if (!cancelled) setPolicy(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return policy;
 }

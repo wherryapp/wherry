@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { type FilePolicy } from "./file-policy.js";
 import {
-  acceptImages,
+  acceptFiles,
   filesFromTransfer,
   intakeError,
   transferHasFiles,
@@ -44,36 +45,59 @@ test("pasting plain text carries no files", () => {
   assert.deepEqual(filesFromTransfer(undefined), []);
 });
 
-test("images are accepted and everything else is counted", () => {
+// The default policy: everything except things a double-click runs.
+const DEFAULT: FilePolicy = { mode: "block", extensions: ["exe", "bat"] };
+
+test("a document is accepted now -- attachments are not images any more", () => {
+  const pdf = new File([], "notes.pdf", { type: "application/pdf" });
+  const intake = acceptFiles([image(), pdf], DEFAULT);
+  assert.equal(intake.accepted.length, 2);
+  assert.equal(intake.rejected, 0);
+});
+
+test("what the policy blocks is counted, not attached", () => {
   const keep = image();
-  const intake = acceptImages([
-    keep,
-    new File([], "notes.pdf", { type: "application/pdf" }),
-    folder(),
-  ]);
+  const intake = acceptFiles([keep, new File([], "setup.exe")], DEFAULT);
   assert.deepEqual(intake.accepted, [keep]);
-  assert.equal(intake.rejected, 2);
+  assert.equal(intake.rejected, 1);
+});
+
+test("an allowlist admits only what it names", () => {
+  const policy: FilePolicy = { mode: "allow", extensions: ["pdf"] };
+  const pdf = new File([], "notes.pdf", { type: "application/pdf" });
+  const intake = acceptFiles([image(), pdf], policy);
+  assert.deepEqual(intake.accepted, [pdf]);
+  assert.equal(intake.rejected, 1);
+});
+
+test("a dropped folder is refused whatever the policy permits", () => {
+  // It arrives as an empty-typed, extensionless File that a blocklist would
+  // happily allow -- and nothing downstream could upload one.
+  const permissive: FilePolicy = { mode: "block", extensions: [] };
+  const intake = acceptFiles([folder()], permissive);
+  assert.equal(intake.accepted.length, 0);
+  assert.equal(intake.rejected, 1);
 });
 
 test("a clean drop says nothing", () => {
-  assert.equal(intakeError(acceptImages([image(), image()])), null);
+  assert.equal(intakeError(acceptFiles([image(), image()], DEFAULT)), null);
 });
 
 test("a drop with nothing usable says so plainly", () => {
   assert.equal(
-    intakeError(acceptImages([folder()])),
-    "Only images can be attached.",
+    intakeError(acceptFiles([folder()], DEFAULT)),
+    "That file type cannot be attached.",
   );
 });
 
 test("a partial drop names what was left out, rather than looking like it worked", () => {
   assert.equal(
-    intakeError(acceptImages([image(), folder()])),
-    "One of those was not an image, so it was left out.",
+    intakeError(acceptFiles([image(), folder()], DEFAULT)),
+    "One of those cannot be attached, so it was left out.",
   );
   assert.equal(
-    intakeError(acceptImages([image(), folder(), folder()])),
-    "2 of those were not images, so they were left out.",
+    intakeError(acceptFiles([image(), folder(), folder()], DEFAULT)),
+    "2 of those cannot be attached, so they were left out.",
   );
 });
 

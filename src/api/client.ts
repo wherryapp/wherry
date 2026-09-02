@@ -750,6 +750,15 @@ export type AttachmentUsage = {
   quotaBytes: number;
   maxBytes: number;
   retentionDays: number;
+  /**
+   * Which file types this account may attach.
+   *
+   * Optional because an older server does not send it, and the client must
+   * keep working against one -- `ui/file-policy.ts` supplies the fallback.
+   * Advisory in any case: the server cannot see an attachment's type, so it
+   * is a rail for the sender, never enforcement.
+   */
+  files?: { mode: "block" | "allow"; extensions: string[] };
 };
 
 /**

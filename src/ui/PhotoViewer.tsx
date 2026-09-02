@@ -25,7 +25,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import type { AttachmentRef } from "../api/payload";
 import { store } from "../store";
-import { XIcon } from "./kit";
+import { DownloadIcon, XIcon } from "./kit";
 import {
   RESET,
   clampPan,
@@ -435,23 +435,6 @@ export function PhotoViewer({
 
 // Local to this file: the kit's icon set is what the app's own chrome uses,
 // and neither of these appears anywhere else.
-
-function DownloadIcon() {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-5 w-5"
-      aria-hidden="true"
-    >
-      <path d="M10 3v10m0 0 4-4m-4 4-4-4M4 16h12" />
-    </svg>
-  );
-}
 
 function ShareIcon() {
   return (
