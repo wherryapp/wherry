@@ -185,6 +185,17 @@ const KEY_NUDGE_MS = 10_000;
  *  roster re-renders at most this often. Power, on the phones. */
 const SPEAKER_REFRESH_MS = 250;
 
+/**
+ * The E2EE worker, one per call, terminated by #teardown.
+ *
+ * livekit-client never terminates it: the single `terminate()` in the
+ * bundle belongs to a different manager, and the E2EE manager binds no
+ * Disconnected handler -- so a room that ends leaves its worker running,
+ * and whether an engine reclaims an unreferenced dedicated worker is not
+ * something to rely on. Idle it costs no CPU, but a thread and its
+ * context per call is exactly the kind of accumulation a phone in a long
+ * session does not need. Owning the reference makes it one line to close.
+ */
 function makeWorker(): Worker {
   return new Worker(new URL("livekit-client/e2ee-worker", import.meta.url), {
     type: "module",
@@ -240,6 +251,8 @@ class VoiceSession {
   /** When a frame last sent the group to reconcile (see #nudgeGroup). */
   #lastNudge = 0;
   #refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** This call's frame-encryption worker; ours to terminate (see above). */
+  #worker: Worker | null = null;
   /** Frames that failed to open, counted here and flushed to state on the
    *  roster's throttle: a mismatch fails every frame, fifty a second. */
   #encryptionErrors = 0;
@@ -496,6 +509,9 @@ class VoiceSession {
     }
 
     const prefs = loadVoicePrefs();
+    // Built before the Room so teardown can terminate exactly the one this
+    // call used, even if constructing the Room throws.
+    const worker = keys ? makeWorker() : null;
     const room = new Room({
       adaptiveStream: false,
       dynacast: false,
@@ -509,10 +525,11 @@ class VoiceSession {
         ? { audioOutput: { deviceId: prefs.speakerDeviceId } }
         : {}),
       publishDefaults: { dtx: true, red: true, audioPreset: AudioPresets.speech },
-      ...(keys ? { e2ee: { keyProvider: keys, worker: makeWorker() } } : {}),
+      ...(keys && worker ? { e2ee: { keyProvider: keys, worker } } : {}),
     });
     this.#room = room;
     this.#keys = keys;
+    this.#worker = worker;
     this.#wire(room);
 
     try {
@@ -840,8 +857,10 @@ class VoiceSession {
     this.#unsubscribeBroadcasts = null;
 
     const room = this.#room;
+    const worker = this.#worker;
     this.#room = null;
     this.#keys = null;
+    this.#worker = null;
     if (room) {
       try {
         await room.disconnect();
@@ -849,6 +868,9 @@ class VoiceSession {
         // Already gone.
       }
     }
+    // After the disconnect, never before: the teardown's own last frames
+    // still go through the transform.
+    worker?.terminate();
     this.#audioHost?.replaceChildren();
 
     if (input.tellServer && call) {
