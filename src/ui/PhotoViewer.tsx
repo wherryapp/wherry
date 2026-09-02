@@ -33,6 +33,10 @@ import {
   isReset,
   scaleAbout,
   type Transform,
+  dismissProgress,
+  isGhostClick,
+  shouldDismissOnDrag,
+  type ClickPoint,
 } from "./photo-zoom";
 
 /**
@@ -41,6 +45,53 @@ import {
  * close -- is the one people report as the app being stuck.
  */
 const TAP_SLOP_PX = 10;
+
+/** How long the picture takes to spring back from an abandoned dismiss drag. */
+const SETTLE_MS = 200;
+
+/**
+ * Stops the click that trails a dismissing tap from reaching what is now
+ * underneath.
+ *
+ * The viewer dismisses on `pointerup`, and the browser then synthesises a
+ * `click` at the same coordinates. By the time it dispatches, the viewer has
+ * unmounted -- so it lands on whatever is under the finger, and when that is
+ * the photo in the timeline it is a `<button>` whose handler opens the viewer
+ * again. Tapping to leave therefore *reopened*, but only when the tap was
+ * over that photo's rect, which is what made it read as "sometimes it comes
+ * back up" rather than as a plain bug.
+ *
+ * Capture on `window`, so this runs before the event can reach any target --
+ * that ordering is guaranteed by the DOM spec, which is why this is the fix
+ * rather than `preventDefault()` on the pointer event. Whether preventing a
+ * `pointerup` suppresses the compatibility click is not something the spec
+ * settles, and it is not worth depending on across two engines.
+ *
+ * Position-matched rather than swallowing the next click outright: a click
+ * somewhere else is somebody doing something new, and eating it would trade
+ * this bug for a worse one. See `isGhostClick`.
+ */
+function swallowGhostClick(dismissedAt: ClickPoint): void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const done = (): void => {
+    window.removeEventListener("click", swallow, true);
+    if (timer !== undefined) clearTimeout(timer);
+  };
+
+  const swallow = (event: MouseEvent): void => {
+    const click = { x: event.clientX, y: event.clientY, t: performance.now() };
+    if (!isGhostClick(dismissedAt, click)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    done();
+  };
+
+  window.addEventListener("click", swallow, true);
+  // The ghost may never come -- a keyboard dismiss, or a browser that does
+  // not synthesise one -- so the listener has to expire on its own.
+  timer = setTimeout(done, 600);
+}
 
 /** What a saved file is called. The id makes it unique; the type comes from
  *  the payload, since the server never learned it. */
@@ -178,6 +229,64 @@ export function PhotoViewer({
   const origin = useRef<{ x: number; y: number } | null>(null);
 
   /**
+   * The dismiss drag, deliberately NOT part of the transform above.
+   *
+   * `clampPan` forces the offset back to zero whenever the content fits its
+   * viewport -- which at scale 1 it always does, because the picture is
+   * `object-contain`. Putting the drag through `apply` would therefore clamp
+   * it away on the frame it was written, and the picture would never move.
+   * So this is a second, much simpler offset that only exists at rest, and
+   * the two never apply at the same time.
+   *
+   * A ref and a state for the same reason the transform has both: several
+   * pointer moves can arrive before React commits, and a handler reading the
+   * committed value computes every step from the same stale base.
+   */
+  const dragRef = useRef({ dx: 0, dy: 0 });
+  const [dragY, setDragY] = useState(0);
+
+  /** Speed of the last movement, px/ms -- what makes a short flick count. */
+  const speed = useRef(0);
+  const lastSample = useRef<{ y: number; t: number } | null>(null);
+
+  /** True while the picture is animating back from an abandoned drag. */
+  const [settling, setSettling] = useState(false);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (settleTimer.current) clearTimeout(settleTimer.current);
+    };
+  }, []);
+
+  const resetDrag = (): void => {
+    dragRef.current = { dx: 0, dy: 0 };
+    speed.current = 0;
+    lastSample.current = null;
+    setDragY(0);
+  };
+
+  /** Puts the picture back after a drag that did not go far enough. */
+  const settle = (): void => {
+    setSettling(true);
+    resetDrag();
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(() => setSettling(false), SETTLE_MS);
+  };
+
+  /**
+   * Leaves, and stops the tap that did it from reopening the viewer.
+   *
+   * Every pointer-driven exit goes through here. The close button and Escape
+   * do not need it: their own event has already been dispatched to them, so
+   * there is no trailing click to land on the timeline.
+   */
+  const dismiss = (clientX: number, clientY: number): void => {
+    swallowGhostClick({ x: clientX, y: clientY, t: performance.now() });
+    close.current();
+  };
+
+  /**
    * The two boxes the clamp needs, in CSS pixels.
    *
    * `offsetWidth`, not `getBoundingClientRect`, for the content: the rect is
@@ -242,6 +351,16 @@ export function PhotoViewer({
     if (pointers.current.size === 1) {
       wasTap.current = true;
       origin.current = { x: event.clientX, y: event.clientY };
+      // A new gesture is not the tail of the last one: cancel any spring-back
+      // in flight, or the first frames of this drag animate at 200ms behind
+      // the finger.
+      if (settleTimer.current) {
+        clearTimeout(settleTimer.current);
+        settleTimer.current = null;
+      }
+      setSettling(false);
+      resetDrag();
+      lastSample.current = { y: event.clientY, t: performance.now() };
     }
     // A second finger arriving restarts the pinch baseline rather than
     // continuing an old one, so lifting one finger and putting it back does
@@ -268,6 +387,9 @@ export function PhotoViewer({
 
     if (live.length >= 2) {
       wasTap.current = false;
+      // A pinch is not a dismiss. Whatever one finger had dragged so far is
+      // abandoned rather than carried into the zoom.
+      if (dragRef.current.dy !== 0) resetDrag();
       const [a, b] = live as [{ x: number; y: number }, { x: number; y: number }];
       const distance = Math.hypot(a.x - b.x, a.y - b.y);
       const midX = (a.x + b.x) / 2;
@@ -299,9 +421,26 @@ export function PhotoViewer({
     }
 
     // One finger pans, but only when there is something to pan. At rest the
-    // picture fits, so a drag would be a tap that wandered -- and swallowing
-    // it here is what keeps the dismiss from firing on a scroll-like flick.
-    if (isReset(latest.current)) return;
+    // picture already fits, so there is nothing to pan and the same drag is
+    // the dismiss gesture instead -- the picture follows the finger and
+    // letting go past a threshold leaves. Tracked from the gesture's start,
+    // never per-event, for the reason `wasTap` documents above.
+    if (isReset(latest.current)) {
+      if (!from) return;
+      const now = performance.now();
+      const previous = lastSample.current;
+      if (previous && now > previous.t) {
+        speed.current = Math.abs(event.clientY - previous.y) / (now - previous.t);
+      }
+      lastSample.current = { y: event.clientY, t: now };
+
+      dragRef.current = {
+        dx: event.clientX - from.x,
+        dy: event.clientY - from.y,
+      };
+      setDragY(dragRef.current.dy);
+      return;
+    }
     apply((current) => ({
       scale: current.scale,
       x: current.x + (event.clientX - previous.x),
@@ -309,16 +448,51 @@ export function PhotoViewer({
     }));
   };
 
-  const endPointer = (event: ReactPointerEvent<HTMLDivElement>): void => {
+  const endPointer = (
+    event: ReactPointerEvent<HTMLDivElement>,
+    /**
+     * True for `pointercancel`, where the gesture was taken away rather than
+     * finished. It must never dismiss: the system interrupting a drag is not
+     * somebody asking to leave, and closing on it would make the viewer shut
+     * itself at moments nobody can predict or reproduce.
+     */
+    cancelled = false,
+  ): void => {
     const wasTracked = pointers.current.delete(event.pointerId);
     if (pointers.current.size < 2) pinch.current = null;
     if (!wasTracked || pointers.current.size > 0) return;
     origin.current = null;
 
+    const gesture = { ...dragRef.current, speed: speed.current };
+
+    if (cancelled) {
+      settle();
+      return;
+    }
+
     // A tap dismisses, but only from rest. While zoomed the same tap is much
     // more likely to be a missed pan than a request to leave, and closing
     // out from under somebody who is looking at detail is the worse mistake.
-    if (wasTap.current && isReset(latest.current)) close.current();
+    //
+    // Checked before the drag branch, and on `wasTap` rather than on whether
+    // the offset happens to be zero: a tap that wobbles two pixels writes a
+    // non-zero offset, and treating that as a drag would spring the picture
+    // back instead of leaving -- turning tap-to-dismiss into nothing at all.
+    if (wasTap.current) {
+      resetDrag();
+      if (isReset(latest.current)) dismiss(event.clientX, event.clientY);
+      return;
+    }
+
+    // A real drag, at rest: the dismiss gesture. Zoomed, the same movement
+    // was a pan and there is nothing to decide.
+    if (isReset(latest.current)) {
+      if (shouldDismissOnDrag(gesture)) {
+        dismiss(event.clientX, event.clientY);
+        return;
+      }
+      settle();
+    }
   };
 
   /**
@@ -357,6 +531,14 @@ export function PhotoViewer({
   const control =
     "rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20";
 
+  // How far through the dismiss the drag has got, 0 to 1. It drives three
+  // things at once, which is what makes the gesture legible: the picture
+  // moves and shrinks, the backdrop thins so what is underneath shows
+  // through, and the controls fade because they are not what is being
+  // dragged.
+  const progress = dismissProgress(dragY);
+  const settleTransition = settling ? `${SETTLE_MS}ms ease-out` : undefined;
+
   return (
     <div
       ref={surface}
@@ -373,12 +555,20 @@ export function PhotoViewer({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPointer}
-      onPointerCancel={endPointer}
+      onPointerCancel={(event) => endPointer(event, true)}
       onWheel={onWheel}
       // touch-none hands every finger to the handlers above: without it the
       // browser claims the second one for its own pinch, and select-none
       // stops a drag across the photo from selecting the page behind it.
-      className="fixed inset-0 z-50 flex touch-none select-none items-center justify-center overflow-hidden bg-black/90"
+      // The backdrop colour is inline rather than a `bg-black/90` class,
+      // because the drag has to change it. Two sources of truth for one
+      // property is the pointer-events bug's family -- the class would be
+      // dead code that looks live, and the next person would edit it.
+      style={{
+        backgroundColor: `rgba(0, 0, 0, ${0.9 * (1 - progress * 0.7)})`,
+        transition: settleTransition && `background-color ${settleTransition}`,
+      }}
+      className="fixed inset-0 z-50 flex touch-none select-none items-center justify-center overflow-hidden"
     >
       <div
         data-photo-controls
@@ -387,7 +577,11 @@ export function PhotoViewer({
         // black reach the edges -- so this row has to re-apply the inset for
         // itself or the close button sits in the one strip of an iPhone
         // screen that does not deliver taps to the page.
-        style={{ top: "max(0.75rem, env(safe-area-inset-top, 0px))" }}
+        style={{
+          top: "max(0.75rem, env(safe-area-inset-top, 0px))",
+          opacity: 1 - progress,
+          transition: settleTransition && `opacity ${settleTransition}`,
+        }}
         className="absolute right-3 z-10 flex items-center gap-2"
       >
         <a
@@ -425,7 +619,15 @@ export function PhotoViewer({
         // pointer-down a pan does, and wins.
         draggable={false}
         style={{
-          transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`,
+          // The drag offset is added to the transform rather than folded into
+          // it: `dragY` is only ever non-zero at rest, where `transform` is
+          // the identity, so the two never actually compose -- but writing it
+          // this way keeps a zoomed pan and a dismiss drag from ever being
+          // able to fight over the same numbers.
+          transform:
+            `translate3d(${transform.x}px, ${transform.y + dragY}px, 0)` +
+            ` scale(${transform.scale * (1 - progress * 0.12)})`,
+          transition: settleTransition && `transform ${settleTransition}`,
         }}
         className="max-h-full max-w-full object-contain will-change-transform"
       />

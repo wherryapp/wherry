@@ -93,3 +93,93 @@ export function clampPan(
 export function isReset(transform: Transform): boolean {
   return transform.scale <= MIN_SCALE;
 }
+
+// ---------------------------------------------------------------------------
+// Swipe to dismiss
+// ---------------------------------------------------------------------------
+//
+// A drag on the picture while it is at rest is a request to leave. It cannot
+// be expressed through the transform above: `clampPan` forces the offset back
+// to zero whenever the content fits its viewport, which at scale 1 it always
+// does (`object-contain`). So the viewer tracks this offset separately and
+// only the decision lives here.
+
+/** How far a deliberate drag has to travel before letting go dismisses. */
+export const DISMISS_DISTANCE_PX = 100;
+
+/** A flick counts sooner, but still has to be a real one. */
+const FLICK_MIN_PX = 40;
+const FLICK_SPEED_PX_PER_MS = 0.6;
+
+export type DragGesture = {
+  /** Travel from the gesture's start. Sign is direction; only size matters. */
+  dx: number;
+  dy: number;
+  /** Speed of the last movement, px per ms. */
+  speed: number;
+};
+
+/**
+ * Whether letting go here should close the viewer.
+ *
+ * Vertical-dominant on purpose. A mostly-horizontal drag is somebody moving
+ * across the picture, and dismissing on it would make the viewer feel like it
+ * closes at random -- which is the complaint this whole change exists to fix,
+ * so trading one version of it for another would be no progress at all.
+ *
+ * Both directions dismiss. Up and down are equally natural once the gesture
+ * is "throw it away", and refusing one of them only produces a swipe that
+ * silently does nothing.
+ *
+ * The flick branch is what stops the threshold feeling heavy: a fast short
+ * throw reads as a dismiss to the person making it, and requiring the full
+ * 100px would make them do it twice.
+ */
+export function shouldDismissOnDrag(gesture: DragGesture): boolean {
+  if (Math.abs(gesture.dy) <= Math.abs(gesture.dx)) return false;
+  if (Math.abs(gesture.dy) >= DISMISS_DISTANCE_PX) return true;
+  return (
+    Math.abs(gesture.dy) >= FLICK_MIN_PX &&
+    gesture.speed >= FLICK_SPEED_PX_PER_MS
+  );
+}
+
+/** 0 at rest, 1 at the dismiss threshold. Drives the fade and the shrink. */
+export function dismissProgress(dy: number): number {
+  return Math.min(1, Math.abs(dy) / DISMISS_DISTANCE_PX);
+}
+
+// ---------------------------------------------------------------------------
+// The click that arrives after a pointer gesture has already closed the viewer
+// ---------------------------------------------------------------------------
+
+const GHOST_CLICK_WINDOW_MS = 500;
+const GHOST_CLICK_SLOP_PX = 24;
+
+export type ClickPoint = { x: number; y: number; t: number };
+
+/**
+ * Whether a click is the compatibility click trailing the tap that dismissed
+ * the viewer, rather than a new one somebody meant.
+ *
+ * This is the reported bug, and it is worth being precise about the
+ * mechanism. The viewer dismisses on `pointerup`; the browser then
+ * synthesises a `click` at the same coordinates. By the time it dispatches,
+ * the viewer has unmounted -- so the click lands on whatever is now under the
+ * finger, and if that is the photo in the timeline it is a `<button>` whose
+ * handler opens the viewer again. Dismissing therefore *reopened*, but only
+ * when the tap happened to be over that photo's rect, which is exactly the
+ * "sometimes it comes back up" shape of the report.
+ *
+ * Matching on position and time rather than swallowing the next click
+ * unconditionally: a click somewhere else is somebody doing something new and
+ * must not be eaten. The slop is for the pointer drift between `pointerup`
+ * and the synthesised click, which is small but not zero.
+ */
+export function isGhostClick(dismissedAt: ClickPoint, click: ClickPoint): boolean {
+  if (click.t - dismissedAt.t > GHOST_CLICK_WINDOW_MS) return false;
+  return (
+    Math.hypot(click.x - dismissedAt.x, click.y - dismissedAt.y) <=
+    GHOST_CLICK_SLOP_PX
+  );
+}
