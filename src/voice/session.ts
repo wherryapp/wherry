@@ -653,15 +653,18 @@ class VoiceSession {
   /**
    * A frame this device could not open is evidence the group moved --
    * a peer joined or rejoined and turned the epoch, and their frames now
-   * carry an index this keyring has no key for. Nothing wakes a device
-   * for a commit (the server's wake frames are for messages and
-   * membership), so left alone the sweep finds it on its 30-second
-   * cadence and the call is silent until then. Reconciling this one
+   * carry an index this keyring has no key for. Reconciling this one
    * conversation now is the same repair the outbox runs on EPOCH_STALE;
    * once the commit is applied, the 2-second epoch poll re-keys. Rate
    * limited, because a device that is *ahead* also sees errors (its
    * peer's frames are under the older key) and its reconcile finds
    * nothing to do.
+   *
+   * The socket's `mls_commit` frame is the primary path now and arrives
+   * before any frame fails; this is the fallback for the case it cannot
+   * cover -- a socket that is down, so the client is polling and learns
+   * of the commit only from the sweep 30 seconds later. Keep both: the
+   * one that matters here is whichever runs when the network is worst.
    */
   #nudgeGroup(): void {
     const now = Date.now();

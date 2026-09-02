@@ -1666,6 +1666,20 @@ export class SyncEngine {
       return;
     }
 
+    // A commit advanced a conversation's MLS epoch. Not emitted to the UI
+    // and not broadcast to other tabs: the sweep this feeds runs only in
+    // the tab holding leadership, which is the same tab holding this
+    // socket, so there is nobody else to tell. The poke is what turns the
+    // note into work -- without it the mark waits for the next tick like
+    // any other, which is exactly the delay this frame exists to remove.
+    if (frame.type === "mls_commit") {
+      const conversationId = frame["conversationId"];
+      if (typeof conversationId !== "string") return;
+      mlsSync.noteCommit(conversationId);
+      this.poke();
+      return;
+    }
+
     if (frame.type === "voice_presence") {
       const conversationId = frame["conversationId"];
       const occupants = frame["occupants"];

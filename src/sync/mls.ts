@@ -119,10 +119,31 @@ export class MlsSync {
    * which is the right cadence for a fact that changes this rarely.
    */
   #goneConversations = new Set<string>();
+  /**
+   * Conversations the server says just took a commit (the socket's
+   * `mls_commit` frame). Drained by the next tick regardless of the sweep
+   * cadence, because the whole point is not waiting for it: a commit turns
+   * the epoch, and until this device applies it, everything sealed under
+   * the new one is undecryptable -- messages wait harmlessly in the inbox,
+   * but a *call* is dropping frames in real time.
+   *
+   * A set, so repeated commits collapse; ids are removed as they are
+   * processed, so an aborted tick leaves the rest for the next one.
+   */
+  #notedCommits = new Set<string>();
 
   /** Forces the next tick to run the full sweep. */
   invalidate(): void {
     this.#lastReconcile = 0;
+  }
+
+  /**
+   * "This conversation's group moved" -- from the socket, via engine.ts.
+   * Cheap and idempotent: it only marks, and the tick that follows the
+   * frame's poke does the work.
+   */
+  noteCommit(conversationId: string): void {
+    this.#notedCommits.add(conversationId);
   }
 
   /**
@@ -147,56 +168,89 @@ export class MlsSync {
     const joined = await this.#drainWelcomes(signal);
 
     const now = Date.now();
-    if (now - this.#lastReconcile >= RECONCILE_INTERVAL_MS) {
+    const sweeping = now - this.#lastReconcile >= RECONCILE_INTERVAL_MS;
+    if (this.#notedCommits.size === 0 && !sweeping) return joined;
+
+    // Which conversations have something queued that cannot be sealed
+    // until a group exists. Read once for both passes below rather than per
+    // conversation: it decides whether creating the group is a background
+    // courtesy or the thing standing between a person and their message.
+    const pending = new Set(
+      (await store.listOutbox())
+        .filter((entry) => entry.pendingEncryption && !entry.failedPermanently)
+        .map((entry) => entry.conversationId),
+    );
+
+    // Told first, swept second. A noted conversation is one the server says
+    // moved seconds ago; the sweep is a periodic check that usually finds
+    // nothing.
+    const noted = new Set(this.#notedCommits);
+    for (const conversationId of noted) {
+      if (signal.aborted) break;
+      // Removed as it is taken, not in a batch at the end: an abort mid-pass
+      // must leave the untried ones for the next tick.
+      this.#notedCommits.delete(conversationId);
+      await this.#reconcileOne(conversationId, me, pending.has(conversationId), now);
+    }
+
+    if (sweeping) {
       this.#lastReconcile = now;
       const conversations = await store.listConversations();
-
-      // Which conversations have something queued that cannot be sealed
-      // until a group exists. Read once for the whole sweep rather than per
-      // conversation: it decides whether creating the group is a background
-      // courtesy or the thing standing between a person and their message.
-      const pending = new Set(
-        (await store.listOutbox())
-          .filter((entry) => entry.pendingEncryption && !entry.failedPermanently)
-          .map((entry) => entry.conversationId),
-      );
-
       for (const conversation of conversations) {
         if (signal.aborted) break;
-        if (this.#goneConversations.has(conversation.id)) continue;
-        const cooldown = this.#reconcileCooldownUntil.get(conversation.id);
-        if (cooldown !== undefined && now < cooldown) continue;
-        try {
-          await this.reconcileConversation(conversation.id, me, {
-            hasPendingSend: pending.has(conversation.id),
-          });
-          this.#reconcileCooldownUntil.delete(conversation.id);
-        } catch (error) {
-          // One conversation's trouble must not stop the sweep. Typical
-          // causes are transient (a commit race, a device mid-publish).
-          console.warn("mls reconcile failed", conversation.id, error);
-
-          // 404 is not transient: the server no longer serves this
-          // conversation to us -- deleted, or we were removed. Retrying
-          // cannot help, and anything queued for it can never be sent, so
-          // say so rather than leaving it reading "sending" forever.
-          if (error instanceof ApiError && error.status === 404) {
-            this.#goneConversations.add(conversation.id);
-            await this.#failPendingSends(conversation.id);
-            continue;
-          }
-
-          if (error instanceof ApiError && error.retryAfterSeconds) {
-            this.#reconcileCooldownUntil.set(
-              conversation.id,
-              now + error.retryAfterSeconds * 1000,
-            );
-          }
-        }
+        // Just done above, on better information.
+        if (noted.has(conversation.id)) continue;
+        await this.#reconcileOne(
+          conversation.id,
+          me,
+          pending.has(conversation.id),
+          now,
+        );
       }
     }
 
     return joined;
+  }
+
+  /**
+   * One conversation's reconcile with the sweep's error discipline, shared
+   * by both passes above so a commit-driven reconcile cannot drift from a
+   * swept one. Never throws: one conversation's trouble must not stop the
+   * pass around it.
+   */
+  async #reconcileOne(
+    conversationId: string,
+    me: Identity,
+    hasPendingSend: boolean,
+    now: number,
+  ): Promise<void> {
+    if (this.#goneConversations.has(conversationId)) return;
+    const cooldown = this.#reconcileCooldownUntil.get(conversationId);
+    if (cooldown !== undefined && now < cooldown) return;
+    try {
+      await this.reconcileConversation(conversationId, me, { hasPendingSend });
+      this.#reconcileCooldownUntil.delete(conversationId);
+    } catch (error) {
+      // Typical causes are transient (a commit race, a device mid-publish).
+      console.warn("mls reconcile failed", conversationId, error);
+
+      // 404 is not transient: the server no longer serves this conversation
+      // to us -- deleted, or we were removed. Retrying cannot help, and
+      // anything queued for it can never be sent, so say so rather than
+      // leaving it reading "sending" forever.
+      if (error instanceof ApiError && error.status === 404) {
+        this.#goneConversations.add(conversationId);
+        await this.#failPendingSends(conversationId);
+        return;
+      }
+
+      if (error instanceof ApiError && error.retryAfterSeconds) {
+        this.#reconcileCooldownUntil.set(
+          conversationId,
+          now + error.retryAfterSeconds * 1000,
+        );
+      }
+    }
   }
 
   /**
