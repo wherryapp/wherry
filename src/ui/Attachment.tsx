@@ -38,6 +38,16 @@ export function Attachment({
 }) {
   const [status, setStatus] = useState<Status>({ state: "loading" });
 
+  /**
+   * Bumped to ask again. The effect below keys on it, so incrementing it is
+   * the whole retry -- there is nothing to invalidate first, because a
+   * failure is deliberately never cached (see the catch). `expired` and
+   * `unknown` *are* cached, which is exactly why neither of them offers this:
+   * asking again would re-read the same stored verdict and change nothing,
+   * so a button there would be a control that visibly does not work.
+   */
+  const [attempt, setAttempt] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | null = null;
@@ -99,10 +109,27 @@ export function Attachment({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [attachment.id, attachment.mediaType]);
+  }, [attachment.id, attachment.mediaType, attempt]);
 
   // Hold the right shape while loading, so a timeline does not jump about as
   // images arrive. Falls back to a square when the sender's client did not say.
+  /**
+   * Offered for `failed` and nothing else.
+   *
+   * `failed` is a network problem -- the request did not complete -- and is
+   * the only state where asking again can produce a different answer. The
+   * terminal states must stay button-free: the roadmap item this closes says
+   * so, and the reason is that a Retry which cannot succeed is worse than no
+   * Retry at all.
+   */
+  const retry =
+    status.state === "failed"
+      ? (): void => {
+          setStatus({ state: "loading" });
+          setAttempt((n) => n + 1);
+        }
+      : undefined;
+
   // Everything below this point is about reserving and filling a photo's box.
   // Anything else is a file chip, which has a fixed height and therefore none
   // of the placeholder arithmetic -- and, deliberately, no inline preview of
@@ -116,6 +143,7 @@ export function Attachment({
         byteSize={attachment.byteSize}
         url={status.state === "ok" ? status.url : null}
         note={fileNote(status.state)}
+        onRetry={retry}
       />
     );
   }
@@ -212,8 +240,21 @@ export function Attachment({
         style={reserved}
         className="max-h-80 rounded-lg bg-neutral-300/60 dark:bg-neutral-700/60"
       />
-      <span className="absolute inset-0 flex items-center justify-center px-3 text-center text-xs text-neutral-700 dark:text-neutral-200">
+      <span className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-3 text-center text-xs text-neutral-700 dark:text-neutral-200">
         {label}
+        {retry && (
+          // A real <button>, which is also what keeps it from toggling the
+          // bubble's reactions: Bubble's press handler ignores any tap
+          // landing inside one. That is the same seam the photo viewer and
+          // the quote block use.
+          <button
+            type="button"
+            onClick={retry}
+            className="rounded-full bg-neutral-900/80 px-3 py-1 text-xs font-medium text-white transition hover:bg-neutral-900 motion-safe:active:scale-95 dark:bg-neutral-100/90 dark:text-neutral-900 dark:hover:bg-neutral-100"
+          >
+            Try again
+          </button>
+        )}
       </span>
     </div>
   );

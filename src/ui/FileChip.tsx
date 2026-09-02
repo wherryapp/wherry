@@ -24,11 +24,19 @@ export function FileChip({
   url,
   /** Shown instead of the size when the bytes are not available. */
   note,
+  /**
+   * Present only when asking again could produce a different answer, which
+   * is the `failed` state and nothing else -- see Attachment.tsx. Absent for
+   * the terminal states on purpose: a Retry that cannot succeed is worse
+   * than no Retry.
+   */
+  onRetry,
 }: {
   name: string;
   byteSize: number;
   url: string | null;
   note?: string | undefined;
+  onRetry?: (() => void) | undefined;
 }) {
   // The name is the sender's filesystem text, so it is sanitised rather than
   // trusted -- a right-to-left override in it would otherwise make the
@@ -72,7 +80,23 @@ export function FileChip({
           {body}
         </a>
       ) : (
-        <span className={shell}>{body}</span>
+        <span className={shell}>
+          {body}
+          {onRetry && (
+            // Outside `body`, deliberately: when the file *is* available
+            // `body` renders inside an <a>, and a <button> nested in an
+            // anchor is invalid markup that browsers reparent. There is
+            // never a retry and a download at the same time, so the two
+            // branches simply do not share this control.
+            <button
+              type="button"
+              onClick={onRetry}
+              className="shrink-0 rounded-full bg-neutral-900/80 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-neutral-900 motion-safe:active:scale-95 dark:bg-neutral-100/90 dark:text-neutral-900 dark:hover:bg-neutral-100"
+            >
+              Try again
+            </button>
+          )}
+        </span>
       )}
 
       {dangerous && (
