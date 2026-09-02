@@ -205,3 +205,141 @@ export function callNotice(input: {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Call details -- the readout behind the bar's "Details"
+// ---------------------------------------------------------------------------
+//
+// Written for the first device pass, where the report was "no sound from
+// the phone" and nothing in the bar could say *where* the sound stopped.
+// Every row of the readout is one of four places: the microphone (does a
+// track exist and is it live), the uplink (do packets leave), the
+// downlink per peer (do bytes arrive, do they decode to energy, does the
+// element play), and the key (do frames fail to open). The functions here
+// turn the raw flags and counters into the words; session.ts gathers the
+// numbers.
+
+/** The local microphone track's own flags, as the browser reports them. */
+export type MicReport = {
+  /** A track is published: getUserMedia succeeded at some point. */
+  published: boolean;
+  /** Muted by this person -- the bar's button, or the join-mute rule. */
+  muted: boolean;
+  /**
+   * MediaStreamTrack.muted: the platform silenced the track underneath
+   * us. iOS sets it when an embedded web view leaves the foreground, and
+   * any phone sets it during an audio-session interruption (a phone call,
+   * Siri). The track is still "live" and still published, which is why
+   * it needs its own word.
+   */
+  systemMuted: boolean;
+  /** MediaStreamTrack.readyState === "ended": the device was taken away. */
+  ended: boolean;
+  /** How getUserMedia failed, when it did: permission refused, no device
+   *  at all, or some other error. Null when it succeeded or never ran. */
+  failure: MicFailure | null;
+};
+
+export type MicFailure = "refused" | "missing" | "failed";
+
+export type MicStatus =
+  | "off"
+  | MicFailure
+  | "ended"
+  | "system-muted"
+  | "muted"
+  | "on";
+
+export function micStatus(report: MicReport): MicStatus {
+  if (report.failure) return report.failure;
+  if (!report.published) return "off";
+  if (report.ended) return "ended";
+  if (report.systemMuted) return "system-muted";
+  if (report.muted) return "muted";
+  return "on";
+}
+
+/**
+ * The microphone row. `packetsDelta` is outbound packets since the last
+ * sample (null before there are two): a live, unmuted track that sends
+ * nothing is the one case the flags alone cannot name.
+ */
+export function micLine(status: MicStatus, packetsDelta: number | null): string {
+  switch (status) {
+    case "off":
+      return "not started";
+    case "refused":
+      return "refused -- nobody can hear you";
+    case "missing":
+      return "no microphone found";
+    case "failed":
+      return "could not be started";
+    case "ended":
+      return "taken away by the system";
+    case "system-muted":
+      return "silenced by the system (backgrounded, or interrupted)";
+    case "muted":
+      return "muted";
+    case "on":
+      if (packetsDelta === null) return "on";
+      return packetsDelta > 0 ? "on, sending" : "on, but nothing is leaving this device";
+  }
+}
+
+/**
+ * Where a peer's audio is, from two samples of their inbound stats.
+ *
+ * - `bytesDelta`: inbound-rtp bytes since the last sample. Zero means the
+ *   SFU is forwarding nothing for them (they are muted, or the media path
+ *   is down); DTX keeps a trickle of comfort noise flowing when they are
+ *   merely quiet.
+ * - `energyDelta`: inbound-rtp totalAudioEnergy since the last sample --
+ *   the energy of *decoded* audio, so it stays flat when frames arrive
+ *   but fail to open. Null where the engine does not report it.
+ * - `encryptionErrorsDelta`: frames this device failed to open, all peers.
+ * - `playing`: the attached element is not paused; null with none attached.
+ */
+export type PeerFlow =
+  | "no-data"
+  | "nothing-arriving"
+  | "arriving-unreadable"
+  | "arriving-silent"
+  | "not-playing"
+  | "flowing";
+
+/** Decoded energy below this over a sample is silence or comfort noise. */
+export const SILENT_ENERGY = 1e-5;
+
+export function peerFlow(input: {
+  bytesDelta: number | null;
+  energyDelta: number | null;
+  encryptionErrorsDelta: number;
+  playing: boolean | null;
+}): PeerFlow {
+  if (input.bytesDelta === null) return "no-data";
+  if (input.bytesDelta <= 0) return "nothing-arriving";
+  const silent = input.energyDelta !== null && input.energyDelta < SILENT_ENERGY;
+  if (input.encryptionErrorsDelta > 0 && (input.energyDelta === null || silent)) {
+    return "arriving-unreadable";
+  }
+  if (silent) return "arriving-silent";
+  if (input.playing === false) return "not-playing";
+  return "flowing";
+}
+
+export function peerFlowLine(flow: PeerFlow): string {
+  switch (flow) {
+    case "no-data":
+      return "waiting for stats";
+    case "nothing-arriving":
+      return "nothing arriving";
+    case "arriving-unreadable":
+      return "arriving, but the frames cannot be opened (key mismatch)";
+    case "arriving-silent":
+      return "arriving, silent";
+    case "not-playing":
+      return "decoded, but not playing";
+    case "flowing":
+      return "flowing";
+  }
+}

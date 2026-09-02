@@ -22,6 +22,26 @@
 //                                    strips the query and reloads. Dev test
 //                                    credentials only -- this whole module
 //                                    never ships.
+//
+//   ?devcall=<conversationId>        Starts a call in that conversation a few
+//                                    seconds after the app renders, exactly
+//                                    as the header's call button would, then
+//                                    strips itself from the URL. For engines
+//                                    nothing can tap: the iOS simulator's
+//                                    Safari or a shell driven by simctl alone,
+//                                    where the voice pipeline (mic capture,
+//                                    frame encryption) needs exercising with
+//                                    no finger on the glass.
+//
+//   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
+//                                    environment rather than the URL, for a
+//                                    shell in `tauri ios dev` -- which loads
+//                                    the dev server's root and takes no query
+//                                    string. Vite inlines VITE_* at serve
+//                                    time, so they are read exactly where the
+//                                    URL params are.
+//
+// The voice session is also exposed as window.__voice for an inspector.
 
 import { login } from "./api/client";
 import { loadSession, saveSession } from "./api/session";
@@ -39,6 +59,8 @@ let endpoint: string | null = null;
 declare global {
   interface Window {
     __cryptoTrace?: TraceEntry[];
+    /** The voice session singleton, for an inspector; dev only. */
+    __voice?: unknown;
   }
 }
 
@@ -170,8 +192,14 @@ function installCryptoTrace(target: string): void {
   }, 8_000);
 }
 
+/** A VITE_* value, or null: Vite inlines them as strings, absent as undefined. */
+function devEnv(name: string): string | null {
+  const value: unknown = import.meta.env[name];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 async function maybeDevLogin(params: URLSearchParams): Promise<void> {
-  const creds = params.get("devlogin");
+  const creds = params.get("devlogin") ?? devEnv("VITE_DEVLOGIN");
   if (!creds || loadSession()) return;
   const colon = creds.indexOf(":");
   if (colon < 1) return;
@@ -205,10 +233,76 @@ async function maybeDevLogin(params: URLSearchParams): Promise<void> {
   await new Promise(() => {}); // never resolves; the navigation wins
 }
 
-/** Called from main.tsx, dev builds only, before the app renders. */
-export async function installDevtools(): Promise<void> {
+/**
+ * Before the auto-call fires: the engine's first pass, and the external
+ * join a fresh device may need. session.ts then waits up to 20 s more for
+ * the call key itself, so this only needs to clear the app's own boot.
+ */
+const DEV_CALL_DELAY_MS = 4_000;
+
+/** How long the auto-call waits for a session to appear before giving up. */
+const DEV_CALL_SESSION_WAIT_MS = 30_000;
+
+function maybeDevCall(params: URLSearchParams): void {
+  const conversationId = params.get("devcall") ?? devEnv("VITE_DEVCALL");
+  if (!conversationId) return;
+  if (params.has("devcall")) {
+    // Out of the URL before anything can copy it: a reload must not place
+    // a second call.
+    params.delete("devcall");
+    const query = params.size > 0 ? `?${params}` : "";
+    window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+  }
+  const deadline = Date.now() + DEV_CALL_SESSION_WAIT_MS;
+  const place = (): void => {
+    // Signed out, or a shell whose session is still on its way back from
+    // the keychain: try again shortly rather than never.
+    if (!loadSession()) {
+      if (Date.now() < deadline) setTimeout(place, 500);
+      return;
+    }
+    void import("./voice/session").then(({ voice }) => {
+      // Sealed (a DM, a group, a private-hub channel): the call is
+      // frame-encrypted, which is the path worth exercising. A public
+      // room's plain relay is not what this instrument is for.
+      void voice.startCall({ id: conversationId, hubVisibility: null });
+      // The same reading the bar's "Details" shows, to the console every
+      // few seconds while connected. console.error rather than log on
+      // purpose: `tauri ios dev` relays the webview's errors into its own
+      // terminal, which is the only readout a simulator without a panel
+      // has.
+      setInterval(() => {
+        void voice.sampleDiagnostics().then((sample) => {
+          if (sample) console.error("[voice-diag]", JSON.stringify(sample));
+        });
+      }, DEV_DIAG_INTERVAL_MS);
+    });
+  };
+  setTimeout(place, DEV_CALL_DELAY_MS);
+}
+
+const DEV_DIAG_INTERVAL_MS = 3_000;
+
+/**
+ * Called from main.tsx, dev builds only, before the app renders. `restore`
+ * is the shells' keychain restore, run here -- after the trace is armed,
+ * before anything reads the session -- so the auto-login does not sign in
+ * a second device over one the keychain still holds.
+ */
+export async function installDevtools(restore: (() => Promise<void>) | null): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const trace = params.get("trace");
   if (trace) installCryptoTrace(trace);
+  if (restore) {
+    try {
+      await restore();
+    } catch {
+      // As main.tsx: a broken keychain reads as "storage really is empty".
+    }
+  }
   await maybeDevLogin(params);
+  void import("./voice/session").then(({ voice }) => {
+    window.__voice = voice;
+  });
+  maybeDevCall(params);
 }

@@ -6,7 +6,11 @@ import {
   callNotice,
   keyIndexFor,
   KEYRING_SIZE,
+  micLine,
+  micStatus,
+  peerFlow,
   reduceRings,
+  SILENT_ENERGY,
   RING_TIMEOUT_MS,
   shouldJoinMuted,
   shouldRingAudibly,
@@ -158,4 +162,41 @@ test("callNotice is per viewer", () => {
   assert.equal(callNotice({ ...base, endReason: "declined", answeredAt: null, selfUserId: "bob" }), "Declined call");
   assert.equal(callNotice({ ...base, endReason: "cancelled", answeredAt: null, selfUserId: "bob" }), "Alice cancelled the call");
   assert.equal(callNotice({ ...base, endReason: "hangup", endedAt: null, selfUserId: "bob" }), "Alice called");
+});
+
+test("micStatus: a failure wins, then off > ended > system-muted > muted > on", () => {
+  const base = { published: true, muted: false, systemMuted: false, ended: false, failure: null };
+  assert.equal(micStatus(base), "on");
+  assert.equal(micStatus({ ...base, muted: true }), "muted");
+  assert.equal(micStatus({ ...base, systemMuted: true, muted: true }), "system-muted");
+  assert.equal(micStatus({ ...base, ended: true, systemMuted: true }), "ended");
+  assert.equal(micStatus({ ...base, published: false }), "off");
+  assert.equal(micStatus({ ...base, published: false, failure: "refused" }), "refused");
+  assert.equal(micStatus({ ...base, published: false, failure: "missing" }), "missing");
+  assert.equal(micStatus({ ...base, published: false, failure: "failed" }), "failed");
+});
+
+test("micLine names the live-but-silent uplink, and only that, from the packet delta", () => {
+  assert.equal(micLine("on", null), "on");
+  assert.equal(micLine("on", 97), "on, sending");
+  assert.equal(micLine("on", 0), "on, but nothing is leaving this device");
+  assert.equal(micLine("muted", 0), "muted");
+  assert.match(micLine("system-muted", 40), /silenced by the system/);
+  assert.equal(micLine("missing", null), "no microphone found");
+});
+
+test("peerFlow tells nothing-arriving, unreadable, silent, not-playing and flowing apart", () => {
+  const ok = { bytesDelta: 4_000, energyDelta: 0.02, encryptionErrorsDelta: 0, playing: true };
+  assert.equal(peerFlow(ok), "flowing");
+  assert.equal(peerFlow({ ...ok, bytesDelta: null }), "no-data");
+  assert.equal(peerFlow({ ...ok, bytesDelta: 0 }), "nothing-arriving");
+  // Bytes climb, errors climb, no decoded energy: the key is wrong.
+  assert.equal(peerFlow({ ...ok, energyDelta: 0, encryptionErrorsDelta: 50 }), "arriving-unreadable");
+  assert.equal(peerFlow({ ...ok, energyDelta: null, encryptionErrorsDelta: 50 }), "arriving-unreadable");
+  // Errors at an epoch turn with sound still decoding are not a mismatch.
+  assert.equal(peerFlow({ ...ok, encryptionErrorsDelta: 3 }), "flowing");
+  assert.equal(peerFlow({ ...ok, energyDelta: SILENT_ENERGY / 10 }), "arriving-silent");
+  assert.equal(peerFlow({ ...ok, playing: false }), "not-playing");
+  // An engine without totalAudioEnergy still gets a verdict on the rest.
+  assert.equal(peerFlow({ ...ok, energyDelta: null }), "flowing");
 });

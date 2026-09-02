@@ -26,9 +26,12 @@ import {
   AudioPresets,
   ConnectionQuality,
   ConnectionState,
+  isInsertableStreamSupported,
+  isScriptTransformSupported,
   Room,
   RoomEvent,
   Track,
+  type LocalAudioTrack,
   type Participant,
   type RemoteAudioTrack,
   type RemoteParticipant,
@@ -42,13 +45,15 @@ import {
   leaveVoiceRoom,
   startCall,
 } from "../api/client";
+import { loadSession } from "../api/session";
 import type { Call, CallKind, HubVisibility, JoinResult } from "../api/types";
 import { e2e } from "../crypto";
 import { sync, type SyncEvent } from "../sync/engine";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
+import { mlsSync } from "../sync/mls";
 import { CallKeyProvider, deriveCallKey } from "./keys";
 import { loadVoicePrefs } from "./prefs";
-import { shouldJoinMuted } from "./rules";
+import { micStatus, shouldJoinMuted, type MicFailure, type MicStatus } from "./rules";
 import { blip, startRingback } from "./sounds";
 
 /** What a join needs to know about the conversation: the id, and the
@@ -103,6 +108,15 @@ export type VoiceState = {
   connectedAt: number | null;
   /** Rings we still hear ourselves: "Calling…" until somebody answers. */
   ringing: boolean;
+  /**
+   * Frames this device could not open, and the SDK's reason for the last
+   * one. A few are expected at an epoch turn; a count that keeps climbing
+   * while a peer speaks means their key differs from ours -- the one
+   * failure the roster's `encrypted` flag cannot show, since the SFU only
+   * knows that frames are sealed, not under what.
+   */
+  encryptionErrors: number;
+  lastEncryptionError: string | null;
 };
 
 const IDLE: VoiceState = {
@@ -119,11 +133,57 @@ const IDLE: VoiceState = {
   error: null,
   connectedAt: null,
   ringing: false,
+  encryptionErrors: 0,
+  lastEncryptionError: null,
+};
+
+/** One peer's row in the call details: the SFU's view of their signal,
+ *  and this device's inbound stats for their track. */
+export type PeerDiagnostics = {
+  identity: string;
+  name: string;
+  /** 0..1 as the SFU reports it: the RTP audio-level extension, which
+   *  their encoder sets from the raw audio before any frame encryption,
+   *  so it reads true for a peer this device cannot decrypt. */
+  level: number;
+  speaking: boolean;
+  encrypted: boolean;
+  bytesReceived: number | null;
+  /** inbound-rtp totalAudioEnergy: energy of the *decoded* audio. */
+  audioEnergy: number | null;
+  concealedSamples: number | null;
+  /** The attached element is playing; null when nothing is attached. */
+  playing: boolean | null;
+};
+
+/** One sample of where the sound is. rules.ts turns two into words. */
+export type VoiceDiagnostics = {
+  at: number;
+  mic: MicStatus;
+  /** 0..1, the SFU's reading of this device's signal. */
+  micLevel: number;
+  packetsSent: number | null;
+  roundTripMs: number | null;
+  peers: PeerDiagnostics[];
+  encryptionErrors: number;
+  lastEncryptionError: string | null;
+  keyEpoch: number | null;
+  e2ee: boolean;
+  /** How this engine applies the frame transform (livekit-client picks
+   *  encoded streams on Chromium and the script transform elsewhere). */
+  transform: "encoded-streams" | "script-transform" | "none";
+  playbackBlocked: boolean;
+  quality: VoiceQuality;
 };
 
 const LOCK_NAME = "messenger.voice";
 const EPOCH_POLL_MS = 2_000;
 const KEY_WAIT_MS = 20_000;
+/** How often a frame that would not open may trigger a group reconcile. */
+const KEY_NUDGE_MS = 10_000;
+/** Speaker changes arrive several times a second while anyone talks; the
+ *  roster re-renders at most this often. Power, on the phones. */
+const SPEAKER_REFRESH_MS = 250;
 
 function makeWorker(): Worker {
   return new Worker(new URL("livekit-client/e2ee-worker", import.meta.url), {
@@ -175,6 +235,15 @@ class VoiceSession {
   #audioHost: HTMLDivElement | null = null;
   #volumes = new Map<string, number>();
   #leaving = false;
+  /** How getUserMedia failed, if it did, for the details' mic row. */
+  #micFailure: MicFailure | null = null;
+  /** When a frame last sent the group to reconcile (see #nudgeGroup). */
+  #lastNudge = 0;
+  #refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Frames that failed to open, counted here and flushed to state on the
+   *  roster's throttle: a mismatch fails every frame, fifty a second. */
+  #encryptionErrors = 0;
+  #lastEncryptionError: string | null = null;
   /** Set once at import: another tab's "I hold the session" claim. */
   #watchingTabs = false;
 
@@ -222,9 +291,11 @@ class VoiceSession {
     if (!room) return;
     try {
       await room.localParticipant.setMicrophoneEnabled(!muted);
+      this.#micFailure = null;
       this.#set({ micMuted: muted, error: null });
       blip(muted ? "mute" : "unmute");
     } catch (error) {
+      this.#micFailure = micFailure(error);
       this.#set({ micMuted: true, error: micError(error) });
     }
   }
@@ -279,6 +350,96 @@ class VoiceSession {
     } catch {
       this.#set({ playbackBlocked: true });
     }
+  }
+
+  /**
+   * One reading of where the sound is, for the bar's details. Stats come
+   * from the SDK's per-track getStats wrappers; everything else is flags
+   * the room already holds. Null when there is no room to read. Never
+   * throws: a stats call that fails leaves its numbers null.
+   */
+  async sampleDiagnostics(): Promise<VoiceDiagnostics | null> {
+    const room = this.#room;
+    if (!room) return null;
+    const state = this.#state;
+
+    const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+    const local = publication?.track as LocalAudioTrack | undefined;
+    const mediaTrack = local?.mediaStreamTrack;
+    const mic = micStatus({
+      published: local !== undefined,
+      muted: publication?.isMuted ?? state.micMuted,
+      systemMuted: mediaTrack?.muted ?? false,
+      ended: mediaTrack?.readyState === "ended",
+      failure: this.#micFailure,
+    });
+    let packetsSent: number | null = null;
+    let roundTripMs: number | null = null;
+    if (local) {
+      try {
+        const stats = await local.getSenderStats();
+        packetsSent = stats?.packetsSent ?? null;
+        roundTripMs =
+          stats?.roundTripTime !== undefined ? Math.round(stats.roundTripTime * 1000) : null;
+      } catch {
+        // Stats are a reading, never a requirement.
+      }
+    }
+
+    const speaking = new Set(room.activeSpeakers.map((p) => p.identity));
+    const peers: PeerDiagnostics[] = [];
+    for (const participant of room.remoteParticipants.values()) {
+      const audio =
+        participant.getTrackPublication(Track.Source.Microphone) ??
+        [...participant.audioTrackPublications.values()][0];
+      const track = audio?.track as RemoteAudioTrack | undefined;
+      let bytesReceived: number | null = null;
+      let audioEnergy: number | null = null;
+      let concealedSamples: number | null = null;
+      if (track) {
+        try {
+          const stats = await track.getReceiverStats();
+          bytesReceived = stats?.bytesReceived ?? null;
+          audioEnergy = stats?.totalAudioEnergy ?? null;
+          concealedSamples = stats?.concealedSamples ?? null;
+        } catch {
+          // As above.
+        }
+      }
+      const element = track?.attachedElements[0];
+      peers.push({
+        identity: participant.identity,
+        name: participant.name || userIdOf(participant),
+        level: participant.audioLevel,
+        speaking: speaking.has(participant.identity),
+        encrypted: participant.isEncrypted,
+        bytesReceived,
+        audioEnergy,
+        concealedSamples,
+        playing: element ? !element.paused : null,
+      });
+    }
+    peers.sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      at: Date.now(),
+      mic,
+      micLevel: room.localParticipant.audioLevel,
+      packetsSent,
+      roundTripMs,
+      peers,
+      encryptionErrors: this.#encryptionErrors,
+      lastEncryptionError: this.#lastEncryptionError,
+      keyEpoch: state.keyEpoch,
+      e2ee: state.e2ee,
+      transform: isInsertableStreamSupported()
+        ? "encoded-streams"
+        : isScriptTransformSupported()
+          ? "script-transform"
+          : "none",
+      playbackBlocked: state.playbackBlocked,
+      quality: state.quality,
+    };
   }
 
   // -- joining -------------------------------------------------------------
@@ -383,8 +544,10 @@ class VoiceSession {
     try {
       await room.localParticipant.setMicrophoneEnabled(true);
       if (startMuted) await room.localParticipant.setMicrophoneEnabled(false);
+      this.#micFailure = null;
       this.#set({ micMuted: startMuted });
     } catch (error) {
+      this.#micFailure = micFailure(error);
       this.#set({ micMuted: true, error: micError(error) });
     }
 
@@ -456,7 +619,7 @@ class VoiceSession {
       })
       .on(RoomEvent.TrackMuted, () => this.#refreshParticipants())
       .on(RoomEvent.TrackUnmuted, () => this.#refreshParticipants())
-      .on(RoomEvent.ActiveSpeakersChanged, () => this.#refreshParticipants())
+      .on(RoomEvent.ActiveSpeakersChanged, () => this.#refreshParticipantsSoon())
       .on(RoomEvent.ParticipantEncryptionStatusChanged, () => this.#refreshParticipants())
       .on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
         if (participant.isLocal) this.#set({ quality: qualityOf(quality) });
@@ -476,9 +639,44 @@ class VoiceSession {
         // server: it either did this or its webhook already knows.
         void this.#teardown({ tellServer: false, error: "The call ended" });
       })
-      .on(RoomEvent.EncryptionError, () => {
-        // Expected briefly at an epoch turn; persistent means the peer's
-        // key differs, which the roster's `encrypted` flag also shows.
+      .on(RoomEvent.EncryptionError, (error) => {
+        // Counted, not surfaced as an error: a few are expected at an
+        // epoch turn. The details panel shows the count, which is how a
+        // key mismatch is told apart from a silent microphone.
+        this.#encryptionErrors += 1;
+        this.#lastEncryptionError = error instanceof Error ? error.message : String(error);
+        this.#refreshParticipantsSoon();
+        this.#nudgeGroup();
+      });
+  }
+
+  /**
+   * A frame this device could not open is evidence the group moved --
+   * a peer joined or rejoined and turned the epoch, and their frames now
+   * carry an index this keyring has no key for. Nothing wakes a device
+   * for a commit (the server's wake frames are for messages and
+   * membership), so left alone the sweep finds it on its 30-second
+   * cadence and the call is silent until then. Reconciling this one
+   * conversation now is the same repair the outbox runs on EPOCH_STALE;
+   * once the commit is applied, the 2-second epoch poll re-keys. Rate
+   * limited, because a device that is *ahead* also sees errors (its
+   * peer's frames are under the older key) and its reconcile finds
+   * nothing to do.
+   */
+  #nudgeGroup(): void {
+    const now = Date.now();
+    if (now - this.#lastNudge < KEY_NUDGE_MS) return;
+    this.#lastNudge = now;
+    const conversationId = this.#state.conversationId;
+    const session = loadSession();
+    if (!conversationId || !session || !this.#state.e2ee || this.#leaving) return;
+    void mlsSync
+      .reconcileConversation(conversationId, {
+        userId: session.user.id,
+        deviceId: session.device.id,
+      })
+      .catch(() => {
+        // The sweep will try again on its own cadence.
       });
   }
 
@@ -511,6 +709,14 @@ class VoiceSession {
     return this.#audioHost;
   }
 
+  #refreshParticipantsSoon(): void {
+    if (this.#refreshTimer) return;
+    this.#refreshTimer = setTimeout(() => {
+      this.#refreshTimer = null;
+      this.#refreshParticipants();
+    }, SPEAKER_REFRESH_MS);
+  }
+
   #refreshParticipants(): void {
     const room = this.#room;
     if (!room) return;
@@ -530,7 +736,11 @@ class VoiceSession {
       });
     }
     participants.sort((a, b) => a.name.localeCompare(b.name));
-    this.#set({ participants });
+    this.#set({
+      participants,
+      encryptionErrors: this.#encryptionErrors,
+      lastEncryptionError: this.#lastEncryptionError,
+    });
   }
 
   // -- keys over time --------------------------------------------------------
@@ -613,9 +823,14 @@ class VoiceSession {
 
   async #teardown(input: { tellServer: boolean; error: string | null }): Promise<void> {
     this.#leaving = true;
+    this.#micFailure = null;
+    this.#encryptionErrors = 0;
+    this.#lastEncryptionError = null;
     const { call, kind, conversationId } = this.#state;
     this.#stopRingback();
     this.#stopEpochWatch();
+    if (this.#refreshTimer) clearTimeout(this.#refreshTimer);
+    this.#refreshTimer = null;
     this.#unsubscribeSync?.();
     this.#unsubscribeSync = null;
     this.#unsubscribeBroadcasts?.();
@@ -660,13 +875,22 @@ class VoiceSession {
   }
 }
 
-function micError(error: unknown): string {
+function micFailure(error: unknown): MicFailure {
   const name = error instanceof Error ? error.name : "";
-  if (name === "NotAllowedError" || name === "SecurityError") {
-    return "Microphone access was refused. You can listen, but nobody can hear you.";
+  if (name === "NotAllowedError" || name === "SecurityError") return "refused";
+  if (name === "NotFoundError") return "missing";
+  return "failed";
+}
+
+function micError(error: unknown): string {
+  switch (micFailure(error)) {
+    case "refused":
+      return "Microphone access was refused. You can listen, but nobody can hear you.";
+    case "missing":
+      return "No microphone was found.";
+    case "failed":
+      return "The microphone could not be started.";
   }
-  if (name === "NotFoundError") return "No microphone was found.";
-  return "The microphone could not be started.";
 }
 
 function joinError(error: unknown): string {

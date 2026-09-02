@@ -63,10 +63,18 @@ async function restoreThenRender(): Promise<void> {
 }
 
 if (import.meta.env.DEV) {
+  // The shells hand devtools the vault restore to run first: the dev
+  // auto-login and auto-call read the session, and in a shell it may only
+  // exist in the keychain until restored.
+  const restore = isTauriShell() ? restoreFromVault : null;
   void import("./devtools")
-    .then((devtools) => devtools.installDevtools())
-    .catch((error: unknown) => console.error("devtools failed", error))
-    .then(() => (isTauriShell() ? restoreThenRender() : render()));
+    .then((devtools) => devtools.installDevtools(restore))
+    .catch(async (error: unknown) => {
+      console.error("devtools failed", error);
+      // Never lose the restore to a broken dev instrument.
+      if (restore) await restore().catch(() => {});
+    })
+    .then(render);
 } else if (isTauriShell()) {
   void restoreThenRender();
 } else {

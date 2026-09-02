@@ -22,6 +22,7 @@ import { listAudioDevices, onDeviceChange, supportsSpeakerSelection, type AudioD
 import { useVoice, useVoicePrefs } from "../../voice/hooks";
 import { saveVoicePrefs } from "../../voice/prefs";
 import { voice } from "../../voice/session";
+import { CallDetails } from "./CallDetails";
 
 function elapsed(since: number | null, now: number): string {
   if (since === null) return "";
@@ -41,6 +42,7 @@ export function CallBar({
   const state = useVoice();
   const [now, setNow] = useState(() => Date.now());
   const [devicesOpen, setDevicesOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
     if (state.phase !== "connected") return;
@@ -166,9 +168,19 @@ export function CallBar({
 
       {devicesOpen && <DevicePicker onClose={() => setDevicesOpen(false)} />}
 
-      {state.participants.length > 0 && (
-        <VolumeList participants={state.participants} />
-      )}
+      <div className="flex flex-wrap gap-x-4">
+        {state.participants.length > 0 && (
+          <VolumeList participants={state.participants} />
+        )}
+        <button
+          onClick={() => setDetailsOpen((open) => !open)}
+          aria-expanded={detailsOpen}
+          className="mt-1 text-xs text-neutral-500 underline dark:text-neutral-400"
+        >
+          {detailsOpen ? "Hide details" : "Details"}
+        </button>
+      </div>
+      {detailsOpen && <CallDetails />}
     </div>
   );
 }

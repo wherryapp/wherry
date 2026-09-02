@@ -6,15 +6,39 @@
 // its overlay.
 
 let context: AudioContext | null = null;
+let activeLoops = 0;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 function ctx(): AudioContext | null {
   try {
     if (!context) context = new AudioContext();
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
     if (context.state === "suspended") void context.resume();
     return context;
   } catch {
     return null;
   }
+}
+
+/**
+ * Suspend once the last scheduled sound has ended and no loop is running.
+ * A running AudioContext keeps the platform's audio unit and its render
+ * thread alive with nothing to play -- on a phone in a call, where WebRTC
+ * already owns the hardware, that is heat for nothing (the maintainer's
+ * first device report). Idle therefore means suspended; ctx() resumes on
+ * the next sound. Believed, not measured on a phone.
+ */
+function idleAfter(seconds: number): void {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (activeLoops === 0 && context?.state === "running") {
+      void context.suspend().catch(() => {});
+    }
+  }, seconds * 1000 + 250);
 }
 
 /** A gentle two-tone burst, `seconds` long, at `gain`. */
@@ -48,6 +72,7 @@ function loop(pattern: (audio: AudioContext, at: number) => void, period: number
   if (!audio) return null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  activeLoops += 1;
   const cycle = (): void => {
     if (stopped) return;
     pattern(audio, audio.currentTime);
@@ -56,8 +81,12 @@ function loop(pattern: (audio: AudioContext, at: number) => void, period: number
   cycle();
   return {
     stop: () => {
+      if (stopped) return;
       stopped = true;
+      activeLoops -= 1;
       if (timer) clearTimeout(timer);
+      // The cycle's tones may still be sounding: the longest is 2 s.
+      idleAfter(2);
     },
   };
 }
@@ -76,6 +105,14 @@ export function startRing(): Loop | null {
 }
 
 export function blip(kind: "join" | "leave" | "mute" | "unmute"): void {
+  playBlip(kind);
+  idleAfter(BLIP_SECONDS);
+}
+
+/** The longest blip below ends 0.21 s after it starts. */
+const BLIP_SECONDS = 0.25;
+
+function playBlip(kind: "join" | "leave" | "mute" | "unmute"): void {
   const audio = ctx();
   if (!audio) return;
   const at = audio.currentTime;

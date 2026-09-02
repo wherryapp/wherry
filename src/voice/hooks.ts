@@ -10,7 +10,7 @@ import type { Call, RoomOccupancy } from "../api/types";
 import { useSyncEvents } from "../ui/hooks";
 import { loadVoicePrefs, subscribeVoicePrefs, type VoicePrefs } from "./prefs";
 import { reduceRings, type Ring } from "./rules";
-import { voice, type VoiceState } from "./session";
+import { voice, type VoiceDiagnostics, type VoiceState } from "./session";
 
 /** The one session's state, re-rendered on every change. */
 export function useVoice(): VoiceState {
@@ -193,4 +193,42 @@ function toMap(rooms: readonly RoomOccupancy[]): ReadonlyMap<string, readonly st
     if (room.occupants.length > 0) map.set(room.conversationId, room.occupants);
   }
   return map;
+}
+
+/** The details readout's cadence; two samples make a delta. */
+const DIAGNOSTICS_INTERVAL_MS = 2_000;
+
+export type DiagnosticsPair = {
+  current: VoiceDiagnostics | null;
+  previous: VoiceDiagnostics | null;
+};
+
+/**
+ * Two consecutive readings of the session's diagnostics while `enabled`
+ * -- the details panel is open -- and nothing otherwise. Sampling means
+ * a getStats round-trip per track every two seconds, cheap but not free,
+ * so it runs only while somebody is looking.
+ */
+export function useVoiceDiagnostics(enabled: boolean): DiagnosticsPair {
+  const [pair, setPair] = useState<DiagnosticsPair>({ current: null, previous: null });
+  useEffect(() => {
+    if (!enabled) {
+      setPair({ current: null, previous: null });
+      return;
+    }
+    let cancelled = false;
+    const tick = (): void => {
+      void voice.sampleDiagnostics().then((sample) => {
+        if (cancelled) return;
+        setPair((last) => ({ previous: last.current, current: sample }));
+      });
+    };
+    tick();
+    const timer = setInterval(tick, DIAGNOSTICS_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [enabled]);
+  return pair;
 }
