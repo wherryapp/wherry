@@ -2,8 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Call } from "../api/types";
 import {
+  audioPresetFor,
   callKeyContext,
   callNotice,
+  DEFAULT_AUDIO_QUALITY,
+  isAudioQuality,
   keyIndexFor,
   KEYRING_SIZE,
   micLine,
@@ -16,6 +19,20 @@ import {
   shouldRingAudibly,
   type Ring,
 } from "./rules.js";
+
+test("audio quality: speech by default, tiers validated as untrusted input, presets in bits per second", () => {
+  assert.equal(DEFAULT_AUDIO_QUALITY, "speech");
+  assert.equal(isAudioQuality("music"), true);
+  assert.equal(isAudioQuality("musicHighQuality"), true);
+  // A stored string that names an Object.prototype member is not a tier.
+  assert.equal(isAudioQuality("toString"), false);
+  assert.equal(isAudioQuality("hd"), false);
+  assert.equal(isAudioQuality(24), false);
+  assert.equal(isAudioQuality(null), false);
+  assert.deepEqual(audioPresetFor("telephone"), { maxBitrate: 12_000 });
+  assert.deepEqual(audioPresetFor("speech"), { maxBitrate: 24_000 });
+  assert.deepEqual(audioPresetFor("musicHighQuality"), { maxBitrate: 96_000 });
+});
 
 test("keyIndexFor wraps epochs into the keyring and never goes negative", () => {
   assert.equal(keyIndexFor(0), 0);

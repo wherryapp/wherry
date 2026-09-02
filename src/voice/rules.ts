@@ -343,3 +343,44 @@ export function peerFlowLine(flow: PeerFlow): string {
       return "flowing";
   }
 }
+
+// ---------------------------------------------------------------------------
+// Audio quality
+// ---------------------------------------------------------------------------
+
+/**
+ * The Opus ceiling this device publishes at, as a named tier. Uplink only:
+ * what a device sends. What it hears is whatever each peer chose, so two
+ * people on different tiers each hear the other's.
+ *
+ * The numbers mirror livekit-client's `AudioPresets` (telephone, speech,
+ * music, musicHighQuality) so this module stays free of the SDK; the
+ * session hands the bitrate through as a custom preset. Speech is the
+ * default the plan settled on (voice-plan.md §6): 24 kbps is transparent
+ * for a voice, and everything above it buys music fidelity at the cost of
+ * data and battery -- docs/voice-efficiency.md has the reasoning for why
+ * bitrate is a smaller lever on power than the encoder's own complexity.
+ */
+export type AudioQuality = "telephone" | "speech" | "music" | "musicHighQuality";
+
+export const AUDIO_QUALITY_KBPS: Readonly<Record<AudioQuality, number>> = {
+  telephone: 12,
+  speech: 24,
+  music: 48,
+  musicHighQuality: 96,
+};
+
+export const DEFAULT_AUDIO_QUALITY: AudioQuality = "speech";
+
+/** A stored preference is untrusted input: anything not a tier is the default. */
+export function isAudioQuality(value: unknown): value is AudioQuality {
+  return (
+    typeof value === "string" &&
+    (Object.keys(AUDIO_QUALITY_KBPS) as string[]).includes(value)
+  );
+}
+
+/** livekit-client's `AudioPreset` shape (bits per second), without importing it. */
+export function audioPresetFor(quality: AudioQuality): { maxBitrate: number } {
+  return { maxBitrate: AUDIO_QUALITY_KBPS[quality] * 1000 };
+}

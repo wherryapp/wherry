@@ -17,6 +17,7 @@ const DEFAULT_PREFS: SidebarPrefs = {
   hubsHeightPx: null,
   collapsedHubIds: [],
   hubOrder: [],
+  hubsSectionCollapsed: false,
 };
 
 let cache: SidebarPrefs | null = null;

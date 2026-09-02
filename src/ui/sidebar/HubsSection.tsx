@@ -11,7 +11,6 @@ import {
   LockIcon,
   PublicPill,
 } from "../kit";
-import { NewHub } from "./NewHub";
 import { useSidebarPrefs } from "./prefs";
 import { moveItem } from "./rank";
 
@@ -45,14 +44,22 @@ function hubAggregate(
 }
 
 /**
- * The sidebar's hubs: each hub is a header row opening its panel, with its
- * channels nested under it. Channels are conversations, so selecting one
- * opens the ordinary thread view -- the section is navigation, not a second
- * message surface.
+ * The sidebar's hubs: a section header that folds the lot, then each hub as
+ * a header row opening its panel with its channels nested under it.
+ * Channels are conversations, so selecting one opens the ordinary thread
+ * view -- the section is navigation, not a second message surface.
+ *
+ * The section fold (2026-09-02) is the phone's answer to "hubs take up a
+ * lot of space": below `md` the sidebar is one scroll surface with hubs
+ * above the DMs, so three hubs' channels put every direct conversation
+ * below the fold. One tap folds them to a header row that keeps the unread
+ * roll-up, the same way a collapsed hub's header does. The create form
+ * that used to sit above the list moved to the compose panel
+ * (ui/Compose.tsx), which is also what made the section's height stop
+ * depending on the feature-flag fetch.
  */
 export function HubsSection({
   hubs,
-  canCreate,
   unread,
   mentions,
   muted,
@@ -62,8 +69,6 @@ export function HubsSection({
   onOpenHub,
 }: {
   hubs: HubSummary[];
-  /** The `hubs` feature flag -- gates the create form, not the list. */
-  canCreate: boolean;
   unread: Map<string, number>;
   /** Channels with an unread mention of this user -- the stronger badge. */
   mentions: Set<string>;
@@ -187,14 +192,45 @@ export function HubsSection({
     window.addEventListener("pointercancel", onCancel);
   };
 
-  if (hubs.length === 0 && !canCreate) return null;
+  if (hubs.length === 0) return null;
+
+  const sectionCollapsed = prefs.hubsSectionCollapsed === true;
+  // The folded header's roll-up: every hub's count and mention flag, under
+  // the same mute rule hubAggregate applies per hub.
+  const total = hubs.reduce(
+    (sum, hub) => {
+      const agg = hubAggregate(hub, unread, mentions, muted);
+      return { count: sum.count + agg.count, mentioned: sum.mentioned || agg.mentioned };
+    },
+    { count: 0, mentioned: false },
+  );
 
   return (
     // The Sidebar's wrapper owns the section's border and scrolling; this
     // root is padding only, so the section works inside either container.
-    <div className="p-3">
-      {canCreate && <NewHub onOpened={onSelect} />}
-      {hubs.map((hub, index) => {
+    <div className="px-2 pb-2 pt-1">
+      <div className="flex items-center gap-1 px-1">
+        <button
+          onClick={() => update({ hubsSectionCollapsed: !sectionCollapsed })}
+          aria-expanded={!sectionCollapsed}
+          className="flex min-w-0 flex-1 items-center gap-1 rounded py-1 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+        >
+          <ChevronLeftIcon
+            className={`h-3.5 w-3.5 transition-transform ${sectionCollapsed ? "rotate-180" : "-rotate-90"}`}
+          />
+          Hubs
+        </button>
+        {sectionCollapsed && total.mentioned && (
+          <span
+            aria-label="Mentions you"
+            className="shrink-0 text-xs font-bold text-accent-600 dark:text-accent-400"
+          >
+            @
+          </span>
+        )}
+        {sectionCollapsed && <Badge count={total.count} />}
+      </div>
+      {!sectionCollapsed && hubs.map((hub, index) => {
         const collapsed = prefs.collapsedHubIds.includes(hub.id);
         const agg = hubAggregate(hub, unread, mentions, muted);
         // The insertion line, hidden at the two slots that would drop the
@@ -207,14 +243,14 @@ export function HubsSection({
         return (
           <Fragment key={hub.id}>
             {indicatorAt(index) && (
-              <div className="mx-1 mt-3 h-0.5 rounded bg-accent-500" />
+              <div className="mx-1 mt-2 h-0.5 rounded bg-accent-500" />
             )}
             <div
               ref={(el) => {
                 if (el) blockRefs.current.set(hub.id, el);
                 else blockRefs.current.delete(hub.id);
               }}
-              className={`${canCreate || index !== 0 ? "mt-3" : ""} ${
+              className={`${index === 0 ? "mt-1" : "mt-2"} ${
                 drag?.hubId === hub.id ? "opacity-50" : ""
               }`}
             >
@@ -330,7 +366,7 @@ export function HubsSection({
             )}
             </div>
             {index === hubs.length - 1 && indicatorAt(hubs.length) && (
-              <div className="mx-1 mt-3 h-0.5 rounded bg-accent-500" />
+              <div className="mx-1 mt-2 h-0.5 rounded bg-accent-500" />
             )}
           </Fragment>
         );

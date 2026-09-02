@@ -836,8 +836,16 @@ export function useHubs(): { hubs: HubSummary[]; reload: () => void } {
  * A transient failure must not disable a feature for the rest of the
  * session.
  */
-export function useFeatures(): { hubs: boolean; voice: boolean } {
-  const [features, setFeatures] = useState({ hubs: false, voice: false });
+export function useFeatures(): {
+  hubs: boolean;
+  voice: boolean;
+  voiceQuality: boolean;
+} {
+  const [features, setFeatures] = useState({
+    hubs: false,
+    voice: false,
+    voiceQuality: false,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -852,6 +860,7 @@ export function useFeatures(): { hubs: boolean; voice: boolean } {
             hubs: settings.features.hubs,
             // Older servers answer no `voice` at all: off, never undefined.
             voice: settings.features.voice === true,
+            voiceQuality: settings.features.voiceQuality === true,
           });
         })
         .catch((error: unknown) => {

@@ -1,5 +1,9 @@
-// The sidebar's second form, shaped like NewConversation: create a hub, or
-// join a public one by id.
+// Create a hub, or join a public one by id. A button that unfolds into its
+// two forms, inside the compose panel (ui/Compose.tsx) since 2026-09-02 --
+// it used to sit at the top of the sidebar's hubs section, a full-width row
+// for an action taken about once. The fold stays on purpose: the public-
+// class copy below must be read at the moment of creation, and a form
+// that is always open is a form that gets scrolled past.
 
 import { useState, type FormEvent } from "react";
 import { ApiError, createHub, joinHub } from "../../api/client";
@@ -8,12 +12,11 @@ import { sync } from "../../sync/engine";
 import { Button, ErrorText, Input, handleInputProps } from "../kit";
 
 /**
- * Creating a hub, or joining a public one by id -- the sidebar's second
- * form, shaped like NewConversation. The class choice carries its label
- * copy right here, at the moment it is made, because the public class is
- * the one deliberate exception to "the server reads nothing" and the person
- * making it must see that sentence before the hub exists (CLAUDE.md rules
- * 1/9, as amended).
+ * Creating a hub, or joining a public one by id. The class choice carries
+ * its label copy right here, at the moment it is made, because the public
+ * class is the one deliberate exception to "the server reads nothing" and
+ * the person making it must see that sentence before the hub exists
+ * (CLAUDE.md rules 1/9, as amended).
  */
 export function NewHub({
   onOpened,
@@ -80,7 +83,7 @@ export function NewHub({
   if (!open) {
     return (
       <Button variant="secondary" onClick={() => setOpen(true)} className="w-full">
-        New hub
+        Create or join a hub
       </Button>
     );
   }

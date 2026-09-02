@@ -3,7 +3,12 @@
 // than the store's meta table because these are per-device hardware
 // choices read synchronously at join time, never synced anywhere.
 
-import type { JoinMutePreference } from "./rules";
+import {
+  DEFAULT_AUDIO_QUALITY,
+  isAudioQuality,
+  type AudioQuality,
+  type JoinMutePreference,
+} from "./rules";
 
 const KEY = "messenger.voice.prefs.v1";
 
@@ -13,6 +18,14 @@ export type VoicePrefs = {
   /** `deviceId`s from enumerateDevices; null = the browser's default. */
   micDeviceId: string | null;
   speakerDeviceId: string | null;
+  /**
+   * The uplink bitrate tier (rules.ts). Read once at join, so a change
+   * applies to the next call. Device-local like the rest, and the control
+   * that writes it is flag-gated (Settings → Voice) -- but the value is
+   * honoured regardless of the flag, because the flag is advisory the way
+   * every other feature flag here is; see the 0021 migration's note.
+   */
+  audioQuality: AudioQuality;
 };
 
 const DEFAULTS: VoicePrefs = {
@@ -20,6 +33,7 @@ const DEFAULTS: VoicePrefs = {
   ringtone: true,
   micDeviceId: null,
   speakerDeviceId: null,
+  audioQuality: DEFAULT_AUDIO_QUALITY,
 };
 
 export function loadVoicePrefs(): VoicePrefs {
@@ -36,6 +50,9 @@ export function loadVoicePrefs(): VoicePrefs {
       micDeviceId: typeof parsed.micDeviceId === "string" ? parsed.micDeviceId : null,
       speakerDeviceId:
         typeof parsed.speakerDeviceId === "string" ? parsed.speakerDeviceId : null,
+      audioQuality: isAudioQuality(parsed.audioQuality)
+        ? parsed.audioQuality
+        : DEFAULT_AUDIO_QUALITY,
     };
   } catch {
     return { ...DEFAULTS };

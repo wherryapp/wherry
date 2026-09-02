@@ -886,6 +886,13 @@ export type AccountSettings = {
     /** The voice flag. Advisory: whether the server CAN do voice at all is
      *  /health's `voice`; the controls show only when both say yes. */
     voice: boolean;
+    /**
+     * The call audio quality picker (Settings → Voice). Seeded off for
+     * everyone by migration 0021 and switched on per account: the first
+     * plan-gated control, ahead of any plan. Advisory like the rest -- it
+     * hides a picker, and nothing server-side caps an audio bitrate.
+     */
+    voiceQuality: boolean;
   };
 };
 

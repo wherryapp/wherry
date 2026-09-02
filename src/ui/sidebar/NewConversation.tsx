@@ -1,5 +1,7 @@
-// The sidebar's "start a conversation" form: pick contacts, or type
-// usernames, and either opens or creates the thread.
+// The "start a conversation" form: pick contacts, or type usernames, and
+// either opens or creates the thread. Rendered by the compose panel
+// (ui/Compose.tsx) since 2026-09-02; before that it unfolded from a button
+// at the top of the sidebar, which is why it still lives in sidebar/.
 
 import { useEffect, useState, type FormEvent } from "react";
 import { ContactCheckboxRow } from "../ContactRow";
@@ -25,26 +27,28 @@ import { Button, ErrorText, Input, handleInputProps } from "../kit";
 export function NewConversation({
   session,
   onOpened,
+  onCancel,
 }: {
   session: StoredSession;
   onOpened: (conversationId: string) => void;
+  /** The Cancel button. The panel that mounts this owns closing. */
+  onCancel: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [contacts, setContacts] = useState<Friend[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Loaded when the form opens rather than with the app. It is a handful of
+  // Loaded when the form mounts rather than with the app. It is a handful of
   // rows, it is only needed here, and fetching it on every startup would be a
   // request per launch for a list most launches never look at.
   useEffect(() => {
-    if (!open || contacts !== null) return;
+    if (contacts !== null) return;
     void fetchFriends()
       .then((lists) => setContacts(lists.friends))
       .catch(() => setContacts([]));
-  }, [open, contacts]);
+  }, [contacts]);
 
   function toggle(userId: string): void {
     setPicked((current) => {
@@ -59,7 +63,6 @@ export function NewConversation({
     setUsername("");
     setPicked(new Set());
     setError(null);
-    setOpen(false);
   }
 
   async function submit(event: FormEvent) {
@@ -123,18 +126,6 @@ export function NewConversation({
     }
   }
 
-  if (!open) {
-    return (
-      <Button
-        variant="secondary"
-        onClick={() => setOpen(true)}
-        className="w-full"
-      >
-        New conversation
-      </Button>
-    );
-  }
-
   const canSend = picked.size > 0 || username.trim().length > 0;
 
   return (
@@ -184,7 +175,7 @@ export function NewConversation({
         >
           {busy ? "…" : "Start"}
         </Button>
-        <Button variant="ghost" size="sm" onClick={reset} className="px-3 py-1.5">
+        <Button variant="ghost" size="sm" onClick={onCancel} className="px-3 py-1.5">
           Cancel
         </Button>
       </div>

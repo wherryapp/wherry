@@ -502,6 +502,12 @@ export type SidebarPrefs = {
   /** Hubs whose channel lists are hidden. */
   collapsedHubIds: string[];
   /**
+   * The whole hubs section folded to its header row (2026-09-02). Absent on
+   * stores written before it existed and read as false through the
+   * defaults merge, so nobody's hubs vanish on update.
+   */
+  hubsSectionCollapsed?: boolean;
+  /**
    * Manual hub order. Hubs not listed append in server order; ids of hubs
    * since left are inert and get pruned on the next reorder, which writes
    * only currently-present ids.

@@ -475,7 +475,7 @@ export function Settings({
             title="Voice"
             description="Calls and voice rooms, on this device."
           >
-            <VoiceSettings />
+            <VoiceSettings canChooseQuality={features.voiceQuality} />
           </PanelSection>
         )}
 

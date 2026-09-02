@@ -188,6 +188,29 @@ export function PencilIcon({ className }: IconProps) {
   );
 }
 
+/**
+ * A pencil over a square: the "new message" glyph every phone's messaging
+ * app puts in its list header, and what the sidebar's compose control is.
+ * Same pencil as PencilIcon, smaller, over an open box.
+ */
+export function ComposeIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M9 4.5H5a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 5 16.5h9a1.5 1.5 0 0 0 1.5-1.5v-4" />
+      <path d="m14.3 3.2 2.5 2.5-6.3 6.3-3.2.7.7-3.2Z" />
+    </svg>
+  );
+}
+
 /** Reply, in a bubble's action bar and the composer's context bar. */
 export function ReplyIcon({ className }: IconProps) {
   return (

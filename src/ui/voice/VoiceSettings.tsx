@@ -13,9 +13,32 @@ import {
 } from "../../voice/devices";
 import { useVoicePrefs } from "../../voice/hooks";
 import { saveVoicePrefs } from "../../voice/prefs";
-import type { JoinMutePreference } from "../../voice/rules";
+import {
+  AUDIO_QUALITY_KBPS,
+  isAudioQuality,
+  type AudioQuality,
+  type JoinMutePreference,
+} from "../../voice/rules";
 
-export function VoiceSettings() {
+/** The tiers in ascending order, with the words the picker shows. */
+const QUALITY_LABELS: Readonly<Record<AudioQuality, string>> = {
+  telephone: "Telephone",
+  speech: "Speech (default)",
+  music: "Music",
+  musicHighQuality: "High quality",
+};
+
+export function VoiceSettings({
+  canChooseQuality,
+}: {
+  /**
+   * The `voice_quality` flag: off for everyone by default, on per account.
+   * The first plan-gated control -- a future paid tier is the flag with an
+   * entitlement behind it -- so the picker is hidden rather than disabled
+   * when it is off; nobody is shown a setting they cannot change.
+   */
+  canChooseQuality: boolean;
+}) {
   const prefs = useVoicePrefs();
   const [devices, setDevices] = useState<AudioDevices>({ inputs: [], outputs: [] });
 
@@ -58,6 +81,30 @@ export function VoiceSettings() {
           Calls you start or answer always join unmuted.
         </span>
       </label>
+
+      {canChooseQuality && (
+        <label className="grid gap-1 text-sm text-neutral-700 dark:text-neutral-200">
+          Call audio quality
+          <Select
+            value={prefs.audioQuality}
+            onChange={(e) => {
+              const value = e.target.value;
+              if (isAudioQuality(value)) saveVoicePrefs({ audioQuality: value });
+            }}
+          >
+            {(Object.keys(AUDIO_QUALITY_KBPS) as AudioQuality[]).map((tier) => (
+              <option key={tier} value={tier}>
+                {QUALITY_LABELS[tier]} — {AUDIO_QUALITY_KBPS[tier]} kbps
+              </option>
+            ))}
+          </Select>
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">
+            What this device sends; each person hears the other's choice.
+            Applies to the next call you join. Higher tiers use more data and
+            battery.
+          </span>
+        </label>
+      )}
 
       <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
         <input

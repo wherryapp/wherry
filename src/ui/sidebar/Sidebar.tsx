@@ -7,12 +7,16 @@
 // other grows. Below md the sidebar is the whole screen and an inner
 // scrollbar inside an outer one is exactly what a phone must not have -- so
 // there it is one scroll surface, hubs above DMs.
+//
+// Nothing here starts anything any more: the "New conversation" box that
+// topped both layouts, and the "New hub" button that topped the hubs, moved
+// behind the list header's compose control (ui/Compose.tsx, 2026-09-02).
+// The list is the list.
 
 import { useMemo, useRef, useState } from "react";
 import type { StoredSession } from "../../api/session";
 import {
   useConversations,
-  useFeatures,
   useHubs,
   useLatestMessages,
   useMentions,
@@ -29,7 +33,6 @@ import {
 import { useIsDesktop } from "../viewport";
 import { Avatar, Badge, BellOffIcon } from "../kit";
 import { HubsSection } from "./HubsSection";
-import { NewConversation } from "./NewConversation";
 import { ResizeHandle } from "./ResizeHandle";
 import { useSidebarPrefs } from "./prefs";
 import { orderHubs, rankConversations, recencyRanker } from "./rank";
@@ -50,7 +53,6 @@ export function ConversationList({
 }) {
   const { conversations } = useConversations();
   const { hubs } = useHubs();
-  const features = useFeatures();
   // Unread and previews are computed over everything -- channels included,
   // for the hub section's badges -- but the direct/group rows below exclude
   // channels, which render nested under their hub instead.
@@ -108,11 +110,14 @@ export function ConversationList({
 
   // Hoisted from HubsSection's own null-return so the bordered wrapper the
   // scroll containers need does not render as a stray rule around nothing.
-  const showHubs = hubs.length > 0 || features.hubs;
+  // Membership only -- no feature-flag term, so the section's presence is
+  // settled by the store at first paint rather than by a fetch a beat later.
+  const showHubs = hubs.length > 0;
+  // Folded to its header row: content-sized, no budget, no divider.
+  const hubsFolded = prefs.hubsSectionCollapsed === true;
   const hubsSection = (
     <HubsSection
       hubs={orderedHubs}
-      canCreate={features.hubs}
       unread={unread}
       mentions={mentions}
       muted={muted}
@@ -253,9 +258,6 @@ export function ConversationList({
   if (!isDesktop) {
     return (
       <aside className="flex min-h-0 w-full shrink-0 flex-col bg-white dark:bg-neutral-900">
-        <div className="shrink-0 border-b border-neutral-200 p-3 dark:border-neutral-800">
-          <NewConversation session={session} onOpened={onSelect} />
-        </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {showHubs && (
             <div className="border-b border-neutral-200 dark:border-neutral-800">
@@ -273,10 +275,6 @@ export function ConversationList({
       ref={asideRef}
       className="flex min-h-0 w-full shrink-0 flex-col bg-white md:w-72 md:border-r md:border-neutral-200 dark:bg-neutral-900 dark:md:border-neutral-800"
     >
-      <div className="shrink-0 border-b border-neutral-200 p-3 dark:border-neutral-800">
-        <NewConversation session={session} onOpened={onSelect} />
-      </div>
-
       {showHubs && (
         <>
           <div
@@ -287,31 +285,37 @@ export function ConversationList({
             // when the window is too small -- max-height beats height, so
             // the stored preference is never rewritten by a shrink the user
             // didn't drag, and regrowing the window restores it.
+            // Folded: the header row alone, and the stored height is left
+            // untouched for when the section opens again.
             style={
-              hubsHeight === null
-                ? { maxHeight: "45%" }
-                : {
-                    height: `${hubsHeight}px`,
-                    maxHeight: "calc(100% - 10rem)",
-                  }
+              hubsFolded
+                ? undefined
+                : hubsHeight === null
+                  ? { maxHeight: "45%" }
+                  : {
+                      height: `${hubsHeight}px`,
+                      maxHeight: "calc(100% - 10rem)",
+                    }
             }
           >
             {hubsSection}
           </div>
-          <ResizeHandle
-            asideRef={asideRef}
-            hubsRef={hubsRef}
-            height={prefs.hubsHeightPx}
-            onLiveResize={setLiveHeight}
-            onCommit={(px) => {
-              setLiveHeight(null);
-              update({ hubsHeightPx: px });
-            }}
-            onReset={() => {
-              setLiveHeight(null);
-              update({ hubsHeightPx: null });
-            }}
-          />
+          {!hubsFolded && (
+            <ResizeHandle
+              asideRef={asideRef}
+              hubsRef={hubsRef}
+              height={prefs.hubsHeightPx}
+              onLiveResize={setLiveHeight}
+              onCommit={(px) => {
+                setLiveHeight(null);
+                update({ hubsHeightPx: px });
+              }}
+              onReset={() => {
+                setLiveHeight(null);
+                update({ hubsHeightPx: null });
+              }}
+            />
+          )}
         </>
       )}
 

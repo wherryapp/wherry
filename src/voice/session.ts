@@ -23,7 +23,6 @@
 // the app.
 
 import {
-  AudioPresets,
   ConnectionQuality,
   ConnectionState,
   isInsertableStreamSupported,
@@ -53,7 +52,13 @@ import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 import { mlsSync } from "../sync/mls";
 import { CallKeyProvider, deriveCallKey } from "./keys";
 import { loadVoicePrefs } from "./prefs";
-import { micStatus, shouldJoinMuted, type MicFailure, type MicStatus } from "./rules";
+import {
+  audioPresetFor,
+  micStatus,
+  shouldJoinMuted,
+  type MicFailure,
+  type MicStatus,
+} from "./rules";
 import { blip, startRingback } from "./sounds";
 
 /** What a join needs to know about the conversation: the id, and the
@@ -524,7 +529,12 @@ class VoiceSession {
       ...(prefs.speakerDeviceId
         ? { audioOutput: { deviceId: prefs.speakerDeviceId } }
         : {}),
-      publishDefaults: { dtx: true, red: true, audioPreset: AudioPresets.speech },
+      // The bitrate is the device's chosen tier (prefs, rules.ts); dtx and
+      // red stay on at every tier -- silence suppression and the redundant
+      // frame are about loss, not fidelity. Fixed for the life of the
+      // publication: livekit-client sets encodings at publish time, so a
+      // tier changed mid-call applies to the next one.
+      publishDefaults: { dtx: true, red: true, audioPreset: audioPresetFor(prefs.audioQuality) },
       ...(keys && worker ? { e2ee: { keyProvider: keys, worker } } : {}),
     });
     this.#room = room;

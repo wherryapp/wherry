@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Settings } from "./Settings";
 import { Friends } from "./Friends";
+import { Compose } from "./Compose";
 import { HubDetails } from "./HubDetails";
 import { GroupDetails } from "./GroupDetails";
 import { JoinInvite } from "./JoinInvite";
@@ -47,6 +48,7 @@ import {
   BellIcon,
   BellOffIcon,
   Button,
+  ComposeIcon,
   IconButton,
   LockIcon,
   PinIcon,
@@ -294,6 +296,8 @@ export function Chat({
   const [selected, setSelected] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
+  /** The compose panel (new conversation, or a hub) -- a Friends-shaped panel. */
+  const [composeOpen, setComposeOpen] = useState(false);
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
   /** Which hub's panel is open, by hub id -- the channel-class sibling of
    *  groupDetailsOpen. */
@@ -360,6 +364,7 @@ export function Chat({
     const panelOpen =
       settingsOpen ||
       friendsOpen ||
+      composeOpen ||
       groupDetailsOpen ||
       hubDetailsFor !== null ||
       pinsFor !== null;
@@ -403,6 +408,7 @@ export function Chat({
     selected,
     settingsOpen,
     friendsOpen,
+    composeOpen,
     groupDetailsOpen,
     hubDetailsFor,
     pinsFor,
@@ -584,6 +590,20 @@ export function Chat({
     );
   }
 
+  if (composeOpen) {
+    return (
+      <Compose
+        session={session}
+        canCreateHubs={features.hubs}
+        onClose={() => setComposeOpen(false)}
+        onOpened={(id) => {
+          setSelected(id);
+          setComposeOpen(false);
+        }}
+      />
+    );
+  }
+
   if (friendsOpen) {
     return (
       <Friends
@@ -657,6 +677,12 @@ export function Chat({
             Chats
           </span>
           <span className="flex items-center gap-1">
+            {/* Compose first: the header's primary act, and the phone
+                convention (iMessage, Signal) puts the new-message pencil
+                at the right edge of the list's title bar. */}
+            <IconButton label="New conversation" onClick={() => setComposeOpen(true)}>
+              <ComposeIcon />
+            </IconButton>
             <IconButton label="Friends" onClick={() => setFriendsOpen(true)}>
               <UsersIcon />
             </IconButton>

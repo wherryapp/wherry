@@ -1,0 +1,20 @@
+# The iOS *simulator* link fix from docs/mobile-setup.md, scoped to the one
+# target that needs it. Rust 1.98 looks for compiler-rt under
+# .../lib/clang/16/lib/darwin and Xcode 26 ships clang 21, so the
+# aarch64-apple-ios-sim link dies on `ld: library 'clang_rt.iossim' not
+# found` without this search path. The device target does not need it and
+# never sees it.
+#
+# Here rather than an exported RUSTFLAGS, and the reason is build time. Cargo
+# fingerprints RUSTFLAGS into every crate of every target, so a device build
+# run from a shell where the simulator export is set recompiles all ~500
+# crates, and the next build without it recompiles them all again -- the
+# "sometimes a build takes ten minutes" that showed up on 2026-09-01. A
+# per-target entry is identical in every shell and invisible to the device
+# target. An exported RUSTFLAGS still overrides this file entirely, so: do
+# not export one.
+#
+# Bump the clang directory when Xcode moves. A stale path fails exactly the
+# way no path fails (the linker error above), which mobile-setup.md explains.
+[target.aarch64-apple-ios-sim]
+rustflags = ["-L", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/lib/darwin"]
