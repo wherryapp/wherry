@@ -22,7 +22,9 @@
 // keyboard animation, and re-rendering the tree on every frame of it would be
 // a lot of work to produce the same layout CSS can produce on its own.
 
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
+
+import { SHELL } from "../api/shell";
 
 /**
  * Starts mirroring the visual viewport into CSS custom properties.
@@ -148,9 +150,9 @@ export function trackVisualViewport(): void {
 // md is 768px; there is no config file to read it from, by choice.
 const DESKTOP_QUERY = "(min-width: 768px)";
 
-function subscribeToViewport(onChange: () => void): () => void {
-  const query = window.matchMedia(DESKTOP_QUERY);
-  query.addEventListener("change", onChange);
+function subscribeToQuery(query: string, onChange: () => void): () => void {
+  const list = window.matchMedia(query);
+  list.addEventListener("change", onChange);
 
   // Resize as well as the media query, which looks redundant and is not. The
   // change event does not fire in every environment that can alter a viewport
@@ -160,17 +162,55 @@ function subscribeToViewport(onChange: () => void): () => void {
   window.addEventListener("resize", onChange);
 
   return () => {
-    query.removeEventListener("change", onChange);
+    list.removeEventListener("change", onChange);
     window.removeEventListener("resize", onChange);
   };
 }
 
-export function useIsDesktop(): boolean {
+function useMediaQuery(query: string): boolean {
   // useSyncExternalStore rather than state-plus-effect: the value is read
   // fresh on every notification, so there is no copy to fall out of step, and
   // no first render that shows the wrong layout before an effect corrects it.
-  return useSyncExternalStore(
-    subscribeToViewport,
-    () => window.matchMedia(DESKTOP_QUERY).matches,
+  const subscribe = useCallback(
+    (onChange: () => void) => subscribeToQuery(query, onChange),
+    [query],
   );
+  const read = useCallback(() => window.matchMedia(query).matches, [query]);
+  return useSyncExternalStore(subscribe, read);
+}
+
+export function useIsDesktop(): boolean {
+  return useMediaQuery(DESKTOP_QUERY);
+}
+
+// Whether a pointing device precise enough to drag a file onto the window
+// exists.
+//
+// `any-pointer` rather than `pointer`: the question is whether such a
+// device is *present*, not whether it is the primary one. A Windows laptop
+// with a touchscreen reports a coarse primary pointer while still having
+// the mouse -- and the Explorer window a drag would come from -- and
+// gating on the primary pointer would take drag and drop away from exactly
+// the machines the desktop app is aimed at.
+//
+// Erring generous costs nothing, which is what makes this the right shape
+// of gate. Nothing is drawn because the query is true; the overlay is
+// raised by a real drag that is really carrying files. So the query only
+// decides whether to attach listeners and offer the affordance at all --
+// on a phone, where a file drag cannot happen, neither should.
+const DRAG_QUERY = "(any-pointer: fine)";
+
+/**
+ * Whether to offer drag and drop.
+ *
+ * The desktop shell is admitted outright rather than through the query:
+ * dropping a file from the OS is the main way anything gets attached in an
+ * installed app, and that must not hinge on how a media query reads on
+ * somebody's convertible. `SHELL` is baked at build time, so this is a
+ * constant, not a sniff -- see api/shell.ts for why the two notions of
+ * shell are kept apart.
+ */
+export function useCanDropFiles(): boolean {
+  const fine = useMediaQuery(DRAG_QUERY);
+  return fine || SHELL === "desktop";
 }

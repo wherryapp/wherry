@@ -7,6 +7,7 @@ import { isTauriShell } from "./api/shell";
 import { startStallDetector } from "./diagnostics";
 import { registerServiceWorker } from "./pwa";
 import { stripReloadMarker } from "./reload";
+import { guardStrayFileDrops } from "./ui/drop-guard";
 import { trackVisualViewport } from "./ui/viewport";
 import { lockPageZoom } from "./ui/zoom";
 
@@ -18,6 +19,12 @@ trackVisualViewport();
 // component effect: the gesture it cancels is available from the first frame,
 // and a lock that attaches after the tree mounts is a lock with a gap in it.
 lockPageZoom();
+
+// And beside that one again: dropping a file anywhere the composer is not
+// listening would otherwise navigate the app away to that file, which in an
+// installed shell means the app is gone until it is restarted. See
+// drop-guard.ts -- it is also what lets the composer receive a drop at all.
+guardStrayFileDrops();
 
 // The update banner's reload navigates to a throwaway parameter to defeat the
 // page cache; this is the other half, putting the address bar back. Safe to
