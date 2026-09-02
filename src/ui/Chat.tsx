@@ -877,6 +877,7 @@ export function Chat({
                     slowmodeSeconds={
                       canModerate ? null : (channelInfo?.slowmodeSeconds ?? null)
                     }
+                    gifsEnabled={features.gifs}
                     reply={replyDraft}
                     onClearReply={() => setReplyDraft(null)}
                     edit={editDraft}

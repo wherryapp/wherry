@@ -840,11 +840,13 @@ export function useFeatures(): {
   hubs: boolean;
   voice: boolean;
   voiceQuality: boolean;
+  gifs: boolean;
 } {
   const [features, setFeatures] = useState({
     hubs: false,
     voice: false,
     voiceQuality: false,
+    gifs: false,
   });
 
   useEffect(() => {
@@ -861,6 +863,7 @@ export function useFeatures(): {
             // Older servers answer no `voice` at all: off, never undefined.
             voice: settings.features.voice === true,
             voiceQuality: settings.features.voiceQuality === true,
+            gifs: settings.features.gifs === true,
           });
         })
         .catch((error: unknown) => {

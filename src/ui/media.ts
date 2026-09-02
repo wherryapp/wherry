@@ -65,13 +65,13 @@ export async function prepareForUpload(
     };
   }
 
-  const reencoded = await reencode(file);
-
   // A GIF re-encoded to JPEG is a still frame, which is not what anybody meant
   // by sending a GIF, so it is left alone -- and animation is exactly why it
-  // might be too large, hence the check.
+  // might be too large, hence the check. Decided before the re-encode rather
+  // than after: this used to re-encode every GIF and then discard the result,
+  // which is a full decode and JPEG pass spent on nothing.
   const keepOriginal = file.type === "image/gif";
-  const chosen = keepOriginal || !reencoded ? null : reencoded;
+  const chosen = keepOriginal ? null : await reencode(file);
 
   if (!chosen) {
     if (file.size > maxBytes) {
@@ -83,6 +83,16 @@ export async function prepareForUpload(
     return {
       bytes: new Uint8Array(await file.arrayBuffer()),
       mediaType: file.type,
+      // Measured even though nothing is being re-encoded, because the
+      // dimensions are not decoration: they are what lets the bubble reserve
+      // the right box before the bytes arrive. Without them the placeholder
+      // is sized against the wrong width and the timeline moves when the real
+      // image lands -- the `aspect-ratio` sharp edge in CLAUDE.md, and one of
+      // the three causes already found behind "a conversation opens
+      // mid-thread". Every GIF ever sent went out without them; that was
+      // survivable while GIFs were rare and is not now that a picker makes
+      // them ordinary.
+      ...((await intrinsicSize(file)) ?? {}),
     };
   }
 
@@ -144,6 +154,36 @@ async function reencode(file: File): Promise<PreparedFile | null> {
       width,
       height,
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pixel size of an image without re-encoding it.
+ *
+ * For an animated GIF this decodes the first frame, which is the size every
+ * frame is. Null on failure, so an unreadable image still sends -- the
+ * dimensions are an optimisation for the placeholder, never a precondition
+ * for the attachment.
+ *
+ * `imageOrientation: "from-image"` to match how an `<img>` will display it:
+ * CSS `image-orientation` defaults to `from-image`, so a photo carrying an
+ * EXIF rotation is shown rotated, with its width and height swapped relative
+ * to the stored pixels. Reporting the unrotated pair here would describe a
+ * box the browser is never going to draw. GIFs carry no orientation, so this
+ * only matters on the fallback path where a re-encode failed.
+ */
+async function intrinsicSize(
+  file: File,
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const bitmap = await createImageBitmap(file, {
+      imageOrientation: "from-image",
+    });
+    const size = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return size;
   } catch {
     return null;
   }

@@ -4,6 +4,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ClipboardEvent,
@@ -24,6 +25,7 @@ import {
 import { type EditDraft, type ReplyDraft } from "./drafts";
 import { ErrorText, IconButton, Note, PlusIcon, SendIcon, XIcon } from "./kit";
 import { useCanDropFiles } from "./viewport";
+import { WidgetBar } from "./widgets/WidgetBar";
 
 type Pending = {
   file: File;
@@ -46,6 +48,7 @@ export function Composer({
   onClearReply,
   edit,
   onClearEdit,
+  gifsEnabled,
 }: {
   conversationId: string;
   /**
@@ -71,6 +74,14 @@ export function Composer({
   /** The edit being composed. The shell keeps this and `reply` exclusive. */
   edit: EditDraft | null;
   onClearEdit: () => void;
+  /**
+   * Whether the GIF widget may be shown, from the shell's own useFeatures.
+   *
+   * A prop rather than a second useFeatures() call in here: that hook
+   * fetches /account/settings on mount, and this component remounts on every
+   * conversation switch. Chat.tsx already holds the answer.
+   */
+  gifsEnabled: boolean;
 }) {
   const [text, setText] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
@@ -97,6 +108,14 @@ export function Composer({
   // a clipboard, and an image on it pastes here like anywhere else.
   const canDrop = useCanDropFiles();
   const editing = edit !== null;
+
+  // Which widgets the bar may show. A Set rather than a boolean per widget
+  // so adding the second one does not change this component's shape --
+  // WidgetBar.tsx owns the list, this owns whether each is allowed.
+  const widgetsAvailable = useMemo(
+    () => new Set(gifsEnabled ? ["gif"] : []),
+    [gifsEnabled],
+  );
 
   // The @-token being typed at the caret, or null. Suggestion picks insert
   // "@Name " and remember name -> id here; at send time only the names still
@@ -603,6 +622,16 @@ export function Composer({
               <PlusIcon />
             </IconButton>
           )}
+          {/* Everything that puts content in a message without typing it.
+              One widget today; the bar is what keeps the second one from
+              being another bespoke button wired in here. Availability is
+              decided here rather than in the bar, because a flag is this
+              file's business and not the bar's. */}
+          <WidgetBar
+            available={widgetsAvailable}
+            onAttach={addFiles}
+            disabled={editing}
+          />
           <textarea
             ref={textarea}
             value={text}

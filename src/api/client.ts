@@ -893,6 +893,12 @@ export type AccountSettings = {
      * hides a picker, and nothing server-side caps an audio bitrate.
      */
     voiceQuality: boolean;
+    /**
+     * The composer's GIF widget. Already ANDed by the server with whether
+     * this deploy has a GIPHY_API_KEY at all, so it is one answer rather
+     * than the two `voice` needs -- true here means the widget will work.
+     */
+    gifs: boolean;
   };
 };
 
@@ -1448,4 +1454,50 @@ export function moderateVoice(input: {
   return input.action === "mute"
     ? request<void>(`${base}/mute/${input.userId}`, { method: "POST" })
     : request<void>(`${base}/participants/${input.userId}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// GIFs
+// ---------------------------------------------------------------------------
+
+/**
+ * One size of one GIF. `url` points at the library's own CDN and is fetched
+ * by this device directly -- see the note on searchGifs.
+ */
+export type GifRendition = {
+  url: string;
+  width: number;
+  height: number;
+  byteSize: number;
+};
+
+export type Gif = {
+  id: string;
+  title: string;
+  /** Small, for the picker grid. */
+  preview: GifRendition;
+  /** Downloaded, sealed and uploaded as an attachment when picked. */
+  full: GifRendition;
+};
+
+/**
+ * Searches the GIF library through our own server.
+ *
+ * The search text goes to our server and on to the library from there; the
+ * API key never reaches this device. The thumbnails in the results, though,
+ * are fetched from the library's CDN by this browser, so opening the picker
+ * does show that CDN this device's address. That is disclosed in
+ * docs/data-inventory.md and is the reason the picker is a deliberate tap
+ * rather than something the composer opens on its own.
+ *
+ * None of that reaches the people a GIF is sent TO: a picked GIF is
+ * downloaded once, here, and sent as an ordinary sealed attachment.
+ */
+export function searchGifs(query: string, signal?: AbortSignal): Promise<{ results: Gif[] }> {
+  const path = `${API}/gifs/search?q=${encodeURIComponent(query)}`;
+  return request<{ results: Gif[] }>(path, signal ? { signal } : {});
+}
+
+export function fetchTrendingGifs(signal?: AbortSignal): Promise<{ results: Gif[] }> {
+  return request<{ results: Gif[] }>(`${API}/gifs/trending`, signal ? { signal } : {});
 }

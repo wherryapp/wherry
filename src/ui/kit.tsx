@@ -406,6 +406,30 @@ export function PinIcon({ className }: IconProps) {
   );
 }
 
+export function GifIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      {/* The letters, not a film strip or a play triangle: "GIF" is what the
+          control is called out loud, and at 20px a wordmark reads where a
+          pictogram of an animation does not. */}
+      <rect x="2" y="4.5" width="16" height="11" rx="2" />
+      <path d="M8 8.5a1.5 1.5 0 0 0-2.5 1.1v.8A1.5 1.5 0 0 0 8 11.5v-1H7" />
+      <path d="M10.5 8.5v3" />
+      <path d="M13 11.5v-3h2" />
+      <path d="M13 10.2h1.5" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Buttons
 // ---------------------------------------------------------------------------
