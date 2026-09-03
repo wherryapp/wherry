@@ -17,6 +17,7 @@ import {
   setStatus as postStatus,
   setStatusText as postStatusText,
 } from "../api/client";
+import { loadSession, markAvatarKey } from "../api/session";
 import type { UserStatus } from "../api/types";
 
 export type SelfStatus = {
@@ -78,6 +79,15 @@ function publish(next: SelfStatus): void {
   for (const listener of listeners) listener();
 }
 
+/** Keeps the session snapshot's `avatarKey` honest. A no-op when it already
+ *  agrees, which is every refresh but the one after a change. */
+function syncSessionAvatar(avatarKey: string | null): void {
+  const session = loadSession();
+  if (!session) return;
+  if ((session.user.avatarKey ?? null) === avatarKey) return;
+  markAvatarKey(session, avatarKey);
+}
+
 export const selfStatus = {
   current(): SelfStatus {
     return current;
@@ -107,6 +117,14 @@ export const selfStatus = {
     inflight = (async () => {
       try {
         const settings = await fetchAccountSettings();
+        // The profile picture rides along, because this read is what an
+        // `account` frame triggers and the picture is one of the things
+        // another device may have just changed. The header avatar draws
+        // from the stored session snapshot rather than from settings, so
+        // the snapshot is what has to move -- without this, choosing a
+        // picture on the laptop leaves the phone showing initials until it
+        // is reloaded, even though the frame arrived.
+        syncSessionAvatar(settings.avatarKey ?? null);
         publish({
           ...current,
           status: settings.status ?? "online",
