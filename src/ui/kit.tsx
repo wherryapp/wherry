@@ -27,6 +27,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import { useBackLayer } from "./back";
 import { useIsDesktop } from "./viewport";
 
 function cx(...parts: (string | false | null | undefined)[]): string {
@@ -936,6 +937,11 @@ export function Panel({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // A panel replaces the screen, so Android's back gesture should back out
+  // of it rather than out of the app. Mounted means open here -- every
+  // caller renders the panel conditionally.
+  useBackLayer(true, onClose);
+
   return (
     // Entrance only; the unmount model has no exit frame to animate, and a
     // mount-state helper to fake one is machinery the plan defers until an
@@ -1063,6 +1069,10 @@ export function Popover({
     document.addEventListener("keydown", onKey, { capture: true });
     return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, [onClose]);
+
+  // Back dismisses the card rather than the app, which on a phone -- where
+  // this is a bottom sheet -- is the gesture people reach for first.
+  useBackLayer(true, onClose);
 
   // Placement from the anchor's live rectangle, re-read on resize. Below
   // the anchor, its right edge aligned to the anchor's when the anchor is
@@ -1400,6 +1410,9 @@ export function useConfirm(): {
       document.removeEventListener("keydown", onKey, { capture: true });
   }, [pending, settle]);
 
+  // Back cancels, the same answer as Escape and the backdrop.
+  useBackLayer(pending !== null, () => settle(false));
+
   const confirmDialog = pending ? (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -1493,6 +1506,8 @@ export function usePrompt(): {
     return () =>
       document.removeEventListener("keydown", onKey, { capture: true });
   }, [pending, settle]);
+
+  useBackLayer(pending !== null, () => settle(null));
 
   const promptDialog = pending ? (
     <div

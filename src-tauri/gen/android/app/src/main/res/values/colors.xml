@@ -7,4 +7,9 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- The app's own page background, so the strips left by the window
+         insets (status bar, navigation bar) match what the page paints
+         rather than framing it in a different colour. Keep in step with
+         index.css's #root background and its dark-mode override. -->
+    <color name="app_background">#FFFFFFFF</color>
 </resources>

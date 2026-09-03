@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- HAND EDIT. Without it the webview's network-change notifier has
+         nothing to observe: `navigator.onLine` is stuck at true and the
+         `online`/`offline` events never fire, which is exactly what the
+         2026-09-03 reconnect work listens for (client/src/sync/socket.ts).
+         Measured on Android 16 / WebView 133: airplane mode on, wifi and
+         mobile data both off, and the page still reported itself online
+         with no event. A normal permission, so no runtime prompt and
+         nothing to grant. See docs/prompts/regen-hand-edits.md.
+         (No double hyphen anywhere in here: XML forbids it inside a
+         comment, and the manifest merger fails with nothing but
+         "Error parsing AndroidManifest.xml" to say why.) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Voice (docs/prompts/voice-plan.md §8). wry's WebChromeClient asks
          for these at runtime when the page calls getUserMedia and grants
          the page on success; without the declarations the runtime ask

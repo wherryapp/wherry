@@ -15,7 +15,7 @@ import { startRing } from "../../voice/sounds";
 import { useVoicePrefs } from "../../voice/hooks";
 import { useSelfStatus } from "../hooks";
 import { voice } from "../../voice/session";
-import { notifyDesktopCall } from "../../sync/desktop-notify";
+import { notifyDesktopCall, windowIsFocused } from "../../sync/desktop-notify";
 
 export function IncomingCall({
   ring,
@@ -52,7 +52,7 @@ export function IncomingCall({
   // The desktop shell has no push: a ring that lands while the window is
   // in the background gets the plugin's notification instead.
   useEffect(() => {
-    if (document.hasFocus()) return;
+    if (windowIsFocused()) return;
     void notifyDesktopCall(callerName);
   }, [ring.callId, callerName]);
 

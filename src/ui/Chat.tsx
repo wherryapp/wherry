@@ -20,6 +20,7 @@ import { Composer } from "./Composer";
 import { type EditDraft, type ReplyDraft } from "./drafts";
 import { avatarHue, avatarKey, avatarSeed, conversationTitle } from "./format";
 import { classLabel, isServerReadable } from "./hub-class";
+import { useBackLayer } from "./back";
 import { useIsDesktop } from "./viewport";
 import { ConversationList } from "./sidebar/Sidebar";
 import {
@@ -425,6 +426,12 @@ export function Chat({
     pinsFor,
     voiceState.phase,
   ]);
+
+  // Back leaves the thread for the list, which is the Escape rule above in
+  // the gesture Android people actually use -- and, being the bottom layer,
+  // the one that hands the app back to the system once the list is showing.
+  // Desktop shows both panes, so there is nothing to back out of.
+  useBackLayer(!isDesktop && selected !== null, () => setSelected(null));
 
   // Only when a thread is actually on screen. On a phone that is the same
   // thing as being selected; on desktop both panes are visible at once.

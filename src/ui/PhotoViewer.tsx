@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import type { AttachmentRef } from "../api/payload";
 import { store } from "../store";
+import { useBackLayer } from "./back";
 import { DownloadIcon, XIcon } from "./kit";
 import {
   RESET,
@@ -192,6 +193,12 @@ export function PhotoViewer({
     return () =>
       document.removeEventListener("keydown", onKey, { capture: true });
   }, []);
+
+  // Android's back gesture is the fourth way out, beside the close button,
+  // the backdrop and the swipe -- and the one somebody arriving from any
+  // other app will try first. `close` is read through the ref that already
+  // exists here for the same reason the hook keeps its own.
+  useBackLayer(true, () => close.current());
 
   // -------------------------------------------------------------------------
   // The gesture

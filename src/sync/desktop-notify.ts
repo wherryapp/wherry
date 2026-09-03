@@ -18,6 +18,30 @@ import { isTauriShell } from "../api/shell";
 
 export { isTauriShell };
 
+/**
+ * Whether the app window is actually in front of the person.
+ *
+ * This is the input `shouldNotify` calls `windowFocused`, and the reason a
+ * notification is suppressed while somebody is already looking at the app.
+ *
+ * `document.hasFocus()` alone is not that question on Android. A
+ * backgrounded Tauri shell there reports `hasFocus() === true` while
+ * `visibilityState` is "hidden" -- measured on Android 16 / WebView 133,
+ * 2026-09-03, with a message that arrived, landed in the timeline, and
+ * posted no notification because the window claimed to be focused. The
+ * shell had therefore never shown one at all.
+ *
+ * Both halves have to agree, and on every other platform they do: a
+ * minimized or occluded desktop window is hidden or unfocused, and a
+ * visible-but-unfocused one still notifies, which is the case the focused
+ * rule was written for. So this only ever adds notifications, in the one
+ * state that should not exist.
+ */
+export function windowIsFocused(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.hasFocus() && document.visibilityState === "visible";
+}
+
 // The permission answer is sticky per process: asked at most once, and only
 // at the moment a notification is actually deserved -- an app requesting
 // notification rights before it has ever received a message is the pattern

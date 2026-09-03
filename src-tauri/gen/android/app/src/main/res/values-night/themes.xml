@@ -1,6 +1,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Theme.wherry_desktop" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- The window background shows through the status-bar and
+             navigation-bar strips that MainActivity's inset padding
+             leaves; app_background makes them the page's own colour. -->
+        <item name="android:windowBackground">@color/app_background</item>
     </style>
 </resources>

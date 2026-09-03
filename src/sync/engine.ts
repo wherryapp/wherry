@@ -43,7 +43,7 @@ import { decodeBase64, encodeBase64 } from "../api/base64";
 import { currentToken, loadSession } from "../api/session";
 import { decodeContent, isMessageOp } from "../api/payload";
 import { belowFloor } from "../api/version-floor";
-import { isTauriShell, notifyDesktop } from "./desktop-notify";
+import { isTauriShell, notifyDesktop, windowIsFocused } from "./desktop-notify";
 import { shouldNotify } from "./notify-rules";
 import { selfStatus } from "./self-status";
 import type { ArchiveEntry, HubSummary, InboxEnvelope } from "../api/types";
@@ -1456,7 +1456,7 @@ export class SyncEngine {
 
     try {
       // Sampled once for the batch; a focus change mid-batch is noise.
-      const focused = document.hasFocus();
+      const focused = windowIsFocused();
 
       // conversationId -> the newest eligible sender in this batch.
       const eligible = new Map<string, string>();

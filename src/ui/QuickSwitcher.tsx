@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import type { HubSummary } from "../api/types";
 import type { StoredConversation } from "../store/types";
 import { avatarKey as dmAvatarKey, avatarSeed, conversationTitle } from "./format";
+import { useBackLayer } from "./back";
 import { Input } from "./kit";
 import { StatusDot } from "./StatusDot";
 import { UserAvatar } from "./UserAvatar";
@@ -46,6 +47,9 @@ export function QuickSwitcher({
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+
+  // Back dismisses the switcher, as Escape does.
+  useBackLayer(true, onClose);
 
   // The sidebar's own bulk presence, asked again for as long as this dialog
   // is open. Its first ask is staggered two seconds past mount (see the

@@ -36,6 +36,22 @@ process.env.VITE_APP_VERSION = buildVersion();
 export default defineConfig({
   plugins: [react(), tailwindcss()],
 
+  // ts-mls reaches for @noble/curves only when a WebCrypto algorithm is
+  // missing (patches/ts-mls@1.6.4.patch: Safari has no X25519, the Android
+  // System WebView no Ed25519), and it does it with a dynamic import. Vite's
+  // dependency optimizer cannot produce an entry for that specifier -- the
+  // dev server answers the import with "the file does not exist ... in the
+  // optimize deps directory" and ts-mls reports it as the package not being
+  // installed, which is the opposite of true. Excluding it hands the browser
+  // the package's own ESM, which resolves.
+  //
+  // Dev only: `vite build` bundles the import and never consults this. It
+  // matters for Android above all, because that is the platform that takes
+  // the fallback on every single MLS operation.
+  optimizeDeps: {
+    exclude: ["@noble/curves"],
+  },
+
   server: {
     // One rule, because the whole API lives under /api.
     //

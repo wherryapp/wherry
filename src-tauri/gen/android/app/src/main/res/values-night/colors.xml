@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- neutral-900, the dark half of index.css's #root background. -->
+    <color name="app_background">#FF171717</color>
+</resources>
