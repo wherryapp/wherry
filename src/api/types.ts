@@ -24,6 +24,44 @@ export type PublicUser = {
   avatarHue: number | null;
 };
 
+/**
+ * The manual presence status (`users.status`, migration 0024): what a person
+ * chooses to appear as, on top of whether a socket is open. Account-wide.
+ * `invisible` is "appear offline" -- the server omits them from every
+ * presence answer, so no client ever sees it as somebody else's status.
+ */
+export type UserStatus = "online" | "away" | "dnd" | "invisible";
+
+/** What a presence answer or a profile may say about somebody else: never
+ *  `invisible` (the server does not disclose it), `offline` only on a
+ *  profile (a presence frame lists the online). */
+export type VisibleStatus = "online" | "away" | "dnd";
+
+/** How the viewer stands with a person, from the viewer's own friendship
+ *  row. `blocked` is a block the viewer placed; a block by the other side
+ *  makes the profile 404 like lookup does. */
+export type Relationship =
+  | "self"
+  | "friend"
+  | "incoming"
+  | "outgoing"
+  | "blocked"
+  | "none";
+
+/** `GET /users/:id/profile`. `presence` is null when not disclosed (the
+ *  viewer is not a friend), which the card renders as no line at all. */
+export type UserProfile = {
+  user: PublicUser;
+  relationship: Relationship;
+  since: string | null;
+  presence: VisibleStatus | "offline" | null;
+  /** The status message -- friends and self only, null otherwise (and
+   *  once a timed status lapsed). Optional: an older server omits it. */
+  statusText?: string | null;
+  /** The bio, to anyone who can open the card. Optional for the same reason. */
+  bio?: string | null;
+};
+
 export type PublicDevice = {
   id: string;
   displayName: string;

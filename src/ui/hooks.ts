@@ -13,7 +13,7 @@ import { DEFAULT_FILE_POLICY, type FilePolicy } from "./file-policy";
 import { ApiError, fetchAccountSettings, type Announcement,
   fetchAttachmentUsage,
 } from "../api/client";
-import type { HubSummary } from "../api/types";
+import type { HubSummary, VisibleStatus } from "../api/types";
 import {
   decodeContent,
   isMessageOp,
@@ -33,6 +33,7 @@ import {
   type StoredMessage,
 } from "../store/types";
 import { sync, type SyncEvent, type SyncStatus } from "../sync/engine";
+import { selfStatus, type SelfStatus } from "../sync/self-status";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 
 /**
@@ -74,7 +75,10 @@ export function useSyncEvents(handler: (event: SyncEvent) => void): void {
           type: "presence",
           conversationId: message.conversationId,
           online: message.online,
+          statuses: message.statuses ?? {},
         });
+      } else if (message.type === "account") {
+        ref.current({ type: "account" });
       } else if (message.type === "call_ring") {
         ref.current({
           type: "call_ring",
@@ -675,8 +679,16 @@ export function useTyping(conversationId: string | null): string[] {
  *  snapshot, not a subscription, so staleness between asks is the deal. */
 const PRESENCE_REFRESH_MS = 60_000;
 
+/** One presence answer: who is online, and -- for friends only, per the
+ *  server's rule -- as what. `ui/status.ts`'s presenceStatusOf reads the
+ *  map; a user in `online` with no entry is plain online. */
+export type PresenceSnapshot = {
+  online: readonly string[];
+  statuses: Readonly<Record<string, VisibleStatus>>;
+};
+
 /**
- * Which other members of a conversation are connected, as user ids -- or
+ * Which other members of a conversation are connected, and as what -- or
  * null while no answer has arrived, which means "unknown", never "nobody".
  *
  * Asks on mount and on a slow interval. The interval is a request for
@@ -684,11 +696,11 @@ const PRESENCE_REFRESH_MS = 60_000;
  * "components never poll the API" rule guards IndexedDB-backed data, and
  * presence deliberately has no stored form to poll for.
  */
-export function usePresence(conversationId: string | null): string[] | null {
-  const [online, setOnline] = useState<string[] | null>(null);
+export function usePresence(conversationId: string | null): PresenceSnapshot | null {
+  const [snapshot, setSnapshot] = useState<PresenceSnapshot | null>(null);
 
   useEffect(() => {
-    setOnline(null);
+    setSnapshot(null);
     if (conversationId === null) return;
     sync.requestPresence(conversationId);
     const timer = setInterval(
@@ -704,11 +716,11 @@ export function usePresence(conversationId: string | null): string[] | null {
       conversationId !== null &&
       event.conversationId === conversationId
     ) {
-      setOnline(event.online);
+      setSnapshot({ online: event.online, statuses: event.statuses ?? {} });
     }
   });
 
-  return online;
+  return snapshot;
 }
 
 /** The sidebar's first ask waits this long after mount, so it does not
@@ -734,8 +746,8 @@ const PRESENCE_BULK_STAGGER_MS = 2_000;
  */
 export function useSidebarPresence(
   conversationIds: readonly string[],
-): ReadonlyMap<string, readonly string[]> {
-  const [online, setOnline] = useState<ReadonlyMap<string, readonly string[]>>(
+): ReadonlyMap<string, PresenceSnapshot> {
+  const [online, setOnline] = useState<ReadonlyMap<string, PresenceSnapshot>>(
     () => new Map(),
   );
 
@@ -759,7 +771,10 @@ export function useSidebarPresence(
     if (event.type !== "presence") return;
     setOnline((previous) => {
       const next = new Map(previous);
-      next.set(event.conversationId, event.online);
+      next.set(event.conversationId, {
+        online: event.online,
+        statuses: event.statuses ?? {},
+      });
       return next;
     });
   });
@@ -1010,4 +1025,27 @@ export function useFilePolicy(): FilePolicy {
   }, []);
 
   return policy;
+}
+
+/**
+ * This account's own status -- the header dot, the menu's checked row, and
+ * the reason a ring is silent. A view over sync/self-status.ts: loaded once
+ * when the first subscriber mounts, refreshed whenever the server says the
+ * account changed (another device set it), and flipped locally at a timed
+ * status's expiry.
+ */
+export function useSelfStatus(): SelfStatus {
+  const [value, setValue] = useState<SelfStatus>(() => selfStatus.current());
+
+  useEffect(() => {
+    const unsubscribe = selfStatus.subscribe(() => setValue(selfStatus.current()));
+    if (!selfStatus.current().loaded) void selfStatus.refresh();
+    return unsubscribe;
+  }, []);
+
+  useSyncEvents((event) => {
+    if (event.type === "account") void selfStatus.refresh();
+  });
+
+  return value;
 }

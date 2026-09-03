@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Settings } from "./Settings";
+import { ProfileCard } from "./ProfileCard";
+import { SelfMenu, SelfStatusDot } from "./SelfMenu";
+import { closeProfile, openProfile, useProfileRequest } from "./profile";
 import { Friends } from "./Friends";
 import { Compose } from "./Compose";
 import { HubDetails } from "./HubDetails";
@@ -334,6 +337,13 @@ export function Chat({
   // announcements flag is off, so the dot is dark exactly when the feature is.
   const { unread: unreadAnnouncements } = useAnnouncements();
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  // The account menu behind the header avatar, and the profile card any
+  // surface may ask for (ui/profile.ts). Both are Popovers -- layers over
+  // the current screen rather than screens -- so they are rendered on top
+  // of whichever panel is showing, the early returns below included.
+  // The anchor is captured from the click, not read from a ref during render.
+  const [selfMenu, setSelfMenu] = useState<{ anchor: HTMLElement } | null>(null);
+  const profileRequest = useProfileRequest();
 
   // The browser tab carries the total unread, the way every messenger's tab
   // does. Muted conversations are excluded -- for the count, mute means what
@@ -556,6 +566,51 @@ export function Chat({
   const showList = isDesktop || selected === null;
   const showThread = isDesktop || selected !== null;
 
+  const overlays = (
+    <>
+      {profileRequest && (
+        <ProfileCard
+          request={profileRequest}
+          session={session}
+          onClose={closeProfile}
+          onOpenConversation={(id) => {
+            closeProfile();
+            // Whatever panel the card was opened over, the conversation is
+            // the destination now.
+            setFriendsOpen(false);
+            setGroupDetailsOpen(false);
+            setHubDetailsFor(null);
+            setComposeOpen(false);
+            setSelected(id);
+          }}
+          onOpenSettings={() => {
+            closeProfile();
+            setSettingsOpen(true);
+          }}
+        />
+      )}
+      {selfMenu && (
+        <SelfMenu
+          anchor={selfMenu.anchor}
+          session={session}
+          unreadAnnouncements={unreadAnnouncements}
+          onClose={() => setSelfMenu(null)}
+          onOpenSettings={() => {
+            setSelfMenu(null);
+            setSettingsOpen(true);
+          }}
+          onSignOut={onSignOut}
+        />
+      )}
+    </>
+  );
+  const withOverlays = (screen: ReactNode) => (
+    <>
+      {screen}
+      {overlays}
+    </>
+  );
+
   if (inviteToken) {
     return (
       <JoinInvite
@@ -569,7 +624,7 @@ export function Chat({
   }
 
   if (pinsFor !== null && current?.hubId) {
-    return (
+    return withOverlays(
       <PinsPanel
         hubId={current.hubId}
         conversationId={pinsFor}
@@ -591,7 +646,7 @@ export function Chat({
   }
 
   if (composeOpen) {
-    return (
+    return withOverlays(
       <Compose
         session={session}
         canCreateHubs={features.hubs}
@@ -605,7 +660,7 @@ export function Chat({
   }
 
   if (friendsOpen) {
-    return (
+    return withOverlays(
       <Friends
         onClose={() => setFriendsOpen(false)}
         onOpenConversation={(id) => {
@@ -617,7 +672,7 @@ export function Chat({
   }
 
   if (settingsOpen) {
-    return (
+    return withOverlays(
       <Settings
         session={session}
         onClose={() => setSettingsOpen(false)}
@@ -629,7 +684,7 @@ export function Chat({
   }
 
   if (groupDetailsOpen && current) {
-    return (
+    return withOverlays(
       <GroupDetails
         conversation={current}
         selfUserId={session.user.id}
@@ -639,7 +694,7 @@ export function Chat({
   }
 
   if (hubDetailsFor !== null) {
-    return (
+    return withOverlays(
       <HubDetails
         hubId={hubDetailsFor}
         selfUserId={session.user.id}
@@ -686,23 +741,34 @@ export function Chat({
             <IconButton label="Friends" onClick={() => setFriendsOpen(true)}>
               <UsersIcon />
             </IconButton>
+            {/* The account menu (SelfMenu), not Settings directly: the
+                frequent acts -- see and set your status, get to Settings --
+                are a layer, and the settings page is behind one more tap.
+                Your own status dot sits bottom-right, the announcement dot
+                top-right, so the two never share a corner. */}
             <button
-              onClick={() => setSettingsOpen(true)}
+              onClick={(event) => setSelfMenu({ anchor: event.currentTarget })}
               aria-label={
                 unreadAnnouncements > 0
-                  ? `Settings — ${unreadAnnouncements} unread ${
+                  ? `Account — ${unreadAnnouncements} unread ${
                       unreadAnnouncements === 1 ? "announcement" : "announcements"
                     }`
-                  : "Settings"
+                  : "Account"
               }
+              aria-haspopup="dialog"
+              aria-expanded={selfMenu !== null}
               className="relative rounded-full p-1 transition-opacity hover:opacity-80"
             >
-              <Avatar
-                size="sm"
-                name={session.user.displayName}
-                userId={session.user.id}
-                hue={session.user.avatarHue}
-              />
+              <span className="relative block">
+                <SelfStatusDot>
+                  <Avatar
+                    size="sm"
+                    name={session.user.displayName}
+                    userId={session.user.id}
+                    hue={session.user.avatarHue}
+                  />
+                </SelfStatusDot>
+              </span>
               {unreadAnnouncements > 0 && (
                 <span className="absolute right-0 top-0 block h-2.5 w-2.5 rounded-full border-2 border-white bg-accent-600 dark:border-neutral-900" />
               )}
@@ -739,14 +805,45 @@ export function Chat({
                       label="Back to conversations"
                     />
                   )}
-                  {current && (
-                    <Avatar
-                      size="sm"
-                      name={conversationTitle(current, session.user.id)}
-                      userId={avatarSeed(current, session.user.id)}
-                      hue={avatarHue(current, session.user.id)}
-                    />
-                  )}
+                  {current && (() => {
+                    // In a 1:1 the header avatar IS the other person, so it
+                    // opens their card. A group's avatar stays inert -- its
+                    // details are behind the Details button.
+                    const other =
+                      current.kind !== "channel" && current.members.length === 2
+                        ? current.members.find((member) => member.userId !== session.user.id)
+                        : undefined;
+                    const avatar = (
+                      <Avatar
+                        size="sm"
+                        name={conversationTitle(current, session.user.id)}
+                        userId={avatarSeed(current, session.user.id)}
+                        hue={avatarHue(current, session.user.id)}
+                      />
+                    );
+                    return other ? (
+                      <button
+                        type="button"
+                        aria-label={`View ${other.displayName || other.username}'s profile`}
+                        onClick={(event) =>
+                          openProfile({
+                            userId: other.userId,
+                            anchor: event.currentTarget,
+                            hint: {
+                              displayName: other.displayName || other.username,
+                              username: other.username,
+                              avatarHue: other.avatarHue,
+                            },
+                          })
+                        }
+                        className="shrink-0 rounded-full transition-opacity hover:opacity-80"
+                      >
+                        {avatar}
+                      </button>
+                    ) : (
+                      avatar
+                    );
+                  })()}
                   <span className="min-w-0 flex-1 truncate">
                     <span className="flex items-center gap-1.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">
                       <span className="min-w-0 truncate">
@@ -914,6 +1011,7 @@ export function Chat({
           onClose={() => setSwitcherOpen(false)}
         />
       )}
+      {overlays}
     </div>
   );
 }

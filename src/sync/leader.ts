@@ -238,7 +238,15 @@ export type SyncBroadcast =
   | { type: "receipts"; conversationId: string }
   /** Ephemeral relays between tabs: what the leader's socket heard... */
   | { type: "typing"; conversationId: string; byUserId: string }
-  | { type: "presence"; conversationId: string; online: string[] }
+  | {
+      type: "presence";
+      conversationId: string;
+      online: string[];
+      statuses?: Record<string, "online" | "away" | "dnd">;
+    }
+  /** The server's contentless "your account changed" frame -- the leader
+   *  relays it so every tab refetches its own status (sync/self-status.ts). */
+  | { type: "account" }
   // Voice frames, relayed by the leader (which holds the socket) to the
   // follower tabs, same as typing and presence.
   | { type: "call_ring"; callId: string; conversationId: string; byUserId: string }

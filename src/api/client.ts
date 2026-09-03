@@ -42,6 +42,8 @@ import type {
   PasswordWrapWire,
   PublicDevice,
   PublicUser,
+  UserProfile,
+  UserStatus,
   RecipientsResponse,
   SendResult,
   WelcomeEntry,
@@ -945,6 +947,15 @@ export type AccountSettings = {
   readReceiptsEnabled: boolean;
   email: string | null;
   emailVerified: boolean;
+  /** The manual status as it stands now (a lapsed timed one reads online).
+   *  Optional because a server predating migration 0024 answers without it;
+   *  read undefined as "online". */
+  status?: UserStatus;
+  /** When a timed status lapses, ISO; null for until-changed. */
+  statusExpiresAt?: string | null;
+  /** The status message (migration 0025); null once a timed status lapsed. */
+  statusText?: string | null;
+  bio?: string | null;
   /**
    * Server-side feature flags (server/src/services/flags.ts), fetched fresh
    * every time Settings opens rather than cached -- toggling one takes
@@ -985,6 +996,41 @@ export type AccountDevice = {
 
 export function fetchAccountSettings(): Promise<AccountSettings> {
   return request<AccountSettings>(`${API}/account/settings`);
+}
+
+/**
+ * Sets the manual status, account-wide. `durationSeconds` null is until
+ * changed; the server answers with the expiry it computed so every device
+ * shows the same "Until 14:30". Ignored for `online`, which has nothing to
+ * lapse to.
+ */
+export function setStatus(
+  status: UserStatus,
+  durationSeconds: number | null,
+): Promise<{ status: UserStatus; statusExpiresAt: string | null }> {
+  return request(`${API}/account/status`, {
+    method: "POST",
+    body: { status, durationSeconds },
+  });
+}
+
+/** The status message beside the status: up to 80 characters, friends-
+ *  only, lapsing with a timed status. Null or blank clears it. */
+export function setStatusText(text: string | null): Promise<{ statusText: string | null }> {
+  return request(`${API}/account/status-text`, { method: "POST", body: { text } });
+}
+
+/** The bio: up to 160 characters, shown to anyone who can open the card.
+ *  Null or blank clears it. */
+export function changeBio(bio: string | null): Promise<{ bio: string | null }> {
+  return request(`${API}/account/bio`, { method: "POST", body: { bio } });
+}
+
+/** Another person's profile, as this account may see it -- 404
+ *  `UNKNOWN_USER` for no such account or one that blocked the caller, the
+ *  same two cases lookup conflates for the same reason. */
+export function fetchProfile(userId: string): Promise<UserProfile> {
+  return request<UserProfile>(`${API}/users/${userId}/profile`);
 }
 
 // ---------------------------------------------------------------------------

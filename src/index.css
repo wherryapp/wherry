@@ -38,6 +38,11 @@
   --animate-message-in: message-in 0.18s ease-out;
   --animate-panel-in: panel-in 0.16s ease-out;
   --animate-fade-in: fade-in 0.15s ease-out;
+  /* The two shapes a Popover takes (kit.tsx): a card settling in under its
+     anchor on a desktop, and a sheet rising from the bottom edge on a phone.
+     Same discipline as the three above -- short, behind motion-safe. */
+  --animate-pop-in: pop-in 0.14s ease-out;
+  --animate-sheet-in: sheet-in 0.2s ease-out;
 
   @keyframes message-in {
     from {
@@ -65,6 +70,24 @@
     }
     to {
       opacity: 1;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes sheet-in {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: none;
     }
   }
 }

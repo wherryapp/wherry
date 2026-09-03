@@ -149,6 +149,7 @@ test("shouldRingAudibly: muted conversations and the ringtone switch silence, fo
   assert.equal(shouldRingAudibly({ conversationMuted: false, ringtoneEnabled: true }), true);
   assert.equal(shouldRingAudibly({ conversationMuted: true, ringtoneEnabled: true }), false);
   assert.equal(shouldRingAudibly({ conversationMuted: false, ringtoneEnabled: false }), false);
+  assert.equal(shouldRingAudibly({ conversationMuted: false, ringtoneEnabled: true, dnd: true }), false);
 });
 
 test("shouldJoinMuted: calls never; rooms follow the preference, Automatic follows the server", () => {

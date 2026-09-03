@@ -11,7 +11,16 @@ const eligible: NotifyCandidate = {
   muted: false,
   publicChannel: false,
   mentionsSelf: false,
+  dnd: false,
 };
+
+test("do-not-disturb silences everything, mentions included", () => {
+  assert.equal(shouldNotify({ ...eligible, dnd: true }), false);
+  assert.equal(
+    shouldNotify({ ...eligible, dnd: true, publicChannel: true, mentionsSelf: true }),
+    false,
+  );
+});
 
 test("an unfocused window with a fresh renderable message notifies", () => {
   assert.equal(shouldNotify(eligible), true);

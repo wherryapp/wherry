@@ -9,6 +9,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   ApiError,
   changeAvatarColor,
+  changeBio,
   changeDisplayName,
   fetchAccountSettings,
   fetchAttachmentUsage,
@@ -171,6 +172,7 @@ export function Settings({
   onSignedOut: () => void;
 }) {
   const [displayName, setDisplayName] = useState(session.user.displayName);
+  const [bio, setBio] = useState("");
   // ?? null because a session stored before the field existed has undefined.
   const [hue, setHue] = useState<number | null>(session.user.avatarHue ?? null);
   const [receipts, setReceipts] = useState<boolean | null>(null);
@@ -211,6 +213,7 @@ export function Settings({
           fetchAttachmentUsage(),
         ]);
         setDisplayName(settings.displayName);
+        setBio(settings.bio ?? "");
         setHue(settings.avatarHue ?? null);
         setReceipts(settings.readReceiptsEnabled);
         setEmailAddress(settings.email ?? "");
@@ -228,6 +231,18 @@ export function Settings({
   function report(caught: unknown, fallback: string): void {
     setNote(null);
     setError(caught instanceof ApiError ? caught.message : fallback);
+  }
+
+  async function submitBio(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    try {
+      const result = await changeBio(bio.trim() || null);
+      setBio(result.bio ?? "");
+      setNote(result.bio ? "Saved." : "Bio cleared.");
+    } catch (caught) {
+      report(caught, "Could not save that.");
+    }
   }
 
   async function submitName(event: FormEvent) {
@@ -352,6 +367,23 @@ export function Settings({
               size="sm"
               disabled={displayName.trim().length === 0}
             >
+              Save
+            </Button>
+          </form>
+        </PanelSection>
+
+        <PanelSection
+          title="About"
+          description="A line on your profile card, shown to anyone who can open it. Plain text the server can read, like your name."
+        >
+          <form onSubmit={submitBio} className="flex gap-2">
+            <Input
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              maxLength={160}
+              placeholder="Something about you"
+            />
+            <Button type="submit" size="sm">
               Save
             </Button>
           </form>

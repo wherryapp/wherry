@@ -45,6 +45,7 @@ import { decodeContent, isMessageOp } from "../api/payload";
 import { belowFloor } from "../api/version-floor";
 import { isTauriShell, notifyDesktop } from "./desktop-notify";
 import { shouldNotify } from "./notify-rules";
+import { selfStatus } from "./self-status";
 import type { ArchiveEntry, HubSummary, InboxEnvelope } from "../api/types";
 import { e2e, E2EError } from "../crypto";
 import { PROTOCOL_PUBLIC } from "../crypto/provider";
@@ -225,7 +226,23 @@ export type SyncEvent =
    *  receiver's clock. Components hold these in their own state; there is
    *  deliberately nothing to re-read from IndexedDB. */
   | { type: "typing"; conversationId: string; byUserId: string }
-  | { type: "presence"; conversationId: string; online: string[] }
+  | {
+      type: "presence";
+      conversationId: string;
+      online: string[];
+      /** The chosen status of those in `online` this account is a friend
+       *  of; absent for everyone else (plain online), and absent entirely
+       *  from an older server's frame. `ui/status.ts`'s presenceStatusOf
+       *  is the one reader. */
+      statuses?: Record<string, "online" | "away" | "dnd">;
+    }
+  /** Something about this account changed server-side (its status, from
+   *  another device). Nothing stored; sync/self-status.ts refetches. */
+  | { type: "account" }
+  /** The leader's socket just authenticated (a first connect or a
+   *  reconnect). This tab only, never relayed: sync/idle.ts re-sends its
+   *  idle report, because the flag died with the old socket. */
+  | { type: "socket_ready" }
   /** Voice (docs/prompts/voice-plan.md §5.5): a ring, a call's roster
    *  snapshot, a voice channel's occupancy. Ephemeral like typing and
    *  presence -- nothing stored; voice/ holds the state and self-heals
@@ -664,6 +681,22 @@ export class SyncEngine {
   }
 
   /**
+   * Reports this device idle or active -- sync/idle.ts's transitions only.
+   * Only the leader holds a socket, so a follower's call reports false and
+   * is nothing lost: every tab measures the same shared activity clock and
+   * the leader's report is the one the server needs.
+   */
+  sendActivity(idle: boolean): boolean {
+    return this.#socket?.send(JSON.stringify({ type: "activity", idle })) ?? false;
+  }
+
+  /** Whether this tab's socket is open and authenticated -- false in a
+   *  follower tab, which holds none. */
+  socketHealthy(): boolean {
+    return this.#socket?.isHealthy() ?? false;
+  }
+
+  /**
    * Tells this tab's subscribers (and every other tab) that stored messages
    * changed outside the engine's own passes -- a moderation tombstone
    * applied from the UI, a search hit written into the store before a jump.
@@ -711,6 +744,7 @@ export class SyncEngine {
       url: socketUrl(),
       getToken: currentToken,
       notify: () => this.poke(),
+      onReady: () => this.#emit({ type: "socket_ready" }),
       onFrame: (frame) => void this.#onSignalFrame(frame),
     });
     this.#socket.start();
@@ -1408,6 +1442,7 @@ export class SyncEngine {
                 ? "op"
                 : "renderable",
           muted: conversation.muted === true,
+          dnd: selfStatus.isDnd(),
           publicChannel: conversation.hubVisibility === "public",
           mentionsSelf:
             renderable &&
@@ -1601,8 +1636,26 @@ export class SyncEngine {
       ) {
         return;
       }
-      this.#emit({ type: "presence", conversationId, online });
-      broadcast({ type: "presence", conversationId, online });
+      // Validated to the three values the server may disclose; anything
+      // else in the map (a newer server's vocabulary) is dropped to plain
+      // online rather than rendered as an unknown colour.
+      const statuses: Record<string, "online" | "away" | "dnd"> = {};
+      const rawStatuses = frame["statuses"];
+      if (typeof rawStatuses === "object" && rawStatuses !== null) {
+        for (const [userId, status] of Object.entries(rawStatuses)) {
+          if (status === "online" || status === "away" || status === "dnd") {
+            statuses[userId] = status;
+          }
+        }
+      }
+      this.#emit({ type: "presence", conversationId, online, statuses });
+      broadcast({ type: "presence", conversationId, online, statuses });
+      return;
+    }
+
+    if (frame.type === "account") {
+      this.#emit({ type: "account" });
+      broadcast({ type: "account" });
       return;
     }
 

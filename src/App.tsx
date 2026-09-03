@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { logout } from "./api/client";
 import { clearSession, loadSession, type StoredSession } from "./api/session";
+import { selfStatus } from "./sync/self-status";
 import { clearAccountKeypair, clearHistoryKeys } from "./crypto/db";
 import { requestPersistentStorage, store } from "./store";
 import { sync } from "./sync/engine";
@@ -48,6 +49,7 @@ export default function App() {
 
   const signOutLocally = useCallback(async () => {
     sync.stop();
+    selfStatus.reset();
     clearSession();
     // Local history is per account: the next person to sign in on this browser
     // must not see it. Note this does *not* clear the device id, which lives

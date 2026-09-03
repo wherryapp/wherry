@@ -29,6 +29,7 @@ import {
   PanelSection,
   handleInputProps,
 } from "./kit";
+import { openProfile } from "./profile";
 
 function Person({
   person,
@@ -41,7 +42,21 @@ function Person({
 }) {
   return (
     <li className="flex items-center justify-between gap-2 py-2">
-      <span className="flex min-w-0 items-center gap-2">
+      <button
+        type="button"
+        onClick={(event) =>
+          openProfile({
+            userId: person.userId,
+            anchor: event.currentTarget,
+            hint: {
+              displayName: person.displayName,
+              username: person.username,
+              avatarHue: person.avatarHue,
+            },
+          })
+        }
+        className="flex min-w-0 items-center gap-2 rounded-md text-left hover:opacity-80"
+      >
         <Avatar
           size="sm"
           name={person.displayName}
@@ -57,7 +72,7 @@ function Person({
             {detail ? ` · ${detail}` : ""}
           </span>
         </span>
-      </span>
+      </button>
       <span className="flex shrink-0 gap-1">{children}</span>
     </li>
   );

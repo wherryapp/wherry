@@ -12,6 +12,7 @@ import type { Ring } from "../../voice/rules";
 import { shouldRingAudibly } from "../../voice/rules";
 import { startRing } from "../../voice/sounds";
 import { useVoicePrefs } from "../../voice/hooks";
+import { useSelfStatus } from "../hooks";
 import { voice } from "../../voice/session";
 import { notifyDesktopCall } from "../../sync/desktop-notify";
 
@@ -32,9 +33,13 @@ export function IncomingCall({
   const callerName = caller ? caller.displayName || caller.username : "Someone";
   const title = conversation ? conversationTitle(conversation, selfUserId) : "";
   const isGroup = (conversation?.members.length ?? 0) > 2;
+  const selfStatus = useSelfStatus();
   const audible = shouldRingAudibly({
     conversationMuted: conversation?.muted ?? false,
     ringtoneEnabled: prefs.ringtone,
+    // Do-not-disturb: the ring still shows, silently -- the server already
+    // skipped the push for the same reason.
+    dnd: selfStatus.status === "dnd",
   });
 
   useEffect(() => {

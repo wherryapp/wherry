@@ -132,8 +132,11 @@ export function reduceRings(rings: readonly Ring[], event: RingEvent): Ring[] {
 export function shouldRingAudibly(input: {
   conversationMuted: boolean;
   ringtoneEnabled: boolean;
+  /** The callee is on do-not-disturb: the ring still shows, silently --
+   *  the same "calls included" decision the server's push skip makes. */
+  dnd?: boolean;
 }): boolean {
-  return input.ringtoneEnabled && !input.conversationMuted;
+  return input.ringtoneEnabled && !input.conversationMuted && !input.dnd;
 }
 
 // ---------------------------------------------------------------------------

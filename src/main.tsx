@@ -10,6 +10,7 @@ import { stripReloadMarker } from "./reload";
 import { guardStrayFileDrops } from "./ui/drop-guard";
 import { trackVisualViewport } from "./ui/viewport";
 import { lockPageZoom } from "./ui/zoom";
+import { startIdleTracking } from "./sync/idle";
 
 // Before the first render, so the shell is sized correctly on the first
 // paint rather than jumping once the listeners attach.
@@ -19,6 +20,10 @@ trackVisualViewport();
 // component effect: the gesture it cancels is available from the first frame,
 // and a lock that attaches after the tree mounts is a lock with a gap in it.
 lockPageZoom();
+
+// Idle detection starts with the page too: the five-minute clock it keeps
+// has to begin at the first input, not at the first render of some panel.
+startIdleTracking();
 
 // And beside that one again: dropping a file anywhere the composer is not
 // listening would otherwise navigate the app away to that file, which in an

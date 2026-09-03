@@ -32,6 +32,8 @@ import {
 } from "../format";
 import { useIsDesktop } from "../viewport";
 import { Avatar, Badge, BellOffIcon } from "../kit";
+import { presenceStatusOf } from "../status";
+import { StatusDot } from "../StatusDot";
 import { HubsSection } from "./HubsSection";
 import { ResizeHandle } from "./ResizeHandle";
 import { useSidebarPrefs } from "./prefs";
@@ -173,9 +175,10 @@ export function ConversationList({
                 (member) => member.userId !== session.user.id,
               )?.userId
             : undefined;
+          const snapshot = presence.get(conversation.id);
           const otherOnline =
             otherId !== undefined &&
-            (presence.get(conversation.id)?.includes(otherId) ?? false);
+            (snapshot?.online.includes(otherId) ?? false);
 
           return (
             <button
@@ -199,10 +202,10 @@ export function ConversationList({
                   userId={avatarSeed(conversation, session.user.id)}
                   hue={avatarHue(conversation, session.user.id)}
                 />
-                {otherOnline && (
-                  <span
-                    aria-hidden="true"
-                    className="absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full border-2 border-white bg-green-500 dark:border-neutral-900"
+                {otherOnline && otherId !== undefined && (
+                  <StatusDot
+                    status={presenceStatusOf(otherId, snapshot?.statuses)}
+                    size="sm"
                   />
                 )}
               </span>

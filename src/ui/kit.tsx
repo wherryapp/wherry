@@ -21,11 +21,13 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
   type ReactNode,
 } from "react";
+import { useIsDesktop } from "./viewport";
 
 function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
@@ -461,6 +463,75 @@ export function FileIcon({ className }: IconProps) {
     >
       <path d="M11.5 2.5H6a1.5 1.5 0 0 0-1.5 1.5v12A1.5 1.5 0 0 0 6 17.5h8a1.5 1.5 0 0 0 1.5-1.5V6.5l-4-4Z" />
       <path d="M11.5 2.5v4h4" />
+    </svg>
+  );
+}
+
+export function CheckIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className ?? "h-4 w-4"}
+      aria-hidden="true"
+    >
+      <path d="M4 10.5l4 4 8-9" />
+    </svg>
+  );
+}
+
+export function GearIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className ?? "h-4 w-4"}
+      aria-hidden="true"
+    >
+      <circle cx="10" cy="10" r="2.5" />
+      <path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4" />
+    </svg>
+  );
+}
+
+export function SignOutIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className ?? "h-4 w-4"}
+      aria-hidden="true"
+    >
+      <path d="M8 3.5H4.5v13H8M12.5 6.5L16 10l-3.5 3.5M16 10H8" />
+    </svg>
+  );
+}
+
+export function ChatIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className ?? "h-4 w-4"}
+      aria-hidden="true"
+    >
+      <path d="M3.5 4.5h13v8.5h-7L6 16v-3H3.5z" />
     </svg>
   );
 }
@@ -914,6 +985,200 @@ export function PanelSection({
       )}
       <div className="mt-3">{children}</div>
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Layered surfaces
+// ---------------------------------------------------------------------------
+
+/** How far a desktop card sits from its anchor, and from the viewport edge. */
+const POPOVER_GAP_PX = 6;
+const POPOVER_MARGIN_PX = 8;
+/** The card's width on a desktop -- `w-72`, stated once in pixels for the
+ *  clamp below. Tailwind's rem scale at the default 16px root. */
+const POPOVER_WIDTH_PX = 288;
+
+/**
+ * A layer over the current screen that does not replace it: a card
+ * anchored under its trigger on a desktop, a sheet rising from the bottom
+ * edge on a phone. The profile card and the account menu are both this,
+ * and both exist because a full-screen panel is the wrong weight for
+ * "who is this?" or "set me to busy" -- a hard transition to a new page
+ * for a two-second act is what makes an app feel like a website (the
+ * native-feel theme in docs/roadmap.md).
+ *
+ * Which shape is `useIsDesktop`, the same breakpoint that decides whether
+ * the sidebar and the thread share the screen -- one notion of "phone".
+ *
+ * Dismissal is the backdrop's `click`, not `pointerup`, on purpose: an
+ * overlay dismissed on pointerup has to swallow the compatibility click
+ * that follows a touch (PhotoViewer's ghost-click guard); an overlay
+ * dismissed on the click itself has no ghost to swallow. Escape closes
+ * too, capture-phase with propagation stopped so a Panel underneath does
+ * not also close (useConfirm's precedent).
+ *
+ * The card is focused on open so Escape and screen readers land on it;
+ * focus goes back to the anchor on close, which is where the keyboard
+ * user was.
+ */
+export function Popover({
+  anchor,
+  onClose,
+  label,
+  children,
+}: {
+  /** The trigger, for placement on a desktop. Null places the card at the
+   *  top-right, which is where the one anchor-less caller (nothing today)
+   *  would want it. */
+  anchor: HTMLElement | null;
+  onClose: () => void;
+  /** The accessible name of the dialog. */
+  label: string;
+  children: ReactNode;
+}) {
+  const desktop = useIsDesktop();
+  const card = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () => document.removeEventListener("keydown", onKey, { capture: true });
+  }, [onClose]);
+
+  // Placement from the anchor's live rectangle, re-read on resize. Below
+  // the anchor, its right edge aligned to the anchor's when the anchor is
+  // in the right half (the header avatar), its left edge otherwise (a
+  // sender label), clamped inside the viewport either way.
+  useLayoutEffect(() => {
+    if (!desktop) {
+      setPosition(null);
+      return;
+    }
+    const place = (): void => {
+      const rect = anchor?.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const alignRight = rect ? rect.left + rect.width / 2 > viewportWidth / 2 : true;
+      const rawLeft = rect
+        ? alignRight
+          ? rect.right - POPOVER_WIDTH_PX
+          : rect.left
+        : viewportWidth - POPOVER_WIDTH_PX - POPOVER_MARGIN_PX;
+      const left = Math.min(
+        Math.max(rawLeft, POPOVER_MARGIN_PX),
+        viewportWidth - POPOVER_WIDTH_PX - POPOVER_MARGIN_PX,
+      );
+      const top = rect ? rect.bottom + POPOVER_GAP_PX : POPOVER_MARGIN_PX;
+      setPosition({ top, left });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [anchor, desktop]);
+
+  useEffect(() => {
+    card.current?.focus({ preventScroll: true });
+    return () => anchor?.focus({ preventScroll: true });
+  }, [anchor]);
+
+  const stop = (event: { stopPropagation(): void }) => event.stopPropagation();
+
+  if (desktop) {
+    // Rendered invisibly until placed, so the first frame is never at 0,0.
+    const style = position
+      ? {
+          top: position.top,
+          left: position.left,
+          maxHeight: `calc(100vh - ${position.top + POPOVER_MARGIN_PX}px)`,
+        }
+      : { visibility: "hidden" as const };
+    return (
+      <div className="fixed inset-0 z-50" onClick={onClose} role="presentation">
+        <div
+          ref={card}
+          role="dialog"
+          aria-label={label}
+          tabIndex={-1}
+          onClick={stop}
+          style={style}
+          className="fixed w-72 overflow-y-auto rounded-xl border border-neutral-200 bg-white shadow-xl outline-none motion-safe:animate-pop-in dark:border-neutral-800 dark:bg-neutral-900"
+        >
+          {children}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end bg-black/40"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        ref={card}
+        role="dialog"
+        aria-label={label}
+        tabIndex={-1}
+        onClick={stop}
+        className="max-h-[85vh] w-full overflow-y-auto rounded-t-2xl bg-white pb-[env(safe-area-inset-bottom)] shadow-xl outline-none motion-safe:animate-sheet-in dark:bg-neutral-900"
+      >
+        {/* The grab handle every sheet has -- a signal of what this is, not a
+            control; dragging it does nothing, and the backdrop is the exit. */}
+        <div aria-hidden="true" className="mx-auto mt-2 h-1 w-10 rounded-full bg-neutral-300 dark:bg-neutral-700" />
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A row in a Popover: an icon slot, a label, an optional trailing slot.
+ * Full-width and 44px tall on a phone (a thumb target), tighter on a
+ * desktop. The menu and the card build their action lists from this so
+ * the two agree on what a row is.
+ */
+export function PopoverRow({
+  onClick,
+  icon,
+  children,
+  trailing,
+  tone = "default",
+  disabled = false,
+}: {
+  onClick: () => void;
+  icon?: ReactNode;
+  children: ReactNode;
+  trailing?: ReactNode;
+  tone?: "default" | "danger";
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cx(
+        "flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition-colors hover:bg-neutral-100 disabled:opacity-50 pointer-coarse:min-h-11 dark:hover:bg-neutral-800",
+        tone === "danger"
+          ? "text-red-600 dark:text-red-400"
+          : "text-neutral-800 dark:text-neutral-100",
+      )}
+    >
+      {icon && (
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-500 dark:text-neutral-400">
+          {icon}
+        </span>
+      )}
+      <span className="min-w-0 flex-1">{children}</span>
+      {trailing}
+    </button>
   );
 }
 

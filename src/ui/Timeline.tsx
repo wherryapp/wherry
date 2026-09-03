@@ -50,6 +50,8 @@ import {
   useConfirm,
   PhoneIcon,
 } from "./kit";
+import { openProfile } from "./profile";
+import { presenceStatusOf, statusLabel } from "./status";
 import { callNotice } from "../voice/rules";
 import { voice } from "../voice/session";
 
@@ -268,6 +270,7 @@ function Bubble({
   chips,
   mentionNames,
   onOpenAttachment,
+  onSenderPress,
 }: {
   mine: boolean;
   /**
@@ -294,6 +297,11 @@ function Bubble({
    * three-way conversation is unreadable.
    */
   sender?: string | undefined;
+  /** Makes the sender label a button opening that person's profile card.
+   *  A button, so Bubble's own press-up handler leaves it alone -- the
+   *  `closest("button")` seam CLAUDE.md names for anything interactive
+   *  inside a message. */
+  onSenderPress?: ((anchor: HTMLElement) => void) | undefined;
   /**
    * Position in a run of consecutive messages from one sender (see
    * sameRun in Timeline). The name renders on the first of a run and the
@@ -501,9 +509,19 @@ function Bubble({
         } ${muted ? "opacity-60" : ""}`}
       >
         {sender && first && (
-          <span className="mb-0.5 block text-[11px] font-medium opacity-70">
-            {sender}
-          </span>
+          onSenderPress ? (
+            <button
+              type="button"
+              onClick={(event) => onSenderPress(event.currentTarget)}
+              className="mb-0.5 block text-[11px] font-medium opacity-70 hover:underline hover:opacity-100"
+            >
+              {sender}
+            </button>
+          ) : (
+            <span className="mb-0.5 block text-[11px] font-medium opacity-70">
+              {sender}
+            </span>
+          )
         )}
         {quote && !retracted && (
           <button
@@ -1465,6 +1483,26 @@ export function Timeline({
                     ? (names.get(item.message.senderUserId) ?? "Someone")
                     : undefined
                 }
+                onSenderPress={
+                  isGroup && !mine
+                    ? (anchor) => {
+                        const member = conversation?.members.find(
+                          (candidate) => candidate.userId === item.message.senderUserId,
+                        );
+                        openProfile({
+                          userId: item.message.senderUserId,
+                          anchor,
+                          hint: member
+                            ? {
+                                displayName: member.displayName || member.username,
+                                username: member.username,
+                                avatarHue: member.avatarHue,
+                              }
+                            : null,
+                        });
+                      }
+                    : undefined
+                }
                 quote={quoteOf(content)}
                 mentionNames={
                   content !== null &&
@@ -1605,15 +1643,21 @@ export function Presence({
   conversationId: string;
   conversation: StoredConversation | undefined;
 }) {
-  const online = usePresence(conversationId);
-  if (online === null || online.length === 0) return null;
+  const presence = usePresence(conversationId);
+  if (presence === null || presence.online.length === 0) return null;
 
   const isGroup =
     conversation?.kind === "channel" ||
     (conversation?.members.length ?? 0) > 2;
+  // In a 1:1 the one other member is the whole answer, so their status
+  // kind (friends only -- absent from the map reads as plain online) is
+  // what the line says. A group stays a count.
+  const other = presence.online[0]!;
   return (
     <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
-      {isGroup ? `${online.length} online` : "Online"}
+      {isGroup
+        ? `${presence.online.length} online`
+        : statusLabel(presenceStatusOf(other, presence.statuses))}
     </span>
   );
 }

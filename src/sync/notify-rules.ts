@@ -28,10 +28,15 @@ export type NotifyCandidate = {
   publicChannel: boolean;
   /** The decoded content mentions this account. */
   mentionsSelf: boolean;
+  /** This account is on do-not-disturb right now (sync/self-status.ts). The
+   *  server already skips push for it; this is the same rule for the
+   *  desktop shell's notifications, which never pass through the server. */
+  dnd: boolean;
 };
 
 export function shouldNotify(candidate: NotifyCandidate): boolean {
   if (candidate.windowFocused) return false;
+  if (candidate.dnd) return false;
   if (candidate.isOwn) return false;
   if (candidate.decryptFailed) return false;
   if (candidate.kind !== "renderable") return false;

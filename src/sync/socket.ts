@@ -60,6 +60,8 @@ export type SocketManagerOptions = {
    * Best-effort by contract; nothing here retries or queues.
    */
   onFrame?: (frame: { type: string } & Record<string, unknown>) => void;
+  /** After the auth handshake, every time -- a reconnect included. */
+  onReady?: () => void;
   backoff?: Backoff;
   staleMs?: number;
   staleCheckMs?: number;
@@ -193,6 +195,7 @@ export class SocketManager {
         case "ready":
           this.#healthy = true;
           this.#backoff.reset();
+          this.#options.onReady?.();
           // The reconnect drain: anything sent while this socket was down
           // (a deploy restart, a dead wifi) is sitting in the inbox, and
           // this one call is what fetches it without waiting for a poll.

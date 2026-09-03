@@ -26,6 +26,7 @@ import {
   PanelSection,
   handleInputProps,
 } from "./kit";
+import { openProfile } from "./profile";
 
 /**
  * Rename and add-members, in one panel -- the two things only a group can do.
@@ -226,7 +227,23 @@ export function GroupDetails({
                 key={member.userId}
                 className="flex items-center justify-between gap-2 py-2 text-sm text-neutral-900 dark:text-neutral-100"
               >
-                <span className="flex min-w-0 items-center gap-2">
+                {/* A button, so the row's identity opens the profile card
+                    -- the same seam every person-row in the app now has. */}
+                <button
+                  type="button"
+                  onClick={(event) =>
+                    openProfile({
+                      userId: member.userId,
+                      anchor: event.currentTarget,
+                      hint: {
+                        displayName: member.displayName || member.username,
+                        username: member.username,
+                        avatarHue: member.avatarHue,
+                      },
+                    })
+                  }
+                  className="flex min-w-0 items-center gap-2 rounded-md text-left hover:opacity-80"
+                >
                   <Avatar
                     size="sm"
                     name={member.displayName || member.username}
@@ -246,7 +263,7 @@ export function GroupDetails({
                       </span>
                     )}
                   </span>
-                </span>
+                </button>
                 {member.userId !== selfUserId && (
                   <Button
                     variant="ghost-danger"
