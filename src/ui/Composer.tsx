@@ -23,9 +23,23 @@ import {
   transferHasFiles,
 } from "./attach-intake";
 import { acceptAttribute, fileExtension, type FilePolicy } from "./file-policy";
+import {
+  uploadPercent,
+  uploadStatusLine,
+  type UploadProgress,
+} from "./upload-status";
 import { useFilePolicy } from "./hooks";
 import { type EditDraft, type ReplyDraft } from "./drafts";
-import { ErrorText, FileIcon, IconButton, Note, PlusIcon, SendIcon, XIcon } from "./kit";
+import {
+  ErrorText,
+  FileIcon,
+  IconButton,
+  Note,
+  PlusIcon,
+  SendIcon,
+  SpinnerIcon,
+  XIcon,
+} from "./kit";
 import { useCanDropFiles } from "./viewport";
 import { WidgetBar } from "./widgets/WidgetBar";
 
@@ -88,6 +102,15 @@ export function Composer({
   const [text, setText] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
   const [busy, setBusy] = useState(false);
+  /**
+   * Where a send has got to, or null when nothing is in flight.
+   *
+   * The reported bug was that this did not exist: `busy` disabled the send
+   * button and nothing else changed, so a large attachment was a dead
+   * control and an indefinite silence. On a 90 MB file that reads as a
+   * crash, and the only way to find out otherwise was to wait.
+   */
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A drag carrying files is over the window. Raised by a real drag, never
   // by the capability query below -- see useCanDropFiles.
@@ -402,6 +425,19 @@ export function Composer({
     setBusy(true);
     setError(null);
 
+    // Claimed before the limits are fetched, not after. That fetch is a
+    // network round trip of its own, and leaving it uncovered would put a
+    // silent gap right at the start -- exactly where somebody is deciding
+    // whether the press registered.
+    if (pending.length > 0) {
+      setProgress({
+        index: 0,
+        total: pending.length,
+        stage: "preparing",
+        fraction: 0,
+      });
+    }
+
     try {
       // Uploaded before the message is queued, because the payload has to
       // carry the ids. That makes an attachment send fail *before* anything is
@@ -411,7 +447,13 @@ export function Composer({
       const limits = await fetchAttachmentUsage();
       const attachments: AttachmentRef[] = [];
 
-      for (const item of pending) {
+      // Indexed rather than a for..of, because every stage below has to say
+      // which attachment it is on.
+      for (const [index, item] of pending.entries()) {
+        const at = (stage: UploadProgress["stage"], fraction = 0): void =>
+          setProgress({ index, total: pending.length, stage, fraction });
+
+        at("preparing");
         const prepared = await prepareForUpload(item.file, limits.maxBytes);
 
         if ("kind" in prepared) {
@@ -427,14 +469,17 @@ export function Composer({
         // does a public channel, whose payload is readable by design (see
         // the publicChannel prop above): the ref then carries no key
         // fields, which every client already reads as the plaintext form.
+        at("sealing");
         const sealed =
           e2e.handshake && !publicChannel
             ? await encryptBlob(prepared.bytes)
             : null;
 
+        at("uploading");
         const uploaded = await uploadAttachment(
           conversationId,
           sealed ? sealed.ciphertext : prepared.bytes,
+          { onProgress: (fraction) => at("uploading", fraction) },
         );
 
         attachments.push({
@@ -496,6 +541,7 @@ export function Composer({
       );
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -547,16 +593,53 @@ export function Composer({
                     </span>
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => remove(index)}
-                  aria-label="Remove attachment"
-                  className="absolute -right-1 -top-1 rounded-full bg-neutral-900 px-1.5 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900"
-                >
-                  ×
-                </button>
+                {/* The progress of THIS attachment, over its own thumbnail.
+                    On the one being worked on it is a bar; on the ones
+                    already done it is a full bar, so a queue of three reads
+                    as two finished and one moving rather than as one number
+                    that keeps restarting. */}
+                {progress && index <= progress.index && (
+                  <span className="absolute inset-x-1 bottom-1 h-1 overflow-hidden rounded-full bg-neutral-900/40">
+                    <span
+                      className="block h-full rounded-full bg-white transition-[width] duration-150"
+                      style={{
+                        width:
+                          index < progress.index
+                            ? "100%"
+                            : `${uploadPercent(progress.fraction)}%`,
+                      }}
+                    />
+                  </span>
+                )}
+                {/* No removing mid-send: the loop is walking the array this
+                    renders, and taking one out underneath it would upload a
+                    file the message no longer refers to. */}
+                {!busy && (
+                  <button
+                    type="button"
+                    onClick={() => remove(index)}
+                    aria-label="Remove attachment"
+                    className="absolute -right-1 -top-1 rounded-full bg-neutral-900 px-1.5 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Said out loud, because the send button going grey is not an
+            explanation. `aria-live` so it is announced rather than only
+            drawn -- this is the one moment the app is unresponsive on
+            purpose. */}
+        {progress && (
+          // The live region is the wrapper, not the Note: `Note` takes only
+          // `children`/`className`/`boxed` and spreads nothing, so an
+          // `aria-live` on it would be dropped -- silently, because
+          // TypeScript does not check hyphenated JSX attributes.
+          <div aria-live="polite" className="mb-2">
+            <Note>{uploadStatusLine(progress)}</Note>
           </div>
         )}
 
@@ -732,7 +815,11 @@ export function Composer({
             // kit primary's (bg-accent-600, hover 700) -- keep them in step.
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-600 text-white transition hover:bg-accent-700 disabled:bg-neutral-300 motion-safe:active:scale-90 dark:disabled:bg-neutral-700"
           >
-            <SendIcon className="h-4.5 w-4.5" />
+            {busy ? (
+              <SpinnerIcon className="h-4.5 w-4.5" />
+            ) : (
+              <SendIcon className="h-4.5 w-4.5" />
+            )}
           </button>
         </div>
         {slowmodeSeconds !== null && (

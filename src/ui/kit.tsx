@@ -465,6 +465,25 @@ export function FileIcon({ className }: IconProps) {
   );
 }
 
+export function SpinnerIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      className={cx("h-5 w-5 motion-safe:animate-spin", className)}
+      aria-hidden="true"
+    >
+      {/* A ring plus a brighter arc: the ring is what makes the arc read as
+          rotating rather than as a shape appearing and disappearing. */}
+      <circle cx="10" cy="10" r="7" className="opacity-30" />
+      <path d="M17 10a7 7 0 0 0-7-7" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Buttons
 // ---------------------------------------------------------------------------

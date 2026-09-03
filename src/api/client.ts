@@ -766,52 +766,108 @@ export type AttachmentUsage = {
  *
  * Raw octet-stream rather than JSON: base64 costs a third more on the wire and
  * pushes a whole photo through a string, for no benefit when the payload is
- * opaque either way. Written against fetch directly because `request` assumes
- * a JSON body and a JSON response.
+ * opaque either way. It does not go through `request`, which assumes a JSON
+ * body and a JSON response.
+ *
+ * XMLHttpRequest rather than fetch, and only for one reason: **fetch cannot
+ * report upload progress.** Streaming a request body is Chrome-only and needs
+ * `duplex: "half"` over HTTP/2, so on Safari -- the platform this matters most
+ * on -- there is no way to know how far a send has got. `xhr.upload` has
+ * reported it everywhere for years. Without it a large attachment is a
+ * disabled send button and an indefinite silence, which reads as the app
+ * having crashed rather than as work in progress.
  */
 export async function uploadAttachment(
   conversationId: string,
   bytes: Uint8Array,
-  options: { signal?: AbortSignal } = {},
+  options: {
+    signal?: AbortSignal;
+    /**
+     * Called with 0..1 as the bytes go out. Optional, and the only reason
+     * this is XMLHttpRequest rather than fetch.
+     */
+    onProgress?: (fraction: number) => void;
+  } = {},
 ): Promise<UploadedAttachment> {
   const token = currentToken();
-  const headers: Record<string, string> = {
-    "content-type": "application/octet-stream",
-  };
-  if (token) headers["authorization"] = `Bearer ${token}`;
+  const url = `${API}/attachments?conversationId=${encodeURIComponent(conversationId)}`;
 
-  let response: Response;
-  try {
-    response = await fetch(
-      `${API}/attachments?conversationId=${encodeURIComponent(conversationId)}`,
-      {
-        method: "POST",
-        headers,
-        // Copied, because a Uint8Array that is a view onto a larger buffer
-        // would otherwise upload the whole buffer.
-        body: new Blob([bytes.slice()]),
-        ...(options.signal ? { signal: options.signal } : {}),
-      },
-    );
-  } catch (cause) {
-    if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-    throw new NetworkError(cause);
-  }
+  // Copied, because a Uint8Array that is a view onto a larger buffer would
+  // otherwise upload the whole buffer.
+  const body = new Blob([bytes.slice()]);
 
-  const raw = await response.text();
-  const parsed: unknown = raw.length > 0 ? safeParse(raw) : null;
+  return await new Promise<UploadedAttachment>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    if (token) xhr.setRequestHeader("authorization", `Bearer ${token}`);
 
-  if (!response.ok) {
-    const shape = parsed as { error?: string; message?: string } | null;
-    throw new ApiError(
-      response.status,
-      shape?.error ?? "REQUEST_FAILED",
-      shape?.message ?? `Upload failed with ${response.status}`,
-      null,
-    );
-  }
+    const { onProgress, signal } = options;
 
-  return parsed as UploadedAttachment;
+    if (onProgress) {
+      // Fired before anything is sent, so a large file shows 0% immediately
+      // rather than nothing at all. The first real progress event on a slow
+      // connection can be seconds away.
+      onProgress(0);
+      xhr.upload.addEventListener("progress", (event) => {
+        if (!event.lengthComputable || event.total === 0) return;
+        onProgress(event.loaded / event.total);
+      });
+      // The last progress event does not reliably reach 1, and the server
+      // still has to answer after the bytes land -- so completion is stated
+      // rather than inferred.
+      xhr.upload.addEventListener("load", () => onProgress(1));
+    }
+
+    const onAbort = (): void => xhr.abort();
+    if (signal) {
+      if (signal.aborted) {
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const cleanup = (): void => signal?.removeEventListener("abort", onAbort);
+
+    xhr.addEventListener("abort", () => {
+      cleanup();
+      reject(new DOMException("Aborted", "AbortError"));
+    });
+
+    // A transport failure -- no response at all. The same meaning fetch's
+    // rejection carries, so it becomes the same error type.
+    xhr.addEventListener("error", () => {
+      cleanup();
+      reject(new NetworkError(new Error("upload failed")));
+    });
+    xhr.addEventListener("timeout", () => {
+      cleanup();
+      reject(new NetworkError(new Error("upload timed out")));
+    });
+
+    xhr.addEventListener("load", () => {
+      cleanup();
+      const raw = xhr.responseText;
+      const parsed: unknown = raw.length > 0 ? safeParse(raw) : null;
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const shape = parsed as { error?: string; message?: string } | null;
+        reject(
+          new ApiError(
+            xhr.status,
+            shape?.error ?? "REQUEST_FAILED",
+            shape?.message ?? `Upload failed with ${xhr.status}`,
+            null,
+          ),
+        );
+        return;
+      }
+
+      resolve(parsed as UploadedAttachment);
+    });
+
+    xhr.send(body);
+  });
 }
 
 /** Whether an attachment is still on the server, and its bytes if so. */
