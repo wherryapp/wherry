@@ -25,14 +25,16 @@ import {
 } from "../hooks";
 import {
   avatarHue,
+  avatarKey,
   avatarSeed,
   conversationTitle,
   listTime,
   memberName,
 } from "../format";
 import { useIsDesktop } from "../viewport";
-import { Avatar, Badge, BellOffIcon } from "../kit";
-import { presenceStatusOf } from "../status";
+import { Badge, BellOffIcon } from "../kit";
+import { UserAvatar } from "../UserAvatar";
+import { onlineOthers, presenceStatusOf } from "../status";
 import { StatusDot } from "../StatusDot";
 import { HubsSection } from "./HubsSection";
 import { ResizeHandle } from "./ResizeHandle";
@@ -77,20 +79,21 @@ export function ConversationList({
       ),
     [conversations, latest],
   );
-  // Online dots for 1:1 rows only in v1 -- a group's "2 of 7 online" is a
-  // different design, deferred. Two members rather than kind === "direct",
-  // matching the isGroup check below: groups shipped without a kind change.
+  // Online dots for every direct and group row (2026-09-03; 1:1 only before
+  // that). Hub channels are deliberately excluded -- they are not in this
+  // list at all, since they render under their hub -- and that exclusion is
+  // load-bearing rather than incidental: the engine caps an ask at 50
+  // conversations, but a channel's own member list can be hundreds, and the
+  // server joins every member's devices per conversation asked about. A long
+  // list of narrow rooms is fine; a wide one is what to avoid.
+  //
   // Sorted so a recency reorder does not look like a new id list to the
   // hook, which would reset the map and re-ask on every incoming message.
-  const dmIds = useMemo(
-    () =>
-      directsAndGroups
-        .filter((conversation) => conversation.members.length === 2)
-        .map((conversation) => conversation.id)
-        .sort(),
+  const presenceIds = useMemo(
+    () => directsAndGroups.map((conversation) => conversation.id).sort(),
     [directsAndGroups],
   );
-  const presence = useSidebarPresence(dmIds);
+  const presence = useSidebarPresence(presenceIds);
 
   const isDesktop = useIsDesktop();
   const { prefs, update } = useSidebarPrefs();
@@ -179,6 +182,20 @@ export function ConversationList({
           const otherOnline =
             otherId !== undefined &&
             (snapshot?.online.includes(otherId) ?? false);
+          // A group's dot says "somebody else is in here", and stays plain
+          // green: a room has no single status, and colouring it by whoever
+          // happens to be first in the list would be a claim about the room
+          // that is really about one person. The count is deliberately not
+          // put on the secondary line either -- that line is the message
+          // preview, which is the more useful of the two, and Group details
+          // is one tap away for who exactly.
+          const groupOnline =
+            isGroup &&
+            onlineOthers(
+              conversation.members.map((member) => member.userId),
+              session.user.id,
+              snapshot?.online,
+            ).length > 0;
 
           return (
             <button
@@ -197,10 +214,11 @@ export function ConversationList({
                   like the announcement dot on the Settings avatar -- same
                   shape and border, green for "here now". */}
               <span className="relative shrink-0">
-                <Avatar
+                <UserAvatar
                   name={title}
                   userId={avatarSeed(conversation, session.user.id)}
                   hue={avatarHue(conversation, session.user.id)}
+                  avatarKey={avatarKey(conversation, session.user.id)}
                 />
                 {otherOnline && otherId !== undefined && (
                   <StatusDot
@@ -208,6 +226,7 @@ export function ConversationList({
                     size="sm"
                   />
                 )}
+                {groupOnline && <StatusDot status="online" size="sm" />}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-2">
@@ -224,7 +243,7 @@ export function ConversationList({
                     <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
                   )}
                   {preview && (
-                    <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">
+                    <span className="shrink-0 text-[0.6875rem] text-neutral-500 dark:text-neutral-400">
                       {listTime(preview.message.sentAt)}
                     </span>
                   )}

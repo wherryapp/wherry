@@ -43,7 +43,6 @@ import { sync } from "../sync/engine";
 import { mlsEnabled, mlsSync } from "../sync/mls";
 import { useConversations } from "./hooks";
 import {
-  Avatar,
   Button,
   ErrorText,
   Input,
@@ -59,8 +58,10 @@ import {
   handleInputProps,
   HeadphonesIcon,
 } from "./kit";
+import { UserAvatar } from "./UserAvatar";
 import { openProfile } from "./profile";
 import { ContactCheckboxRow } from "./ContactRow";
+import { classLabel, classSentence, isServerReadable } from "./hub-class";
 
 // Mirrors hub-roles.ts on the server; see the file comment above.
 const RANK: Record<HubRole, number> = { owner: 3, moderator: 2, member: 1 };
@@ -688,17 +689,19 @@ export function HubDetails({
     <Panel title={detail.name} onClose={onClose}>
       <div>
         <PanelSection title="About">
-          {/* The privacy-class label, said where it matters. One sentence,
-              honest, matching the creation flow's wording. */}
+          {/* The privacy-class label, said where it matters -- and said in
+              the same words as the creation form and the join page, because
+              all three read it from ui/hub-class.ts. */}
           <Note>
-            {detail.visibility === "public"
-              ? "Public hub — anyone with an account can join, and messages here are stored readable by the server so search and moderation can work."
-              : "Private hub — invitation only, and every channel is end-to-end encrypted like a group chat."}
+            {classLabel(detail.visibility)} hub — {classSentence(detail.visibility)}
           </Note>
+          {/* Public only, and this is the "may anyone join?" question, not
+              the readability one: an invite-only hub's id opens nothing,
+              its invite links do (Invites, below). */}
           {detail.visibility === "public" && (
             <Note className="mt-1">
               Share this ID so people can join:{" "}
-              <span className="select-all break-all font-mono text-[11px]">
+              <span className="select-all break-all font-mono text-[0.6875rem]">
                 {detail.id}
               </span>
             </Note>
@@ -790,7 +793,10 @@ export function HubDetails({
                         ? "Open to everyone"
                         : "Announcement-only"}
                     </button>
-                    {detail.visibility === "public" && (
+                    {/* Slowmode enforcement reads the payload kind, so it
+                        is offered wherever the server can read one -- the
+                        same isServerReadable test the service applies. */}
+                    {isServerReadable(detail.visibility) && (
                       <button
                         onClick={() => editSlowmode(channel)}
                         className="text-neutral-500 hover:underline dark:text-neutral-400"
@@ -843,7 +849,9 @@ export function HubDetails({
           </Button>
         </PanelSection>
 
-        {detail.visibility === "public" && (
+        {/* Search reads body_text, which every v4 row has -- so an
+            invite-only hub is searchable exactly like a public one. */}
+        {isServerReadable(detail.visibility) && (
           <PanelSection
             title="Search"
             description="Searches every channel in this hub."
@@ -914,16 +922,18 @@ export function HubDetails({
                           displayName: member.displayName || member.username,
                           username: member.username,
                           avatarHue: member.avatarHue,
+                          avatarKey: member.avatarKey,
                         },
                       })
                     }
                     className="flex min-w-0 items-center gap-2 rounded-md text-left hover:opacity-80"
                   >
-                    <Avatar
+                    <UserAvatar
                       size="sm"
                       name={member.displayName || member.username}
                       userId={member.userId}
                       hue={member.avatarHue}
+                      avatarKey={member.avatarKey}
                     />
                     <span className="min-w-0 truncate">
                       {member.displayName || member.username}
@@ -1004,11 +1014,12 @@ export function HubDetails({
                   className="flex items-center justify-between gap-2 py-2 text-sm text-neutral-900 dark:text-neutral-100"
                 >
                   <span className="flex min-w-0 items-center gap-2">
-                    <Avatar
+                    <UserAvatar
                       size="sm"
                       name={entry.displayName || entry.username}
                       userId={entry.userId}
                       hue={entry.avatarHue}
+                      avatarKey={entry.avatarKey}
                     />
                     <span className="min-w-0 truncate">
                       {entry.displayName || entry.username}
@@ -1048,7 +1059,7 @@ export function HubDetails({
                 {(invites ?? []).map((invite) => (
                   <li key={invite.id} className="py-2">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="min-w-0 select-all truncate font-mono text-[11px] text-neutral-700 dark:text-neutral-300">
+                      <span className="min-w-0 select-all truncate font-mono text-[0.6875rem] text-neutral-700 dark:text-neutral-300">
                         {inviteUrl(invite)}
                       </span>
                       <span className="flex shrink-0 gap-2">

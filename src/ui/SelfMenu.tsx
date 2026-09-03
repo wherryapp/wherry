@@ -23,7 +23,6 @@ import type { UserStatus } from "../api/types";
 import { selfStatus, shownSelfStatus } from "../sync/self-status";
 import { useSelfStatus } from "./hooks";
 import {
-  Avatar,
   CheckIcon,
   ErrorText,
   GearIcon,
@@ -34,6 +33,7 @@ import {
   SignOutIcon,
   useConfirm,
 } from "./kit";
+import { UserAvatar } from "./UserAvatar";
 import {
   DURATION_OPTIONS,
   STATUS_OPTIONS,
@@ -105,11 +105,12 @@ export function SelfMenu({
     <Popover anchor={anchor} onClose={onClose} label="Account">
       <div className="flex items-center gap-3 px-4 pt-4 pb-3">
         <span className="relative shrink-0">
-          <Avatar
+          <UserAvatar
             size="md"
             name={session.user.displayName}
             userId={session.user.id}
             hue={session.user.avatarHue}
+            avatarKey={session.user.avatarKey}
           />
           {status.loaded && <StatusDot status={shownSelfStatus(status)} size="md" />}
         </span>
@@ -143,7 +144,7 @@ export function SelfMenu({
           aria-label="Status message"
           className="text-sm"
         />
-        <span className="mt-1 block text-[11px] text-neutral-500 dark:text-neutral-400">
+        <span className="mt-1 block text-[0.6875rem] text-neutral-500 dark:text-neutral-400">
           Friends see this. Not encrypted.
           {status.expiresAt && status.text ? " Clears with your status." : ""}
         </span>
@@ -170,7 +171,7 @@ export function SelfMenu({
                 <span className="block text-sm text-neutral-800 dark:text-neutral-100">
                   {option.label}
                 </span>
-                <span className="block text-[11px] text-neutral-500 dark:text-neutral-400">
+                <span className="block text-[0.6875rem] text-neutral-500 dark:text-neutral-400">
                   {option.description}
                 </span>
               </span>
@@ -200,7 +201,7 @@ export function SelfMenu({
               ))}
             </Select>
             {status.expiresAt && (
-              <span className="mt-1 block text-[11px] text-neutral-500 dark:text-neutral-400">
+              <span className="mt-1 block text-[0.6875rem] text-neutral-500 dark:text-neutral-400">
                 {expiryLabel(status.expiresAt, new Date())}
               </span>
             )}
@@ -219,7 +220,7 @@ export function SelfMenu({
                 aria-label={`${unreadAnnouncements} unread ${
                   unreadAnnouncements === 1 ? "announcement" : "announcements"
                 }`}
-                className="rounded-full bg-accent-600 px-1.5 text-[10px] font-semibold text-white"
+                className="rounded-full bg-accent-600 px-1.5 text-[0.625rem] font-semibold text-white"
               >
                 {unreadAnnouncements}
               </span>

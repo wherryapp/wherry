@@ -944,6 +944,9 @@ function safeParse(raw: string): unknown {
 export type AccountSettings = {
   displayName: string;
   avatarHue: number | null;
+  /** The profile picture's Storage key, or null for none. Optional because
+   *  a server predating migration 0026 answers without it. */
+  avatarKey?: string | null;
   readReceiptsEnabled: boolean;
   email: string | null;
   emailVerified: boolean;
@@ -1065,6 +1068,96 @@ export function fetchAnnouncements(options?: {
   return request(`${API}/announcements${query}`);
 }
 
+/**
+ * Uploads a prepared profile picture (ui/media.ts makes the JPEG).
+ *
+ * Raw bytes for the same reason an attachment upload is raw: base64 in JSON
+ * costs a third more on the wire and buys nothing for something opaque to
+ * the transport. The server checks the bytes really are a JPEG before it
+ * stores anything, because it serves them back under that content type.
+ */
+export async function uploadAvatar(bytes: Uint8Array): Promise<{ avatarKey: string }> {
+  const token = currentToken();
+  const headers: Record<string, string> = {
+    "content-type": "application/octet-stream",
+  };
+  if (token) headers["authorization"] = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(`${API}/account/avatar`, {
+      method: "POST",
+      headers,
+      body: bytes as BodyInit,
+    });
+  } catch (cause) {
+    throw new NetworkError(cause);
+  }
+
+  const raw = await response.text();
+  const parsed = raw.length > 0 ? (safeParse(raw) as Record<string, unknown> | null) : null;
+
+  if (!response.ok) {
+    const shape = parsed as { error?: string; message?: string } | null;
+    throw new ApiError(
+      response.status,
+      shape?.error ?? "REQUEST_FAILED",
+      shape?.message ?? `Upload failed with ${response.status}`,
+    );
+  }
+
+  return parsed as { avatarKey: string };
+}
+
+export function removeAvatar(): Promise<void> {
+  return request<void>(`${API}/account/avatar`, { method: "DELETE" });
+}
+
+/**
+ * Somebody's profile picture as bytes.
+ *
+ * Fetched rather than pointed at with an `<img src>`, because the route
+ * needs the bearer token and an `<img>` cannot carry one. Making the route
+ * anonymous to get around that was the alternative and is rejected: user ids
+ * are in every member list, so an unauthenticated avatar route hands every
+ * picture to anyone who has ever seen an id.
+ *
+ * Null covers "no picture under that key" -- a 404 from a stale key or an
+ * account with none -- and is terminal for that key, since the key changes
+ * whenever the picture does.
+ */
+export async function downloadAvatar(
+  userId: string,
+  avatarKey: string,
+): Promise<Uint8Array | null> {
+  const token = currentToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["authorization"] = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API}/users/${userId}/avatar?v=${encodeURIComponent(avatarKey)}`,
+      { headers },
+    );
+  } catch (cause) {
+    throw new NetworkError(cause);
+  }
+
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    // A 401 or a 502 is worth another try later, so it throws rather than
+    // being cached as "this person has no picture".
+    throw new ApiError(
+      response.status,
+      "REQUEST_FAILED",
+      `Avatar fetch failed with ${response.status}`,
+    );
+  }
+
+  return new Uint8Array(await response.arrayBuffer());
+}
+
 export function changeAvatarColor(
   hue: number | null,
 ): Promise<{ avatarHue: number | null }> {
@@ -1155,6 +1248,7 @@ export type Friend = {
   username: string;
   displayName: string;
   avatarHue: number | null;
+  avatarKey: string | null;
   since: string | null;
 };
 
@@ -1252,7 +1346,8 @@ export function createHubChannel(input: {
 /**
  * One PATCH for everything a moderator sets on a channel; send only the
  * field being changed. An empty topic clears it; a null slowmodeSeconds
- * turns slowmode off (public hubs only -- elsewhere it answers NOT_PUBLIC).
+ * turns slowmode off. Only where the server can read the messages (public
+ * and invite-only hubs); elsewhere it answers NOT_PUBLIC.
  */
 export function updateHubChannel(input: {
   hubId: string;

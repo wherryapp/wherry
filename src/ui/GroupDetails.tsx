@@ -18,7 +18,6 @@ import { sync } from "../sync/engine";
 import { mlsEnabled, mlsSync } from "../sync/mls";
 import type { StoredConversation } from "../store/types";
 import {
-  Avatar,
   Button,
   ErrorText,
   Input,
@@ -26,6 +25,10 @@ import {
   PanelSection,
   handleInputProps,
 } from "./kit";
+import { UserAvatar } from "./UserAvatar";
+import { StatusDot } from "./StatusDot";
+import { usePresence } from "./hooks";
+import { onlineOthers, presenceStatusOf } from "./status";
 import { openProfile } from "./profile";
 
 /**
@@ -202,6 +205,19 @@ export function GroupDetails({
     (contact) => !memberIds.has(contact.userId),
   );
 
+  // Who is here now. The same per-conversation ask the thread header makes,
+  // so opening this panel over an open conversation costs one extra ask on
+  // the presence cadence rather than anything new. A member absent from the
+  // snapshot is *unknown*, not offline -- so a row simply has no dot.
+  const presence = usePresence(conversation.id);
+  const online = new Set(
+    onlineOthers(
+      conversation.members.map((member) => member.userId),
+      selfUserId,
+      presence?.online,
+    ),
+  );
+
   return (
     <Panel title="Group details" onClose={onClose}>
       <div>
@@ -239,17 +255,32 @@ export function GroupDetails({
                         displayName: member.displayName || member.username,
                         username: member.username,
                         avatarHue: member.avatarHue,
+                        avatarKey: member.avatarKey,
                       },
                     })
                   }
                   className="flex min-w-0 items-center gap-2 rounded-md text-left hover:opacity-80"
                 >
-                  <Avatar
-                    size="sm"
-                    name={member.displayName || member.username}
-                    userId={member.userId}
-                    hue={member.avatarHue}
-                  />
+                  {/* The relative wrapper is the dot's, not the avatar's --
+                      the sidebar's DM row does exactly this. A member who is
+                      not your friend gets a plain green dot: the status
+                      *kind* is a friends-only disclosure, and the server
+                      simply does not send one for anybody else. */}
+                  <span className="relative shrink-0">
+                    <UserAvatar
+                      size="sm"
+                      name={member.displayName || member.username}
+                      userId={member.userId}
+                      hue={member.avatarHue}
+                      avatarKey={member.avatarKey}
+                    />
+                    {online.has(member.userId) && (
+                      <StatusDot
+                        status={presenceStatusOf(member.userId, presence?.statuses)}
+                        size="sm"
+                      />
+                    )}
+                  </span>
                   <span className="truncate">
                     {member.displayName || member.username}
                     {member.displayName && (

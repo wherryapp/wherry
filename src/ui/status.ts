@@ -92,6 +92,33 @@ export function presenceStatusOf(
   return statuses?.[userId] ?? "online";
 }
 
+/**
+ * Which of a conversation's members are online, in member order, excluding
+ * the caller.
+ *
+ * Small enough to inline and deliberately not inlined: the sidebar's group
+ * dot, the member rows in Group details and the switcher all have to agree
+ * about what "somebody else is here" means, and three copies of a filter is
+ * how they stop agreeing. Self is excluded everywhere for the same reason
+ * the DM dot never depicts you -- your own presence is the header avatar's
+ * job, and counting yourself would light up every room you have open.
+ *
+ * An absent snapshot is unknown, never everyone-offline: presence has no
+ * stored form, so a socket-down period means no dots rather than a screen
+ * full of grey ones.
+ */
+export function onlineOthers(
+  memberIds: readonly string[],
+  selfUserId: string,
+  online: readonly string[] | undefined,
+): string[] {
+  if (!online || online.length === 0) return [];
+  const present = new Set(online);
+  return memberIds.filter(
+    (userId) => userId !== selfUserId && present.has(userId),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Durations
 // ---------------------------------------------------------------------------

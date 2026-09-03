@@ -10,13 +10,22 @@ import { ApiError, createHub, joinHub } from "../../api/client";
 import type { HubVisibility } from "../../api/types";
 import { sync } from "../../sync/engine";
 import { Button, ErrorText, Input, handleInputProps } from "../kit";
+import { CLASS_IS_PERMANENT, classLabel, classSentence } from "../hub-class";
+
+/** The order the choice is offered in: sealed, then the two readable ones,
+ *  least open first. Invite-only is deliberately not first -- private stays
+ *  the default and the top row, because it is the one that promises the
+ *  most. */
+const HUB_CLASSES = ["private", "invite_only", "public"] as const;
 
 /**
  * Creating a hub, or joining a public one by id. The class choice carries
- * its label copy right here, at the moment it is made, because the public
- * class is the one deliberate exception to "the server reads nothing" and
- * the person making it must see that sentence before the hub exists
- * (CLAUDE.md rules 1/9, as amended).
+ * its label copy right here, at the moment it is made, because the two
+ * readable classes are the deliberate exception to "the server reads
+ * nothing" and the person choosing one must see that sentence before the
+ * hub exists (CLAUDE.md rules 1/9, as amended). The sentences come from
+ * ui/hub-class.ts so this form, the join page and the hub's own About
+ * section cannot drift.
  */
 export function NewHub({
   onOpened,
@@ -98,39 +107,31 @@ export function NewHub({
           placeholder="Hub name"
           maxLength={100}
         />
-        <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
-          <input
-            type="radio"
-            name="hub-visibility"
-            checked={visibility === "private"}
-            onChange={() => setVisibility("private")}
-            className="mt-0.5 h-4 w-4 shrink-0"
-          />
-          <span>
-            Private
-            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-              Invitation only. Every channel is end-to-end encrypted, like a
-              group chat.
+        {/* One radio per class, with the class's own sentence under it --
+            never a sentence written here. Invite-only sits between the two
+            it is between: an invite gate like private, readable storage
+            like public, and that is exactly what its sentence says. */}
+        {HUB_CLASSES.map((option) => (
+          <label
+            key={option}
+            className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100"
+          >
+            <input
+              type="radio"
+              name="hub-visibility"
+              checked={visibility === option}
+              onChange={() => setVisibility(option)}
+              className="mt-0.5 h-4 w-4 shrink-0"
+            />
+            <span>
+              {classLabel(option)}
+              <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                {classSentence(option)}{" "}
+                {option !== "private" && CLASS_IS_PERMANENT}
+              </span>
             </span>
-          </span>
-        </label>
-        <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-100">
-          <input
-            type="radio"
-            name="hub-visibility"
-            checked={visibility === "public"}
-            onChange={() => setVisibility("public")}
-            className="mt-0.5 h-4 w-4 shrink-0"
-          />
-          <span>
-            Public
-            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-              Anyone with an account can join. Messages are stored readable
-              by the server, so search and moderation work. This cannot be
-              changed later.
-            </span>
-          </span>
-        </label>
+          </label>
+        ))}
         {error && <ErrorText>{error}</ErrorText>}
         <div className="flex gap-2">
           <Button

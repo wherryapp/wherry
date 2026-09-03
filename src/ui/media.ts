@@ -112,6 +112,93 @@ export async function prepareForUpload(
  * picked on a browser that cannot read one, which should not happen, since the
  * only platform that produces them can read them.
  */
+/** A profile picture's stored edge. Drawn at 56px at the largest today, so
+ *  256 covers a 3x display and a bigger card later without a re-upload. */
+const AVATAR_EDGE = 256;
+
+/** A touch above the photo quality: a face at 256px has nowhere to hide a
+ *  compression artefact, and the whole file is still about 20 KB. */
+const AVATAR_QUALITY = 0.85;
+
+/** The server's limit (routes/account.ts). Checked here so somebody is told
+ *  before an upload rather than by a 413 after one -- and in practice
+ *  unreachable, since a 256x256 JPEG is two orders of magnitude below it. */
+const AVATAR_MAX_BYTES = 512 * 1024;
+
+/**
+ * Prepares a picked file as a profile picture: centre-cropped square, 256px,
+ * JPEG.
+ *
+ * Square and JPEG rather than "whatever they picked", for two reasons that
+ * are not aesthetic. Every avatar in the app is a circle, so a picture that
+ * is not square is going to be cropped by *something* -- doing it here means
+ * the person sees the result before it is published, rather than discovering
+ * that CSS took the top-left corner of their photo. And the server serves
+ * these bytes back under `content-type: image/jpeg` and refuses anything
+ * that is not one (services/image-sniff.ts), so producing a JPEG is the
+ * client's half of that contract.
+ *
+ * Centre crop rather than a face detector or a chooser: it is what people
+ * expect, it is what every other app does, and the alternative is a cropping
+ * UI, which is a feature rather than a detail.
+ */
+export async function prepareAvatar(
+  file: File,
+): Promise<{ bytes: Uint8Array } | PrepareError> {
+  if (!file.type.startsWith("image/")) {
+    return {
+      kind: "unsupported",
+      message: "Choose an image for your profile picture.",
+    };
+  }
+
+  try {
+    const bitmap = await createImageBitmap(file, {
+      imageOrientation: "from-image",
+    });
+
+    // The largest centred square the picture contains.
+    const edge = Math.min(bitmap.width, bitmap.height);
+    const sx = Math.round((bitmap.width - edge) / 2);
+    const sy = Math.round((bitmap.height - edge) / 2);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = AVATAR_EDGE;
+    canvas.height = AVATAR_EDGE;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      bitmap.close();
+      return { kind: "unsupported", message: "That image could not be read." };
+    }
+
+    context.drawImage(bitmap, sx, sy, edge, edge, 0, 0, AVATAR_EDGE, AVATAR_EDGE);
+    bitmap.close();
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/jpeg", AVATAR_QUALITY);
+    });
+
+    if (!blob) {
+      return { kind: "unsupported", message: "That image could not be read." };
+    }
+
+    if (blob.size > AVATAR_MAX_BYTES) {
+      return {
+        kind: "too-large",
+        message: "That picture is too large. Try a smaller one.",
+      };
+    }
+
+    return { bytes: new Uint8Array(await blob.arrayBuffer()) };
+  } catch {
+    // The same honest failure as reencode's: an unreadable image, or a HEIC
+    // on a browser that cannot decode one. There is no passthrough fallback
+    // here -- the server would refuse a non-JPEG, correctly.
+    return { kind: "unsupported", message: "That image could not be read." };
+  }
+}
+
 async function reencode(file: File): Promise<PreparedFile | null> {
   try {
     // `imageOrientation: "from-image"` applies the EXIF rotation while

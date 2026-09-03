@@ -31,7 +31,7 @@ import {
 import type { StoredSession } from "../api/session";
 import type { UserProfile } from "../api/types";
 import { sync } from "../sync/engine";
-import { useConversations } from "./hooks";
+import { useAvatarUrl, useConversations } from "./hooks";
 import {
   Avatar,
   ChatIcon,
@@ -96,6 +96,8 @@ export function ProfileCard({
     profile?.user.displayName ?? request.hint?.displayName ?? "Someone";
   const username = profile?.user.username ?? request.hint?.username ?? null;
   const avatarHue = profile?.user.avatarHue ?? request.hint?.avatarHue ?? null;
+  const avatarKey = profile?.user.avatarKey ?? request.hint?.avatarKey ?? null;
+  const avatarUrl = useAvatarUrl(request.userId, avatarKey);
 
   // Shared conversations are counted locally: the list is already here, and
   // the server telling us would be a new disclosure for no new information.
@@ -170,6 +172,7 @@ export function ProfileCard({
             name={displayName}
             userId={request.userId}
             hue={avatarHue}
+            src={avatarUrl}
           />
           {profile?.presence && profile.presence !== "offline" && (
             <StatusDot status={profile.presence} size="md" />

@@ -995,9 +995,21 @@ export function PanelSection({
 /** How far a desktop card sits from its anchor, and from the viewport edge. */
 const POPOVER_GAP_PX = 6;
 const POPOVER_MARGIN_PX = 8;
-/** The card's width on a desktop -- `w-72`, stated once in pixels for the
- *  clamp below. Tailwind's rem scale at the default 16px root. */
-const POPOVER_WIDTH_PX = 288;
+/** The card's width on a desktop, in rem: `w-72` is 18rem. Measured rather
+ *  than hard-coded at 288, because the root font size is a user setting now
+ *  (ui/text-scale.ts) and a clamp computed against the wrong width puts a
+ *  large-text card off the edge of the screen. */
+const POPOVER_WIDTH_REM = 18;
+
+function popoverWidthPx(): number {
+  const root = parseFloat(
+    window.getComputedStyle(document.documentElement).fontSize,
+  );
+  // A computed style that is not a number is not a thing that happens in a
+  // real browser, and falling back to the default root is still better than
+  // NaN arithmetic placing the card at `left: NaN`.
+  return POPOVER_WIDTH_REM * (Number.isFinite(root) ? root : 16);
+}
 
 /**
  * A layer over the current screen that does not replace it: a card
@@ -1064,15 +1076,16 @@ export function Popover({
     const place = (): void => {
       const rect = anchor?.getBoundingClientRect();
       const viewportWidth = window.innerWidth;
+      const width = popoverWidthPx();
       const alignRight = rect ? rect.left + rect.width / 2 > viewportWidth / 2 : true;
       const rawLeft = rect
         ? alignRight
-          ? rect.right - POPOVER_WIDTH_PX
+          ? rect.right - width
           : rect.left
-        : viewportWidth - POPOVER_WIDTH_PX - POPOVER_MARGIN_PX;
+        : viewportWidth - width - POPOVER_MARGIN_PX;
       const left = Math.min(
         Math.max(rawLeft, POPOVER_MARGIN_PX),
-        viewportWidth - POPOVER_WIDTH_PX - POPOVER_MARGIN_PX,
+        viewportWidth - width - POPOVER_MARGIN_PX,
       );
       const top = rect ? rect.bottom + POPOVER_GAP_PX : POPOVER_MARGIN_PX;
       setPosition({ top, left });
@@ -1212,16 +1225,29 @@ export function Avatar({
   name,
   userId,
   hue: chosenHue,
+  src,
   size = "md",
   className,
 }: {
   name: string;
   userId: string;
   hue?: number | null;
+  /**
+   * A picture to draw instead of the initials -- an object URL the caller
+   * resolved with `useAvatarUrl`. The kit does no fetching and knows no API
+   * types, so resolving it is the caller's job; null or undefined is always
+   * fine and means initials, which is also what a picture that fails to
+   * decode falls back to.
+   */
+  src?: string | null;
   size?: "sm" | "md" | "lg";
   className?: string;
 }) {
   const hue = chosenHue ?? derivedHue(userId);
+  // The URL that failed rather than a boolean, so a *new* picture is tried
+  // rather than inheriting the last one's failure.
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
+  const showing = src && src !== brokenSrc ? src : null;
 
   const initials = name
     .split(/\s+/)
@@ -1231,7 +1257,7 @@ export function Avatar({
     .join("");
 
   const sizes = {
-    sm: "h-6 w-6 text-[10px]",
+    sm: "h-6 w-6 text-[0.625rem]",
     md: "h-10 w-10 text-sm",
     lg: "h-14 w-14 text-lg",
   } as const;
@@ -1246,20 +1272,38 @@ export function Avatar({
       )}
       style={{ backgroundColor: `oklch(0.55 0.13 ${hue})` }}
     >
-      {initials || "?"}
+      {showing ? (
+        <img
+          src={showing}
+          alt=""
+          // cover rather than contain: the picture is already a centre-cropped
+          // square (ui/media.ts), and contain would letterbox anything a
+          // client with a different idea of "square" uploaded.
+          className="h-full w-full rounded-full object-cover"
+          onError={() => setBrokenSrc(showing)}
+        />
+      ) : (
+        initials || "?"
+      )}
     </span>
   );
 }
 
 /**
- * The standing public-class label -- every surface a public hub channel has,
- * per the rule-1/9 amendment, pasted identically in the thread header and
- * the hub sidebar row before this.
+ * The standing privacy-class label -- every surface a readable hub channel
+ * has, per the rule-1/9 amendment: the thread header, the hub sidebar row,
+ * a voice room.
+ *
+ * It takes the *word*, not the class, because kit stays free of API types
+ * (HubVisibility is one) -- the caller gets the word from
+ * ui/hub-class.ts's `classLabel`, which is also what guarantees the pill
+ * and the sentence beneath it cannot disagree. Private renders no pill at
+ * all: the absence is the label, and has been since hubs shipped.
  */
-export function PublicPill() {
+export function ClassPill({ label }: { label: string }) {
   return (
-    <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[10px] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-      Public
+    <span className="shrink-0 rounded-full border border-neutral-300 px-1.5 text-[0.625rem] uppercase tracking-wide text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+      {label}
     </span>
   );
 }
@@ -1280,7 +1324,7 @@ export function Badge({
     <span
       aria-label={label ?? `${count} unread`}
       className={cx(
-        "shrink-0 rounded-full bg-accent-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white",
+        "shrink-0 rounded-full bg-accent-600 px-1.5 py-0.5 text-[0.625rem] font-semibold leading-none text-white",
         className,
       )}
     >

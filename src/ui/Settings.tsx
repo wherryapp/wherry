@@ -5,7 +5,7 @@
 // also happens to be the right shape on a phone, where a settings *page* is
 // what people expect anyway.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ApiError,
   changeAvatarColor,
@@ -14,14 +14,16 @@ import {
   fetchAccountSettings,
   fetchAttachmentUsage,
   fetchDevices,
+  removeAvatar,
   resendVerification,
   revokeDevice,
   setEmail,
   setReadReceipts,
+  uploadAvatar,
   type AccountDevice,
   type AttachmentUsage,
 } from "../api/client";
-import { markAvatarHue, type StoredSession } from "../api/session";
+import { markAvatarHue, markAvatarKey, type StoredSession } from "../api/session";
 import { changePasswordWithRewrap } from "../crypto/account";
 import {
   clearDiagnostics,
@@ -35,7 +37,15 @@ import {
   isSubscribed,
   type PushState,
 } from "../sync/push";
-import { useAnnouncements, useFeatures } from "./hooks";
+import { useAnnouncements, useAvatarUrl, useFeatures } from "./hooks";
+import { prepareAvatar } from "./media";
+import {
+  TEXT_SCALES,
+  TEXT_SCALE_LABELS,
+  applyTextScale,
+  storedScale,
+  type TextScale,
+} from "./text-scale";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import {
   Avatar,
@@ -175,6 +185,16 @@ export function Settings({
   const [bio, setBio] = useState("");
   // ?? null because a session stored before the field existed has undefined.
   const [hue, setHue] = useState<number | null>(session.user.avatarHue ?? null);
+  // Same ?? null as the hue: a session stored before the field existed.
+  const [avatarKey, setAvatarKey] = useState<string | null>(
+    session.user.avatarKey ?? null,
+  );
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  // Device-local, so it is read from storage rather than from the account:
+  // see ui/text-scale.ts for why text size is not an account setting.
+  const [textScale, setTextScale] = useState<TextScale>(() => storedScale());
+  const avatarInput = useRef<HTMLInputElement>(null);
+  const avatarUrl = useAvatarUrl(session.user.id, avatarKey);
   const [receipts, setReceipts] = useState<boolean | null>(null);
   const [emailAddress, setEmailAddress] = useState("");
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null);
@@ -215,6 +235,7 @@ export function Settings({
         setDisplayName(settings.displayName);
         setBio(settings.bio ?? "");
         setHue(settings.avatarHue ?? null);
+        setAvatarKey(settings.avatarKey ?? null);
         setReceipts(settings.readReceiptsEnabled);
         setEmailAddress(settings.email ?? "");
         setSavedEmail(settings.email);
@@ -287,6 +308,60 @@ export function Settings({
     } catch (caught) {
       report(caught, "Could not send that email.");
     }
+  }
+
+  /**
+   * The picture is prepared in the browser -- cropped, scaled and encoded as
+   * JPEG (ui/media.ts) -- rather than sent as picked. The server will only
+   * accept a JPEG, because it serves these bytes back under that content
+   * type, and a 4 MB phone photo has no business being uploaded to be drawn
+   * at 40 pixels.
+   */
+  async function pickAvatar(file: File | undefined) {
+    if (!file) return;
+    setError(null);
+    setNote(null);
+    setAvatarBusy(true);
+    try {
+      const prepared = await prepareAvatar(file);
+      if ("kind" in prepared) {
+        setError(prepared.message);
+        return;
+      }
+      const { avatarKey: key } = await uploadAvatar(prepared.bytes);
+      setAvatarKey(key);
+      // Keep the stored snapshot honest, exactly as the hue does: the header
+      // avatar is drawn from it, and the account frame the server sends
+      // covers this account's OTHER devices rather than this one.
+      markAvatarKey(session, key);
+      setNote("Saved. Other people will see it the next time their app syncs.");
+    } catch (caught) {
+      report(caught, "Could not save that picture.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function dropAvatar() {
+    setError(null);
+    setAvatarBusy(true);
+    try {
+      await removeAvatar();
+      setAvatarKey(null);
+      markAvatarKey(session, null);
+      setNote("Picture removed.");
+    } catch (caught) {
+      report(caught, "Could not remove that picture.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  function pickTextScale(next: TextScale): void {
+    setTextScale(next);
+    // Applied to the document immediately -- there is nothing to save and
+    // nothing to fail, so there is no note and no optimistic revert either.
+    applyTextScale(next);
   }
 
   async function pickHue(next: number | null) {
@@ -390,6 +465,59 @@ export function Settings({
         </PanelSection>
 
         <PanelSection
+          title="Profile picture"
+          description="Shown to anyone who can see your name. Not encrypted."
+        >
+          <div className="flex items-center gap-3">
+            <Avatar
+              name={displayName || session.user.displayName}
+              userId={session.user.id}
+              hue={hue}
+              src={avatarUrl}
+              size="lg"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Hidden input driven by a real Button, the composer's
+                  pattern -- a styled <label> would be a second thing that
+                  has to look like a button. */}
+              <input
+                ref={avatarInput}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onInput={(event) => {
+                  const input = event.currentTarget;
+                  const file = input.files?.[0];
+                  // Cleared so picking the same file twice fires again --
+                  // which is exactly what somebody does after a failure.
+                  input.value = "";
+                  void pickAvatar(file);
+                }}
+              />
+              <Button
+                type="button"
+                size="sm"
+                disabled={avatarBusy}
+                onClick={() => avatarInput.current?.click()}
+              >
+                {avatarKey ? "Change" : "Choose"}
+              </Button>
+              {avatarKey && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={avatarBusy}
+                  onClick={() => void dropAvatar()}
+                >
+                  Remove
+                </Button>
+              )}
+            </div>
+          </div>
+        </PanelSection>
+
+        <PanelSection
           title="Avatar colour"
           description="Yours on every device — it saves to your account, not this browser."
         >
@@ -431,6 +559,33 @@ export function Settings({
                 />
               ))}
             </div>
+          </div>
+        </PanelSection>
+
+        <PanelSection
+          title="Text size"
+          description="For this device. Pinch-zoom is off in the app so the layout stays put; this is the way to make everything bigger."
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            {TEXT_SCALES.map((scale) => (
+              <button
+                key={scale}
+                type="button"
+                aria-pressed={textScale === scale}
+                onClick={() => pickTextScale(scale)}
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  textScale === scale
+                    ? "border-accent-600 text-accent-700 dark:border-accent-400 dark:text-accent-300"
+                    : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-200"
+                }`}
+                // Each button is drawn at the size it selects, so the row is
+                // its own preview -- and the whole screen behind it changes
+                // the moment one is tapped, which is the real preview.
+                style={{ fontSize: `${scale}rem` }}
+              >
+                {TEXT_SCALE_LABELS[scale]}
+              </button>
+            ))}
           </div>
         </PanelSection>
 
@@ -576,7 +731,7 @@ export function Settings({
                 <li key={entry.id}>
                   <p className="flex items-center gap-2">
                     <span
-                      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-[0.625rem] font-medium uppercase tracking-wide ${
                         entry.kind === "release"
                           ? "bg-accent-50 text-accent-700 dark:bg-accent-950 dark:text-accent-100"
                           : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"

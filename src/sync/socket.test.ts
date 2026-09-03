@@ -33,7 +33,7 @@ class FakeSocket implements SocketLike {
   }
 }
 
-function harness(options?: { token?: string | null }) {
+function harness(options?: { token?: string | null; backoffMs?: number }) {
   const sockets: FakeSocket[] = [];
   let notified = 0;
   const manager = new SocketManager({
@@ -45,8 +45,13 @@ function harness(options?: { token?: string | null }) {
     url: "ws://test/api/ws",
     getToken: () => (options && "token" in options ? options.token! : "tok"),
     notify: () => (notified += 1),
-    // Instant, deterministic reconnects: a zero-width backoff window.
-    backoff: new Backoff({ baseMs: 0, ceilingMs: 0 }),
+    // Instant, deterministic reconnects: a zero-width backoff window --
+    // except where a test needs a wait long enough to prove something
+    // happened *instead* of it (reconnectNow, below).
+    backoff: new Backoff({
+      baseMs: options?.backoffMs ?? 0,
+      ceilingMs: options?.backoffMs ?? 0,
+    }),
     staleCheckMs: 60 * 60 * 1000,
   });
   return { manager, sockets, notified: () => notified };
@@ -221,4 +226,47 @@ test("a signal frame reaches onFrame; core frames and junk do not", () => {
     { type: "delivered", conversationId: "c", byUserId: "u", upTo: "m" },
   ]);
   manager.stop();
+});
+
+test("reconnectNow connects at once instead of waiting out the backoff", async () => {
+  // A minute-long wait, so a socket appearing can only be this call: the
+  // scheduled reconnect is nowhere near due.
+  const { manager, sockets } = harness({ backoffMs: 60_000 });
+  manager.start();
+  sockets[0]!.fire("open", {});
+  sockets[0]!.fire("message", { data: '{"type":"ready"}' });
+  sockets[0]!.fire("close", { code: 1006 });
+
+  await flushTimers();
+  assert.equal(sockets.length, 1, "the scheduled reconnect is not due yet");
+
+  manager.reconnectNow();
+  assert.equal(sockets.length, 2, "connects synchronously");
+
+  // And the pending timer was cleared rather than left to fire a second
+  // connection on top of this one.
+  await flushTimers();
+  assert.equal(sockets.length, 2);
+  manager.stop();
+});
+
+test("reconnectNow leaves a healthy socket alone", () => {
+  const { manager, sockets } = harness({ backoffMs: 60_000 });
+  manager.start();
+  sockets[0]!.fire("open", {});
+  sockets[0]!.fire("message", { data: '{"type":"ready"}' });
+
+  manager.reconnectNow();
+  assert.equal(sockets.length, 1);
+  assert.equal(sockets[0]!.closed.length, 0);
+  manager.stop();
+});
+
+test("reconnectNow after stop stays stopped", () => {
+  const { manager, sockets } = harness({ backoffMs: 60_000 });
+  manager.start();
+  manager.stop();
+
+  manager.reconnectNow();
+  assert.equal(sockets.length, 1);
 });

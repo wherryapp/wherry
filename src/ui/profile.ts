@@ -18,6 +18,10 @@ export type ProfileHint = {
   displayName: string;
   username: string;
   avatarHue: number | null | undefined;
+  /** The profile picture's key, so the card opens with the face the row
+   *  the person just tapped was already showing rather than initials for a
+   *  frame. Undefined where the opener does not have one to hand. */
+  avatarKey?: string | null | undefined;
 };
 
 export type ProfileRequest = {

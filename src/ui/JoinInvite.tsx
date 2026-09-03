@@ -6,6 +6,7 @@ import { ApiError, previewHubInvite, redeemHubInvite } from "../api/client";
 import type { HubInvitePreview } from "../api/types";
 import { sync } from "../sync/engine";
 import { Button, ErrorText, Note, Panel } from "./kit";
+import { classLabel, classSentence, isServerReadable } from "./hub-class";
 
 /**
  * The landing surface for /join/<token> links. Previews before joining --
@@ -75,10 +76,14 @@ export function JoinInvite({
               {preview.memberCount}{" "}
               {preview.memberCount === 1 ? "member" : "members"}.
             </p>
+            {/* The class, in the same words as everywhere else, at the one
+                moment somebody is deciding whether to be in this room. An
+                invite-only hub is the case this matters most for: the link
+                somebody was sent looks exactly like a private hub's. */}
             <Note>
-              {preview.visibility === "public"
-                ? "Public hub — messages here are stored readable by the server so search and moderation can work."
-                : "Private hub — every channel is end-to-end encrypted. Joining by link shares none of the earlier messages."}
+              {classLabel(preview.visibility)} hub — {classSentence(preview.visibility)}
+              {!isServerReadable(preview.visibility) &&
+                " Joining by link shares none of the earlier messages."}
             </Note>
             <Button onClick={join} loading={busy} className="w-full">
               Join hub

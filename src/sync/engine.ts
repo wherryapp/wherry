@@ -77,6 +77,7 @@ import {
 } from "./leader";
 import { mlsEnabled, mlsSync, type Identity } from "./mls";
 import { SocketManager } from "./socket";
+import { isServerReadable } from "../api/hub-class";
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -479,6 +480,7 @@ export class SyncEngine {
     );
 
     document.addEventListener("visibilitychange", this.#onVisibility);
+    window.addEventListener("online", this.#onOnline);
 
     // The path a follower tab's ephemeral frames take to the one socket:
     // its engine broadcasts an intent, and whichever tab is leading (and so
@@ -513,6 +515,7 @@ export class SyncEngine {
 
   stop(): void {
     document.removeEventListener("visibilitychange", this.#onVisibility);
+    window.removeEventListener("online", this.#onOnline);
     this.#unsubscribeBroadcasts?.();
     this.#unsubscribeBroadcasts = null;
     this.#leader?.stop();
@@ -634,12 +637,16 @@ export class SyncEngine {
       ...(options.silent ? { silent: true as const } : {}),
     };
 
-    // A public hub channel never seals: the payload IS the content, sent
+    // A readable hub channel never seals: the payload IS the content, sent
     // with no crypto fields (the flush already omits absent ones), stored
-    // by the server readable as protocol v4. The class comes from the
-    // stored conversation -- the server's answer, never inferred.
+    // by the server readable as protocol v4. Both readable classes take
+    // this path -- public, and invite-only since 2026-09-03 -- which is
+    // what isServerReadable answers; comparing to "public" here would send
+    // MLS ciphertext into a room with no MLS group behind it. The class
+    // comes from the stored conversation -- the server's answer, never
+    // inferred.
     const conversation = await store.getConversation(conversationId);
-    if (conversation?.hubVisibility === "public") {
+    if (isServerReadable(conversation?.hubVisibility)) {
       await store.enqueueOutbox({
         ...base,
         protocolVersion: PROTOCOL_PUBLIC,
@@ -728,8 +735,42 @@ export class SyncEngine {
   #onVisibility = (): void => {
     // Coming back to a stale timeline for two seconds is the most visible way
     // polling feels slow, and it costs one request to avoid.
-    if (document.visibilityState === "visible") this.poke();
+    //
+    // The socket gets the same treatment (2026-09-03): a phone returning to
+    // the foreground is the other common shape of a network flap, and until
+    // now the poke woke the poll while the socket sat out whatever wait it
+    // had grown to. reconnectNow is a no-op on a healthy one.
+    if (document.visibilityState === "visible") {
+      this.#reviveNow();
+    }
   };
+
+  /**
+   * The network probably just came back: try everything at once rather than
+   * waiting out a backoff sized for the outage.
+   *
+   * `online` is what this exists for -- the sync loop listened to no such
+   * event, so a wifi flap meant sitting in the current wait even though the
+   * OS had already said the network was back. Deliberately nothing listens
+   * for `offline`: the socket's own staleness check and the poll's error
+   * path already handle a dead network, and reacting eagerly to `offline` is
+   * how flaky captive-portal wifi becomes a reconnect storm.
+   *
+   * `navigator.onLine` is not consulted. It answers "there is an interface",
+   * not "the server is reachable", and a false negative here would suppress
+   * exactly the retry that would have worked.
+   */
+  #onOnline = (): void => {
+    this.#reviveNow();
+  };
+
+  #reviveNow(): void {
+    // The wait describes an outage that is over. Reset before poking, or the
+    // loop's next sleep is still the long one.
+    this.#backoff.reset();
+    this.#socket?.reconnectNow();
+    this.poke();
+  }
 
   async #runLoop(signal: AbortSignal): Promise<void> {
     // The socket's lifetime is leadership's lifetime. Only the tab running
@@ -1443,7 +1484,9 @@ export class SyncEngine {
                 : "renderable",
           muted: conversation.muted === true,
           dnd: selfStatus.isDnd(),
-          publicChannel: conversation.hubVisibility === "public",
+          // The notification rule's "big room" case: a readable channel is
+          // a room that can hold hundreds, so it pushes on a mention only.
+          publicChannel: isServerReadable(conversation.hubVisibility),
           mentionsSelf:
             renderable &&
             (content.mentions?.includes(session.user.id) ?? false),
@@ -1468,7 +1511,8 @@ export class SyncEngine {
   }
 
   /**
-   * Delivery for public hub channels, which have no envelopes and no inbox
+   * Delivery for server-readable hub channels, which have no envelopes and
+   * no inbox
    * -- protocol v4 rows are fetched by cursor from `/archive`, per channel.
    *
    * First contact fetches one newest-first page and sets the watermark; from
@@ -1482,8 +1526,11 @@ export class SyncEngine {
    */
   async #publicChannelSync(signal: AbortSignal): Promise<void> {
     const conversations = await store.listConversations();
-    const channels = conversations.filter(
-      (conversation) => conversation.hubVisibility === "public",
+    const channels = conversations.filter((conversation) =>
+      // Every readable channel is delivered by a cursor read over its
+      // archive rows -- there are no envelopes to drain -- so this sweep
+      // covers invite-only channels as well as public ones.
+      isServerReadable(conversation.hubVisibility),
     );
     if (channels.length === 0) return;
 

@@ -24,7 +24,9 @@ export type NotifyCandidate = {
   kind: "renderable" | "op" | "unsupported";
   /** The viewer muted this conversation. */
   muted: boolean;
-  /** A public hub channel (protocol v4 delivery). */
+  /** A hub channel the server can read (protocol v4 delivery) -- public or
+   *  invite-only. The rule cares because those are the rooms that can hold
+   *  hundreds of people, not because of who may join. */
   publicChannel: boolean;
   /** The decoded content mentions this account. */
   mentionsSelf: boolean;

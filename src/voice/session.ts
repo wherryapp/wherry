@@ -46,6 +46,7 @@ import {
 } from "../api/client";
 import { loadSession } from "../api/session";
 import type { Call, CallKind, HubVisibility, JoinResult } from "../api/types";
+import { isServerReadable } from "../api/hub-class";
 import { e2e } from "../crypto";
 import { sync, type SyncEvent } from "../sync/engine";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
@@ -475,7 +476,11 @@ class VoiceSession {
       return;
     }
 
-    const e2ee = plan.conversation.hubVisibility !== "public";
+    // E2EE exactly where there is an MLS group to export a key from --
+    // i.e. everything except a readable hub channel (public, and
+    // invite-only since 2026-09-03), whose media the SFU relays in the
+    // clear and whose UI says so.
+    const e2ee = !isServerReadable(plan.conversation.hubVisibility);
     this.#leaving = false;
     this.#set({
       ...IDLE,

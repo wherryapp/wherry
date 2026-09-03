@@ -80,6 +80,20 @@ function avatarHue(
   return null;
 }
 
+/** The same for the profile picture's key: the other person's in a 1:1, and
+ *  nothing for a group or a channel -- a room has no face, and drawing one
+ *  member's would be a lie about whose row it is. */
+function avatarKey(
+  conversation: StoredConversation,
+  selfUserId: string,
+): string | null {
+  const others = conversation.members.filter((m) => m.userId !== selfUserId);
+  if (conversation.kind === "direct" && others.length === 1) {
+    return others[0]!.avatarKey ?? null;
+  }
+  return null;
+}
+
 
 /**
  * A file size somebody can read at a glance.
@@ -111,5 +125,6 @@ export {
   listTime,
   avatarSeed,
   avatarHue,
+  avatarKey,
   formatBytes,
 };

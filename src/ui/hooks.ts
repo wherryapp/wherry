@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
+import { acquireAvatar, releaseAvatar } from "./avatars";
 import { DEFAULT_FILE_POLICY, type FilePolicy } from "./file-policy";
 import { ApiError, fetchAccountSettings, type Announcement,
   fetchAttachmentUsage,
@@ -1048,4 +1049,48 @@ export function useSelfStatus(): SelfStatus {
   });
 
   return value;
+}
+
+/**
+ * The object URL of somebody's profile picture, or null while it loads and
+ * for anyone who has none.
+ *
+ * The caller resolves the URL and passes it to kit's `Avatar`, rather than
+ * the kit fetching for itself: the kit knows nothing about the API and
+ * should keep not knowing. Passing null is always safe -- initials.
+ *
+ * Sharing and revocation live in ui/avatars.ts, so twenty rows showing the
+ * same person cost one request and one object URL.
+ */
+export function useAvatarUrl(
+  userId: string,
+  avatarKey: string | null | undefined,
+): string | null {
+  // Keyed rather than a bare URL, so the answer for a *previous* key is
+  // never shown for this one -- and so no state has to be cleared
+  // synchronously when the key changes, which is a render the derivation
+  // below does for free.
+  const [resolved, setResolved] = useState<{
+    key: string;
+    url: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!avatarKey) return;
+
+    let cancelled = false;
+    // Awaited before releasing even when the component is already gone: an
+    // acquire that has not resolved yet still owes a release, or the URL it
+    // creates is never revoked.
+    const pending = acquireAvatar(userId, avatarKey).then((url) => {
+      if (!cancelled) setResolved({ key: avatarKey, url });
+    });
+
+    return () => {
+      cancelled = true;
+      void pending.finally(() => releaseAvatar(avatarKey));
+    };
+  }, [userId, avatarKey]);
+
+  return avatarKey && resolved?.key === avatarKey ? resolved.url : null;
 }

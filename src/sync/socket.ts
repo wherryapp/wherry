@@ -131,6 +131,30 @@ export class SocketManager {
     }, this.#options.staleCheckMs ?? STALE_CHECK_MS);
   }
 
+  /**
+   * Reconnects now instead of waiting out the current backoff.
+   *
+   * For the two moments a client learns its network probably just came back
+   * -- `online` firing, and the page becoming visible again (sync/engine.ts)
+   * -- where the honest thing to do is try immediately rather than sit in a
+   * wait that was sized for a server that was down.
+   *
+   * A no-op when stopped or already healthy: this says "try now", not
+   * "reconnect", and tearing down a working socket because the OS changed
+   * its mind about connectivity is how a flaky captive portal turns into a
+   * reconnect storm. The backoff is reset because the wait it had grown to
+   * describes the *old* network, not this one.
+   */
+  reconnectNow(): void {
+    if (this.#stopped || this.#healthy) return;
+    if (this.#reconnectTimer !== null) {
+      clearTimeout(this.#reconnectTimer);
+      this.#reconnectTimer = null;
+    }
+    this.#backoff.reset();
+    this.#connect();
+  }
+
   stop(): void {
     this.#stopped = true;
     if (this.#reconnectTimer !== null) clearTimeout(this.#reconnectTimer);

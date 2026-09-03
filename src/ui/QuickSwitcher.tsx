@@ -7,8 +7,12 @@
 import { useMemo, useState } from "react";
 import type { HubSummary } from "../api/types";
 import type { StoredConversation } from "../store/types";
-import { avatarSeed, conversationTitle } from "./format";
-import { Avatar, Input } from "./kit";
+import { avatarKey as dmAvatarKey, avatarSeed, conversationTitle } from "./format";
+import { Input } from "./kit";
+import { StatusDot } from "./StatusDot";
+import { UserAvatar } from "./UserAvatar";
+import { useSidebarPresence } from "./hooks";
+import { presenceStatusOf } from "./status";
 
 type Entry = {
   id: string;
@@ -18,6 +22,13 @@ type Entry = {
   isChannel: boolean;
   /** The same seed the sidebar row uses, so the colours agree. */
   seed: string;
+  /** The other person, in a 1:1 -- for the online dot. Null for groups and
+   *  channels: a room's dot is the sidebar's business, and this list is
+   *  ephemeral enough that "who else is in that group" is not what somebody
+   *  hitting Cmd+K is asking. */
+  otherUserId: string | null;
+  /** Their profile picture's key, in a 1:1. */
+  avatarKey: string | null;
 };
 
 export function QuickSwitcher({
@@ -36,6 +47,21 @@ export function QuickSwitcher({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
 
+  // The sidebar's own bulk presence, asked again for as long as this dialog
+  // is open. Its first ask is staggered two seconds past mount (see the
+  // hook), so a switcher opened and dismissed in a blink shows no dots --
+  // which is the right trade: the alternative is another ask racing the
+  // thread's own every time somebody hits Cmd+K.
+  const dmIds = useMemo(
+    () =>
+      conversations
+        .filter((c) => c.kind !== "channel" && c.members.length === 2)
+        .map((c) => c.id)
+        .sort(),
+    [conversations],
+  );
+  const presence = useSidebarPresence(dmIds);
+
   const entries = useMemo<Entry[]>(() => {
     const channelIdsFromHubs = new Set(
       hubs.flatMap((hub) => hub.channels.map((channel) => channel.id)),
@@ -48,6 +74,11 @@ export function QuickSwitcher({
         sub: null,
         isChannel: false,
         seed: avatarSeed(c, selfId),
+        otherUserId:
+          c.members.length === 2
+            ? (c.members.find((member) => member.userId !== selfId)?.userId ?? null)
+            : null,
+        avatarKey: dmAvatarKey(c, selfId),
       }));
     const channels: Entry[] = hubs.flatMap((hub) =>
       hub.channels.map((channel) => ({
@@ -56,6 +87,8 @@ export function QuickSwitcher({
         sub: hub.name,
         isChannel: true,
         seed: channel.id,
+        otherUserId: null,
+        avatarKey: null,
       })),
     );
     // A channel row whose hub summary is missing (the flag off, a stale
@@ -68,6 +101,8 @@ export function QuickSwitcher({
         sub: null,
         isChannel: true,
         seed: c.id,
+        otherUserId: null,
+        avatarKey: null,
       }));
     return [...direct, ...channels, ...orphans];
   }, [conversations, hubs, selfId]);
@@ -152,7 +187,25 @@ export function QuickSwitcher({
                     #
                   </span>
                 ) : (
-                  <Avatar size="sm" name={entry.label} userId={entry.seed} />
+                  <span className="relative shrink-0">
+                    <UserAvatar
+                      size="sm"
+                      name={entry.label}
+                      userId={entry.seed}
+                      avatarKey={entry.avatarKey}
+                    />
+                    {entry.otherUserId !== null &&
+                      (presence.get(entry.id)?.online.includes(entry.otherUserId) ??
+                        false) && (
+                        <StatusDot
+                          status={presenceStatusOf(
+                            entry.otherUserId,
+                            presence.get(entry.id)?.statuses,
+                          )}
+                          size="sm"
+                        />
+                      )}
+                  </span>
                 )}
                 <span className="min-w-0 flex-1 truncate text-neutral-900 dark:text-neutral-100">
                   {entry.label.replace(/^#/, "")}

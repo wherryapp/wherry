@@ -95,11 +95,13 @@ export type StoredConversation = {
    * hubs existed) otherwise. Mirrors the wire field. */
   hubId?: string | null;
   /**
-   * The channel's content class, straight off the wire -- 'public' is what
-   * routes a send around the E2E seal (sync/engine.ts enqueue) and what the
-   * UI labels. Absent on pre-hubs rows, which are all sealed.
+   * The channel's content class, straight off the wire. A *readable* class
+   * -- 'public' or 'invite_only' -- is what routes a send around the E2E
+   * seal (sync/engine.ts enqueue); ask `isServerReadable` (ui/hub-class.ts)
+   * rather than comparing to 'public', which is the different question of
+   * whether anyone may join. Absent on pre-hubs rows, which are all sealed.
    */
-  hubVisibility?: "private" | "public" | null;
+  hubVisibility?: "private" | "public" | "invite_only" | null;
   /** 'voice' for a hub voice channel; absent on rows stored before voice
    *  existed, which are all text. Mirrors the wire field. */
   channelKind?: "text" | "voice";
@@ -113,6 +115,9 @@ export type StoredConversation = {
      *  stored before the column existed come back without it -- treat
      *  undefined exactly like null. */
     avatarHue?: number | null;
+    /** The profile picture's Storage key, or null/absent for none. Optional
+     *  for the same reason as the hue: rows stored before it existed. */
+    avatarKey?: string | null;
     /** See the wire type in api/types.ts. Null until they have read anything. */
     lastReadMessageId: string | null;
     lastReadAt: string | null;

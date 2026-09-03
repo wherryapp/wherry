@@ -203,6 +203,23 @@ export function markAvatarHue(
   return updated;
 }
 
+/** The same, for the profile picture's key (migration 0026): the header
+ *  avatar is drawn from this snapshot, so without it a new picture appears
+ *  everywhere except on the person who just chose it, until a reload. */
+export function markAvatarKey(
+  session: StoredSession,
+  avatarKey: string | null,
+): StoredSession {
+  const updated: StoredSession = {
+    ...session,
+    user: { ...session.user, avatarKey },
+  };
+  cached = updated;
+  writeKey(SESSION_KEY, JSON.stringify(updated));
+  void vaultSet(VAULT_SESSION, JSON.stringify(updated));
+  return updated;
+}
+
 /**
  * Forgets the token but *keeps* the device id.
  *

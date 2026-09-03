@@ -78,7 +78,8 @@ export function Composer({
   /** Shown when set; the server enforces it (mods exempt, ops exempt). */
   slowmodeSeconds: number | null;
   /**
-   * True in a public hub channel, where nothing is sealed: the message
+   * True in a server-readable hub channel (public or invite-only), where
+   * nothing is sealed: the message
    * payload goes up readable (protocol v4 -- sync/engine.ts's enqueue
    * decides that on its own from the stored conversation), and attachments
    * skip the blob seal here for the same honesty -- a key that rides inside
@@ -613,7 +614,7 @@ export function Composer({
                   // the person picked the file a second ago.
                   <span className="flex h-16 w-16 flex-col items-center justify-center gap-1 rounded-md bg-neutral-200 px-1 dark:bg-neutral-700">
                     <FileIcon className="h-5 w-5 text-neutral-500 dark:text-neutral-400" />
-                    <span className="w-full truncate text-center text-[10px] uppercase text-neutral-600 dark:text-neutral-300">
+                    <span className="w-full truncate text-center text-[0.625rem] uppercase text-neutral-600 dark:text-neutral-300">
                       {fileExtension(item.file.name) ?? "file"}
                     </span>
                   </span>

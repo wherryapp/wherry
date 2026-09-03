@@ -8,6 +8,7 @@ import {
   durationSeconds,
   expiryLabel,
   nextMorning,
+  onlineOthers,
   presenceStatusOf,
   statusDotClass,
   statusLabel,
@@ -52,4 +53,24 @@ test("the expiry label says tomorrow when it is", () => {
   const now = new Date(2026, 8, 3, 12, 0);
   assert.match(expiryLabel(new Date(2026, 8, 3, 14, 30).toISOString(), now), /^Until \d/);
   assert.match(expiryLabel(new Date(2026, 8, 4, 8, 0).toISOString(), now), /^Until tomorrow/);
+});
+
+test("onlineOthers keeps member order and drops the caller", () => {
+  const members = ["a", "b", "c", "d"];
+  assert.deepEqual(onlineOthers(members, "a", ["d", "b", "a"]), ["b", "d"]);
+});
+
+test("onlineOthers treats an absent snapshot as unknown, not offline", () => {
+  // Unknown and everyone-offline render the same way today -- no dots -- but
+  // they must not be conflated: presence has no stored form, so "we have not
+  // been told" is the state a socket-down client is in most of the time.
+  assert.deepEqual(onlineOthers(["a", "b"], "a", undefined), []);
+  assert.deepEqual(onlineOthers(["a", "b"], "a", []), []);
+});
+
+test("onlineOthers ignores ids that are not members", () => {
+  // The bulk answer is per conversation, but a stale one could name somebody
+  // who has since left; the row draws members, so the intersection is what
+  // matters rather than the raw list's length.
+  assert.deepEqual(onlineOthers(["a", "b"], "a", ["z", "b"]), ["b"]);
 });

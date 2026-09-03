@@ -5,7 +5,9 @@
 import { useState } from "react";
 import { moderateVoice } from "../../api/client";
 import type { StoredConversation } from "../../store/types";
-import { Avatar, Button, LockIcon, MicIcon, MicOffIcon, PhoneOffIcon, PublicPill } from "../kit";
+import { Button, ClassPill, LockIcon, MicIcon, MicOffIcon, PhoneOffIcon } from "../kit";
+import { UserAvatar } from "../UserAvatar";
+import { classLabel, isServerReadable } from "../hub-class";
 import { mediaSupported } from "../../voice/devices";
 import { useVoice } from "../../voice/hooks";
 import { voice } from "../../voice/session";
@@ -29,7 +31,10 @@ export function VoiceRoom({
     state.conversationId === conversation.id &&
     (state.phase === "connected" || state.phase === "reconnecting");
   const joining = state.conversationId === conversation.id && state.phase === "connecting";
-  const isPublic = conversation.hubVisibility === "public";
+  // Readability decides the media class too: a readable hub has no MLS
+  // group, so there is no exporter to derive a call key from and the SFU
+  // relays frames it CAN open. Same label, same disclosure, both classes.
+  const isPublic = isServerReadable(conversation.hubVisibility);
 
   // While connected, the SFU's roster is live (speaking, muted); before
   // that, the server's occupancy is what there is.
@@ -41,6 +46,9 @@ export function VoiceRoom({
     conversation.members.map((m) => [m.userId, m.displayName || m.username] as const),
   );
   const hues = new Map(conversation.members.map((m) => [m.userId, m.avatarHue] as const));
+  const keys = new Map(
+    conversation.members.map((m) => [m.userId, m.avatarKey ?? null] as const),
+  );
 
   const moderate = async (userId: string, action: "mute" | "disconnect"): Promise<void> => {
     if (!conversation.hubId) return;
@@ -61,8 +69,13 @@ export function VoiceRoom({
         <div className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-300">
           {isPublic ? (
             <>
-              <PublicPill />
-              <span>Voice in a public hub is relayed by the server and not end-to-end encrypted.</span>
+              <ClassPill
+                label={classLabel(conversation.hubVisibility ?? "public")}
+              />
+              <span>
+                Voice in a {classLabel(conversation.hubVisibility ?? "public").toLowerCase()}{" "}
+                hub is relayed by the server and not end-to-end encrypted.
+              </span>
             </>
           ) : (
             <>
@@ -97,7 +110,7 @@ export function VoiceRoom({
                     speaking ? "ring-emerald-500" : "ring-transparent"
                   }`}
                 >
-                  <Avatar size="sm" name={names.get(userId) ?? "Someone"} userId={userId} hue={hues.get(userId) ?? null} />
+                  <UserAvatar size="sm" name={names.get(userId) ?? "Someone"} userId={userId} hue={hues.get(userId) ?? null} avatarKey={keys.get(userId) ?? null} />
                 </span>
                 <span className="min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-neutral-100">
                   {me ? "You" : (names.get(userId) ?? "Someone")}

@@ -18,7 +18,8 @@ import { voice } from "../voice/session";
 import { Presence, Timeline, TypingLine } from "./Timeline";
 import { Composer } from "./Composer";
 import { type EditDraft, type ReplyDraft } from "./drafts";
-import { avatarHue, avatarSeed, conversationTitle } from "./format";
+import { avatarHue, avatarKey, avatarSeed, conversationTitle } from "./format";
+import { classLabel, isServerReadable } from "./hub-class";
 import { useIsDesktop } from "./viewport";
 import { ConversationList } from "./sidebar/Sidebar";
 import {
@@ -46,7 +47,6 @@ import {
 } from "./hooks";
 import { QuickSwitcher } from "./QuickSwitcher";
 import {
-  Avatar,
   BackButton,
   BellIcon,
   BellOffIcon,
@@ -55,10 +55,11 @@ import {
   IconButton,
   LockIcon,
   PinIcon,
-  PublicPill,
+  ClassPill,
   UsersIcon,
   HeadphonesIcon,
 } from "./kit";
+import { UserAvatar } from "./UserAvatar";
 
 // eventText, readCount, readLabel, deliveredCount, deliveredLabel, time,
 // escapeRegex and highlightMentions moved to Timeline.tsx, the only file
@@ -761,11 +762,12 @@ export function Chat({
             >
               <span className="relative block">
                 <SelfStatusDot>
-                  <Avatar
+                  <UserAvatar
                     size="sm"
                     name={session.user.displayName}
                     userId={session.user.id}
                     hue={session.user.avatarHue}
+                    avatarKey={session.user.avatarKey}
                   />
                 </SelfStatusDot>
               </span>
@@ -814,11 +816,12 @@ export function Chat({
                         ? current.members.find((member) => member.userId !== session.user.id)
                         : undefined;
                     const avatar = (
-                      <Avatar
+                      <UserAvatar
                         size="sm"
                         name={conversationTitle(current, session.user.id)}
                         userId={avatarSeed(current, session.user.id)}
                         hue={avatarHue(current, session.user.id)}
+                        avatarKey={avatarKey(current, session.user.id)}
                       />
                     );
                     return other ? (
@@ -833,6 +836,7 @@ export function Chat({
                               displayName: other.displayName || other.username,
                               username: other.username,
                               avatarHue: other.avatarHue,
+                              avatarKey: other.avatarKey,
                             },
                           })
                         }
@@ -863,10 +867,13 @@ export function Chat({
                           ? conversationTitle(current, session.user.id)
                           : "Conversation"}
                       </span>
-                      {current?.hubVisibility === "public" && <PublicPill />}
+                      {current?.hubVisibility &&
+                        current.hubVisibility !== "private" && (
+                          <ClassPill label={classLabel(current.hubVisibility)} />
+                        )}
                     </span>
                     {channelInfo?.topic && (
-                      <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+                      <span className="block truncate text-[0.6875rem] text-neutral-500 dark:text-neutral-400">
                         {channelInfo.topic}
                       </span>
                     )}
@@ -944,7 +951,10 @@ export function Chat({
                     current?.kind === "channel" && current.hubId && canModerate
                       ? {
                           hubId: current.hubId,
-                          isPublic: current.hubVisibility === "public",
+                          // Moderator deletion is server-enforced wherever
+                          // the server can read the message -- both readable
+                          // classes, not just the joinable one.
+                          isPublic: isServerReadable(current.hubVisibility),
                         }
                       : undefined
                   }
@@ -963,7 +973,7 @@ export function Chat({
                 ) : (
                   <Composer
                     conversationId={selected}
-                    publicChannel={current?.hubVisibility === "public"}
+                    publicChannel={isServerReadable(current?.hubVisibility)}
                     members={(current?.members ?? [])
                       .filter((member) => member.userId !== session.user.id)
                       .map((member) => ({

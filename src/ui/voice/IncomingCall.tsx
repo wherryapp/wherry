@@ -7,7 +7,8 @@ import { useEffect } from "react";
 import { declineCall } from "../../api/client";
 import type { StoredConversation } from "../../store/types";
 import { conversationTitle } from "../format";
-import { Avatar, Button, PhoneIcon, PhoneOffIcon } from "../kit";
+import { Button, PhoneIcon, PhoneOffIcon } from "../kit";
+import { UserAvatar } from "../UserAvatar";
 import type { Ring } from "../../voice/rules";
 import { shouldRingAudibly } from "../../voice/rules";
 import { startRing } from "../../voice/sounds";
@@ -75,11 +76,12 @@ export function IncomingCall({
     >
       <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center shadow-xl dark:bg-neutral-900">
         <div className="flex justify-center">
-          <Avatar
+          <UserAvatar
             size="lg"
             name={callerName}
             userId={ring.byUserId}
             hue={caller?.avatarHue ?? null}
+            avatarKey={caller?.avatarKey ?? null}
           />
         </div>
         <p className="mt-4 text-lg font-semibold text-neutral-900 dark:text-neutral-100">

@@ -97,7 +97,7 @@ export function CallBar({
                 className="h-3.5 w-3.5 shrink-0 text-accent-600 dark:text-accent-400"
               />
             ) : (
-              <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+              <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-amber-800 dark:bg-amber-900 dark:text-amber-200">
                 Not end-to-end encrypted
               </span>
             )}

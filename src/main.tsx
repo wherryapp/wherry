@@ -10,6 +10,7 @@ import { stripReloadMarker } from "./reload";
 import { guardStrayFileDrops } from "./ui/drop-guard";
 import { trackVisualViewport } from "./ui/viewport";
 import { lockPageZoom } from "./ui/zoom";
+import { restoreTextScale } from "./ui/text-scale";
 import { startIdleTracking } from "./sync/idle";
 
 // Before the first render, so the shell is sized correctly on the first
@@ -20,6 +21,12 @@ trackVisualViewport();
 // component effect: the gesture it cancels is available from the first frame,
 // and a lock that attaches after the tree mounts is a lock with a gap in it.
 lockPageZoom();
+
+// The other half of turning page pinch-zoom off (2026-09-03): the chosen
+// text size, on the document before the first paint. A component effect
+// would repaint the whole app one frame in, which on a phone reads as the
+// UI resizing itself every time it is opened. See ui/text-scale.ts.
+restoreTextScale();
 
 // Idle detection starts with the page too: the five-minute clock it keeps
 // has to begin at the first input, not at the first render of some panel.

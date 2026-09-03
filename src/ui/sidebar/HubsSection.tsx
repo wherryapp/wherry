@@ -1,6 +1,7 @@
 // The sidebar's hubs list, nested under the conversation list.
 
 import { Fragment, useRef, useState } from "react";
+import { classLabel } from "../hub-class";
 import type { HubSummary } from "../../api/types";
 import {
   Avatar,
@@ -9,7 +10,7 @@ import {
   ChevronLeftIcon,
   HeadphonesIcon,
   LockIcon,
-  PublicPill,
+  ClassPill,
 } from "../kit";
 import { useSidebarPrefs } from "./prefs";
 import { moveItem } from "./rank";
@@ -289,7 +290,9 @@ export function HubsSection({
                 <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
                   {hub.name}
                 </span>
-                {hub.visibility === "public" && <PublicPill />}
+                {hub.visibility !== "private" && (
+                  <ClassPill label={classLabel(hub.visibility)} />
+                )}
               </button>
               {collapsed && agg.mentioned && (
                 <span

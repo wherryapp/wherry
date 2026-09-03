@@ -19,7 +19,6 @@ import {
 } from "../api/client";
 import { sync } from "../sync/engine";
 import {
-  Avatar,
   Button,
   ErrorText,
   Input,
@@ -29,6 +28,7 @@ import {
   PanelSection,
   handleInputProps,
 } from "./kit";
+import { UserAvatar } from "./UserAvatar";
 import { openProfile } from "./profile";
 
 function Person({
@@ -52,16 +52,18 @@ function Person({
               displayName: person.displayName,
               username: person.username,
               avatarHue: person.avatarHue,
+              avatarKey: person.avatarKey,
             },
           })
         }
         className="flex min-w-0 items-center gap-2 rounded-md text-left hover:opacity-80"
       >
-        <Avatar
+        <UserAvatar
           size="sm"
           name={person.displayName}
           userId={person.userId}
           hue={person.avatarHue}
+          avatarKey={person.avatarKey}
         />
         <span className="min-w-0">
           <span className="block truncate text-sm text-neutral-900 dark:text-neutral-100">

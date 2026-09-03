@@ -5,7 +5,7 @@
 // about, and kit itself stays free of API types on purpose.
 
 import type { Friend } from "../api/client";
-import { Avatar } from "./kit";
+import { UserAvatar } from "./UserAvatar";
 
 export function ContactCheckboxRow({
   contact,
@@ -24,11 +24,12 @@ export function ContactCheckboxRow({
         onChange={onToggle}
         className="h-4 w-4 shrink-0"
       />
-      <Avatar
+      <UserAvatar
         size="sm"
         name={contact.displayName}
         userId={contact.userId}
         hue={contact.avatarHue}
+        avatarKey={contact.avatarKey}
       />
       <span className="min-w-0 truncate">
         {contact.displayName}

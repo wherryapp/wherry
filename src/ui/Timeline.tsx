@@ -513,12 +513,12 @@ function Bubble({
             <button
               type="button"
               onClick={(event) => onSenderPress(event.currentTarget)}
-              className="mb-0.5 block text-[11px] font-medium opacity-70 hover:underline hover:opacity-100"
+              className="mb-0.5 block text-[0.6875rem] font-medium opacity-70 hover:underline hover:opacity-100"
             >
               {sender}
             </button>
           ) : (
-            <span className="mb-0.5 block text-[11px] font-medium opacity-70">
+            <span className="mb-0.5 block text-[0.6875rem] font-medium opacity-70">
               {sender}
             </span>
           )
@@ -580,7 +580,7 @@ function Bubble({
         )}
         {(last || receipt) && (
           <span
-            className={`mt-1 block text-[10px] ${
+            className={`mt-1 block text-[0.625rem] ${
               mine ? "text-white/90" : "opacity-60"
             }`}
           >
@@ -638,7 +638,7 @@ function UnreadDivider({ count, capped }: { count: number; capped: boolean }) {
       aria-label={words}
     >
       <span className="h-px flex-1 bg-accent-300 dark:bg-accent-800" />
-      <span className="text-[11px] font-medium text-accent-600 dark:text-accent-400">
+      <span className="text-[0.6875rem] font-medium text-accent-600 dark:text-accent-400">
         {words}
       </span>
       <span className="h-px flex-1 bg-accent-300 dark:bg-accent-800" />
@@ -1497,6 +1497,7 @@ export function Timeline({
                                 displayName: member.displayName || member.username,
                                 username: member.username,
                                 avatarHue: member.avatarHue,
+                                avatarKey: member.avatarKey,
                               }
                             : null,
                         });
@@ -1654,7 +1655,7 @@ export function Presence({
   // what the line says. A group stays a count.
   const other = presence.online[0]!;
   return (
-    <span className="block truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+    <span className="block truncate text-[0.6875rem] text-neutral-500 dark:text-neutral-400">
       {isGroup
         ? `${presence.online.length} online`
         : statusLabel(presenceStatusOf(other, presence.statuses))}

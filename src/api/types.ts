@@ -22,6 +22,11 @@ export type PublicUser = {
    *  hashes the id when this is null, which is every account until it
    *  touches the swatch row in Settings. */
   avatarHue: number | null;
+  /** Storage key of the profile picture, or null for none. Public metadata
+   *  in the display_name class, like the hue; it is the `v` that
+   *  GET /users/:id/avatar takes and the cache key the bytes are held
+   *  under, so it changing IS the invalidation. */
+  avatarKey: string | null;
 };
 
 /**
@@ -173,13 +178,20 @@ export type DeviceDescriptor = {
 // conversations, with the content class decided by `hubVisibility` below.
 export type ConversationKind = "direct" | "group" | "channel";
 
-export type HubVisibility = "private" | "public";
+/**
+ * A hub's privacy class, and it decides two separate things -- see
+ * ui/hub-class.ts, which owns both answers and the wording for them.
+ * `invite_only` (2026-09-03) is the third: an invite gate like `private`,
+ * server-readable storage like `public`.
+ */
+export type HubVisibility = "private" | "public" | "invite_only";
 
 export type ConversationMember = {
   userId: string;
   username: string;
   displayName: string;
   avatarHue: number | null;
+  avatarKey: string | null;
   /**
    * How far this member has read. Null if they never have.
    *
@@ -388,6 +400,7 @@ export type HubMember = {
   username: string;
   displayName: string;
   avatarHue: number | null;
+  avatarKey: string | null;
   role: HubRole;
   joinedAt: string;
 };
@@ -397,6 +410,7 @@ export type HubBanned = {
   username: string;
   displayName: string;
   avatarHue: number | null;
+  avatarKey: string | null;
   bannedAt: string;
 };
 
