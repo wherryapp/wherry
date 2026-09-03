@@ -27,7 +27,60 @@ export type UploadProgress = {
   stage: UploadStage;
   /** 0..1. Only `uploading` reports one; the others are indeterminate. */
   fraction: number;
+  /**
+   * Measured throughput in bytes per second, or null before there is enough
+   * to measure.
+   *
+   * Shown because "is it slow, or is it my connection?" is a question the
+   * app is in the best position to answer and was leaving to guesswork. A
+   * number here turns "this feels stuck" into either "my uplink is 400 kB/s"
+   * or "my uplink is fine and something else is wrong", and those two want
+   * completely different actions.
+   */
+  bytesPerSecond?: number | null;
 };
+
+/**
+ * A transfer rate somebody can act on.
+ *
+ * Decimal units, unlike the file sizes in `format.ts`: network rates are
+ * quoted in decimal everywhere -- by ISPs, by speed tests, by the number on
+ * the router -- so a rate shown in binary units would not compare with the
+ * thing the reader would compare it against.
+ */
+export function formatRate(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "";
+  if (bytesPerSecond < 1000) return `${Math.round(bytesPerSecond)} B/s`;
+
+  const units = ["kB/s", "MB/s", "GB/s"];
+  let value = bytesPerSecond / 1000;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${value < 10 ? Math.round(value * 10) / 10 : Math.round(value)} ${units[unit]}`;
+}
+
+/**
+ * Throughput so far, or null when it cannot honestly be stated yet.
+ *
+ * Averaged over the whole transfer rather than windowed. A window is more
+ * responsive and much jumpier, and a number that swings between 200 kB/s and
+ * 4 MB/s twice a second is not one anybody can read -- which defeats the
+ * purpose, since this exists to be read and acted on.
+ *
+ * Null below a threshold of elapsed time and bytes: the first samples of any
+ * transfer are dominated by buffering, and a rate quoted from them is
+ * confidently wrong. Better to show nothing for a moment.
+ */
+export function transferRate(
+  loaded: number,
+  elapsedMs: number,
+): number | null {
+  if (elapsedMs < 400 || loaded <= 0) return null;
+  return (loaded / elapsedMs) * 1000;
+}
 
 /**
  * The percentage to show, as an integer.
@@ -58,7 +111,11 @@ export function uploadStatusLine(progress: UploadProgress): string {
       return `Preparing${position}…`;
     case "sealing":
       return `Encrypting${position}…`;
-    case "uploading":
-      return `Uploading${position} — ${uploadPercent(progress.fraction)}%`;
+    case "uploading": {
+      const rate =
+        progress.bytesPerSecond != null ? formatRate(progress.bytesPerSecond) : "";
+      const suffix = rate === "" ? "" : ` · ${rate}`;
+      return `Uploading${position} — ${uploadPercent(progress.fraction)}%${suffix}`;
+    }
   }
 }

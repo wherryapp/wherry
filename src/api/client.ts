@@ -783,10 +783,14 @@ export async function uploadAttachment(
   options: {
     signal?: AbortSignal;
     /**
-     * Called with 0..1 as the bytes go out. Optional, and the only reason
-     * this is XMLHttpRequest rather than fetch.
+     * Called as the bytes go out. Optional, and the only reason this is
+     * XMLHttpRequest rather than fetch.
+     *
+     * Byte counts rather than a fraction: the caller wants a percentage
+     * *and* a transfer rate, and a rate cannot be recovered from a fraction
+     * without knowing the size the fraction was of.
      */
-    onProgress?: (fraction: number) => void;
+    onProgress?: (sent: { loaded: number; total: number }) => void;
   } = {},
 ): Promise<UploadedAttachment> {
   const token = currentToken();
@@ -808,15 +812,17 @@ export async function uploadAttachment(
       // Fired before anything is sent, so a large file shows 0% immediately
       // rather than nothing at all. The first real progress event on a slow
       // connection can be seconds away.
-      onProgress(0);
+      onProgress({ loaded: 0, total: body.size });
       xhr.upload.addEventListener("progress", (event) => {
         if (!event.lengthComputable || event.total === 0) return;
-        onProgress(event.loaded / event.total);
+        onProgress({ loaded: event.loaded, total: event.total });
       });
-      // The last progress event does not reliably reach 1, and the server
-      // still has to answer after the bytes land -- so completion is stated
-      // rather than inferred.
-      xhr.upload.addEventListener("load", () => onProgress(1));
+      // The last progress event does not reliably reach the total, and the
+      // server still has to answer after the bytes land -- so completion is
+      // stated rather than inferred.
+      xhr.upload.addEventListener("load", () =>
+        onProgress({ loaded: body.size, total: body.size }),
+      );
     }
 
     const onAbort = (): void => xhr.abort();

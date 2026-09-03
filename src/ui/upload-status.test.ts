@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { uploadPercent, uploadStatusLine } from "./upload-status.js";
+import {
+  formatRate,
+  transferRate,
+  uploadPercent,
+  uploadStatusLine,
+} from "./upload-status.js";
 
 test("the percentage is floored, never rounded", () => {
   // Rounding shows 100% while bytes are still going out, which is precisely
@@ -47,5 +52,51 @@ test("a fresh upload reads 0%, not blank", () => {
   assert.equal(
     uploadStatusLine({ index: 0, total: 1, stage: "uploading", fraction: 0 }),
     "Uploading — 0%",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Transfer rate
+// ---------------------------------------------------------------------------
+
+test("a rate is quoted in decimal units, the way a connection is", () => {
+  // An ISP, a speed test and the router all quote decimal. A binary rate
+  // would not compare with the number the reader would compare it against.
+  assert.equal(formatRate(1000), "1 kB/s");
+  assert.equal(formatRate(1_500_000), "1.5 MB/s");
+  assert.equal(formatRate(400_000), "400 kB/s");
+  assert.equal(formatRate(999), "999 B/s");
+});
+
+test("a nonsense rate renders as nothing rather than as a number", () => {
+  assert.equal(formatRate(0), "");
+  assert.equal(formatRate(-5), "");
+  assert.equal(formatRate(Number.NaN), "");
+  assert.equal(formatRate(Number.POSITIVE_INFINITY), "");
+});
+
+test("no rate is claimed from the first moments of a transfer", () => {
+  // The opening samples are dominated by buffering; a rate from them is
+  // confidently wrong.
+  assert.equal(transferRate(50_000, 100), null);
+  assert.equal(transferRate(0, 5_000), null);
+});
+
+test("once there is something to measure, the rate is the average so far", () => {
+  assert.equal(transferRate(1_000_000, 1_000), 1_000_000);
+  assert.equal(transferRate(500_000, 2_000), 250_000);
+});
+
+test("the status line carries the rate only when there is one", () => {
+  const base = { index: 0, total: 1, stage: "uploading", fraction: 0.42 } as const;
+  assert.equal(uploadStatusLine(base), "Uploading — 42%");
+  assert.equal(
+    uploadStatusLine({ ...base, bytesPerSecond: 1_500_000 }),
+    "Uploading — 42% · 1.5 MB/s",
+  );
+  assert.equal(
+    uploadStatusLine({ ...base, bytesPerSecond: 0 }),
+    "Uploading — 42%",
+    "a zero rate is not a rate",
   );
 });

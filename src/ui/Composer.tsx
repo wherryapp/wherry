@@ -24,10 +24,12 @@ import {
 } from "./attach-intake";
 import { acceptAttribute, fileExtension, type FilePolicy } from "./file-policy";
 import {
+  transferRate,
   uploadPercent,
   uploadStatusLine,
   type UploadProgress,
 } from "./upload-status";
+import { setSendProgress, useSendProgress } from "./sending";
 import { useFilePolicy } from "./hooks";
 import { type EditDraft, type ReplyDraft } from "./drafts";
 import {
@@ -103,14 +105,15 @@ export function Composer({
   const [pending, setPending] = useState<Pending[]>([]);
   const [busy, setBusy] = useState(false);
   /**
-   * Where a send has got to, or null when nothing is in flight.
+   * Where this conversation's send has got to, or null when nothing is in
+   * flight.
    *
-   * The reported bug was that this did not exist: `busy` disabled the send
-   * button and nothing else changed, so a large attachment was a dead
-   * control and an indefinite silence. On a 90 MB file that reads as a
-   * crash, and the only way to find out otherwise was to wait.
+   * Read from a module-level registry rather than held here, because leaving
+   * the conversation unmounts this component and the upload carries on
+   * without it -- see sending.ts. Held locally, coming back showed an empty
+   * composer with no sign of the send, which reads as a cancellation.
    */
-  const [progress, setProgress] = useState<UploadProgress | null>(null);
+  const progress = useSendProgress(conversationId);
   const [error, setError] = useState<string | null>(null);
   // A drag carrying files is over the window. Raised by a real drag, never
   // by the capability query below -- see useCanDropFiles.
@@ -430,7 +433,7 @@ export function Composer({
     // silent gap right at the start -- exactly where somebody is deciding
     // whether the press registered.
     if (pending.length > 0) {
-      setProgress({
+      setSendProgress(conversationId, {
         index: 0,
         total: pending.length,
         stage: "preparing",
@@ -450,8 +453,18 @@ export function Composer({
       // Indexed rather than a for..of, because every stage below has to say
       // which attachment it is on.
       for (const [index, item] of pending.entries()) {
-        const at = (stage: UploadProgress["stage"], fraction = 0): void =>
-          setProgress({ index, total: pending.length, stage, fraction });
+        const at = (
+          stage: UploadProgress["stage"],
+          fraction = 0,
+          bytesPerSecond: number | null = null,
+        ): void =>
+          setSendProgress(conversationId, {
+            index,
+            total: pending.length,
+            stage,
+            fraction,
+            bytesPerSecond,
+          });
 
         at("preparing");
         const prepared = await prepareForUpload(item.file, limits.maxBytes);
@@ -476,10 +489,22 @@ export function Composer({
             : null;
 
         at("uploading");
+        // Timed from here rather than from the send as a whole: preparing and
+        // sealing are CPU, not network, and averaging them into the rate
+        // would report an uplink slower than it is -- the opposite of useful
+        // when the number exists to tell those two apart.
+        const startedAt = performance.now();
         const uploaded = await uploadAttachment(
           conversationId,
           sealed ? sealed.ciphertext : prepared.bytes,
-          { onProgress: (fraction) => at("uploading", fraction) },
+          {
+            onProgress: ({ loaded, total: bytes }) =>
+              at(
+                "uploading",
+                bytes > 0 ? loaded / bytes : 0,
+                transferRate(loaded, performance.now() - startedAt),
+              ),
+          },
         );
 
         attachments.push({
@@ -541,7 +566,7 @@ export function Composer({
       );
     } finally {
       setBusy(false);
-      setProgress(null);
+      setSendProgress(conversationId, null);
     }
   }
 
