@@ -1780,6 +1780,30 @@ export class SyncEngine {
       return;
     }
 
+    // A moderator deleted a message in a server-readable hub channel. The
+    // same two steps the moderator's own tab takes, so both sides of the
+    // action look identical -- and taken here rather than left to
+    // #syncHubEvents, which rides the 30-second conversation refresh and is
+    // therefore how a peer with the channel open went on rendering deleted
+    // content long after the server had removed it. That sweep stays as the
+    // fallback for a device whose socket was down; deleting an id twice is
+    // a no-op, so the two paths do not need to know about each other.
+    //
+    // Broadcast unlike mls_commit: the store write is shared, so the other
+    // tabs have a timeline to re-read, and BroadcastChannel does not
+    // deliver to its own sender.
+    if (frame.type === "hub_message_deleted") {
+      const conversationId = frame["conversationId"];
+      const messageId = frame["messageId"];
+      if (typeof conversationId !== "string" || typeof messageId !== "string") {
+        return;
+      }
+      await store.deleteMessages([messageId]);
+      this.#emit({ type: "messages", conversationIds: [conversationId] });
+      broadcast({ type: "messages", conversationIds: [conversationId] });
+      return;
+    }
+
     if (frame.type === "voice_presence") {
       const conversationId = frame["conversationId"];
       const occupants = frame["occupants"];
