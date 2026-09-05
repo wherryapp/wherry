@@ -1237,6 +1237,7 @@ export function Avatar({
   hue: chosenHue,
   src,
   size = "md",
+  shape = "circle",
   className,
 }: {
   name: string;
@@ -1251,9 +1252,18 @@ export function Avatar({
    */
   src?: string | null;
   size?: "sm" | "md" | "lg";
+  /**
+   * A circle for a person, a rounded square for a place (2026-09-05: hubs
+   * got pictures, and the folded sidebar draws a row of them). The shape is
+   * what tells the two apart at a glance in a list that holds both, the
+   * way most chat apps draw servers and people differently. Default is the
+   * circle every existing caller gets.
+   */
+  shape?: "circle" | "rounded";
   className?: string;
 }) {
   const hue = chosenHue ?? derivedHue(userId);
+  const radius = shape === "rounded" ? "rounded-xl" : "rounded-full";
   // The URL that failed rather than a boolean, so a *new* picture is tried
   // rather than inheriting the last one's failure.
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
@@ -1276,7 +1286,8 @@ export function Avatar({
     <span
       aria-hidden="true"
       className={cx(
-        "flex shrink-0 select-none items-center justify-center rounded-full font-semibold text-white",
+        "flex shrink-0 select-none items-center justify-center font-semibold text-white",
+        radius,
         sizes[size],
         className,
       )}
@@ -1289,7 +1300,7 @@ export function Avatar({
           // cover rather than contain: the picture is already a centre-cropped
           // square (ui/media.ts), and contain would letterbox anything a
           // client with a different idea of "square" uploaded.
-          className="h-full w-full rounded-full object-cover"
+          className={cx("h-full w-full object-cover", radius)}
           onError={() => setBrokenSrc(showing)}
         />
       ) : (

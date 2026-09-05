@@ -74,6 +74,38 @@ export function moveItem<T>(
   return next;
 }
 
+/**
+ * What to do with the device-local hub order a build before 2026-09-05
+ * kept, now that the account holds the order (migration 0030). Decided
+ * once per load, in the sidebar:
+ *
+ * - `wait`: not enough is known yet -- no hubs, or a stored summary from
+ *   an older build that does not carry `sortOrder` at all. Deciding on
+ *   that would throw the local order away before the server has said
+ *   whether it has one.
+ * - `seed`: the account has no order and this device does, naming at
+ *   least one present hub -- upload it, once. Whichever device loads
+ *   first wins, which is as fair as anything.
+ * - `clear`: the account has an order, or the local one names nothing
+ *   present -- the local copy is retired and should be emptied so this
+ *   never runs again.
+ */
+export function seedHubOrder<
+  T extends { id: string; sortOrder?: number | null },
+>(
+  hubs: readonly T[],
+  localOrder: readonly string[],
+): { action: "wait" } | { action: "clear" } | { action: "seed"; order: T[] } {
+  if (localOrder.length === 0) return { action: "clear" };
+  if (hubs.length === 0 || hubs.some((hub) => hub.sortOrder === undefined)) {
+    return { action: "wait" };
+  }
+  if (hubs.some((hub) => hub.sortOrder !== null)) return { action: "clear" };
+  const present = new Set(hubs.map((hub) => hub.id));
+  if (!localOrder.some((id) => present.has(id))) return { action: "clear" };
+  return { action: "seed", order: orderHubs(hubs, localOrder) };
+}
+
 export function orderHubs<T extends { id: string }>(
   hubs: readonly T[],
   order: readonly string[],

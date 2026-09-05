@@ -13,7 +13,7 @@
 // behind the list header's compose control (ui/Compose.tsx, 2026-09-02).
 // The list is the list.
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { StoredSession } from "../../api/session";
 import {
   useConversations,
@@ -39,7 +39,8 @@ import { StatusDot } from "../StatusDot";
 import { HubsSection } from "./HubsSection";
 import { ResizeHandle } from "./ResizeHandle";
 import { useSidebarPrefs } from "./prefs";
-import { orderHubs, rankConversations, recencyRanker } from "./rank";
+import { reorderHubs } from "./hub-order";
+import { rankConversations, recencyRanker, seedHubOrder } from "./rank";
 
 export function ConversationList({
   session,
@@ -106,12 +107,28 @@ export function ConversationList({
   const asideRef = useRef<HTMLElement>(null);
   const hubsRef = useRef<HTMLDivElement>(null);
 
-  // The user's manual order over the server's newest-first default; hubs
-  // joined since the last reorder append after the ordered ones.
-  const orderedHubs = useMemo(
-    () => orderHubs(hubs, prefs.hubOrder),
-    [hubs, prefs.hubOrder],
-  );
+  // The list arrives in the account's order (2026-09-05, migration 0030):
+  // placed hubs first in their order, the rest newest first. Nothing is
+  // applied on top any more. The one thing left of the device-local order
+  // is seeding: a device that kept one before the account had any uploads
+  // it once, then forgets it. Pure decision in rank.ts, three-way so a
+  // summary from an older build (no sortOrder field) is waited on rather
+  // than mistaken for "the account has an order".
+  //
+  // Nothing to retire means nothing to do -- and that early return is
+  // load-bearing, not tidy: `update` hands out a fresh prefs object, so a
+  // write of `[]` over an already-empty order re-ran this effect with a
+  // new empty array, which wrote `[]` again, and React gave up on the
+  // render loop with a blank page (caught on the first reload after the
+  // change, 2026-09-05). Only a non-empty local order is ever written over.
+  useEffect(() => {
+    if (prefs.hubOrder.length === 0) return;
+    const decision = seedHubOrder(hubs, prefs.hubOrder);
+    if (decision.action === "wait") return;
+    update({ hubOrder: [] });
+    if (decision.action === "seed") void reorderHubs(decision.order);
+  }, [hubs, prefs.hubOrder, update]);
+  const orderedHubs = hubs;
 
   // Hoisted from HubsSection's own null-return so the bordered wrapper the
   // scroll containers need does not render as a stray rule around nothing.
@@ -307,17 +324,17 @@ export function ConversationList({
             // when the window is too small -- max-height beats height, so
             // the stored preference is never rewritten by a shrink the user
             // didn't drag, and regrowing the window restores it.
-            // Folded: the header row alone, and the stored height is left
-            // untouched for when the section opens again.
+            // Folded: the rail and, if one is open, a hub's channels --
+            // content-sized under the auto cap, and the stored height is
+            // left untouched for when the section opens again. (Header row
+            // alone until 2026-09-05; the rail is what the fold shows now.)
             style={
-              hubsFolded
-                ? undefined
-                : hubsHeight === null
-                  ? { maxHeight: "45%" }
-                  : {
-                      height: `${hubsHeight}px`,
-                      maxHeight: "calc(100% - 10rem)",
-                    }
+              hubsFolded || hubsHeight === null
+                ? { maxHeight: "45%" }
+                : {
+                    height: `${hubsHeight}px`,
+                    maxHeight: "calc(100% - 10rem)",
+                  }
             }
           >
             {hubsSection}

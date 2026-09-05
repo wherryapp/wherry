@@ -1,10 +1,9 @@
 // The sidebar's hubs list, nested under the conversation list.
 
-import { Fragment, useRef, useState } from "react";
+import { Fragment } from "react";
 import { classLabel } from "../hub-class";
 import type { HubSummary } from "../../api/types";
 import {
-  Avatar,
   Badge,
   BellOffIcon,
   ChevronLeftIcon,
@@ -12,37 +11,13 @@ import {
   LockIcon,
   ClassPill,
 } from "../kit";
+import { HubAvatar } from "../HubAvatar";
+import { HubRail } from "./HubRail";
+import { groupChannels, hubAggregate } from "./channels";
+import { reorderHubs } from "./hub-order";
 import { useSidebarPrefs } from "./prefs";
-import { moveItem } from "./rank";
-
-/**
- * How far a mouse must travel vertically before a press on a hub header
- * becomes a reorder drag rather than a click -- the same discrimination the
- * message bubbles use for tap-vs-scroll, for the same reason.
- */
-const DRAG_START_PX = 8;
-
-/**
- * A collapsed hub's roll-up: unread count and mention flag across its
- * channels, so the header still carries the signal a collapsed list hides.
- * Muted channels are excluded from the count -- that is what mute means --
- * but a mention surfaces regardless, the stronger signal, same reasoning as
- * mention-gated push.
- */
-function hubAggregate(
-  hub: HubSummary,
-  unread: Map<string, number>,
-  mentions: Set<string>,
-  muted: Set<string>,
-): { count: number; mentioned: boolean } {
-  let count = 0;
-  let mentioned = false;
-  for (const channel of hub.channels) {
-    if (!muted.has(channel.id)) count += unread.get(channel.id) ?? 0;
-    if (mentions.has(channel.id)) mentioned = true;
-  }
-  return { count, mentioned };
-}
+import { indicatorSlot } from "./reorder";
+import { useReorder } from "./useReorder";
 
 /**
  * The sidebar's hubs: a section header that folds the lot, then each hub as
@@ -53,11 +28,28 @@ function hubAggregate(
  * The section fold (2026-09-02) is the phone's answer to "hubs take up a
  * lot of space": below `md` the sidebar is one scroll surface with hubs
  * above the DMs, so three hubs' channels put every direct conversation
- * below the fold. One tap folds them to a header row that keeps the unread
- * roll-up, the same way a collapsed hub's header does. The create form
- * that used to sit above the list moved to the compose panel
- * (ui/Compose.tsx), which is also what made the section's height stop
- * depending on the feature-flag fetch.
+ * below the fold. **Since 2026-09-05 the fold shows a rail** (HubRail.tsx):
+ * every hub as a picture in one sideways-scrolling row, and a tap on one
+ * shows that hub's channels beneath the row -- just that hub's, never the
+ * whole vertical list, which stays behind the section's own chevron. So
+ * the compact state keeps every hub in reach and in sight, and the DMs
+ * keep the screen.
+ *
+ * Channel categories (2026-09-05, migration 0029) render as small
+ * headings inside a hub's channel list, collapsible, uncategorised
+ * channels first and unheaded -- a hub with none looks exactly as it did.
+ * Grouping is `channels.ts`'s pure `groupChannels`, shared with the hub
+ * panel.
+ *
+ * Reordering hubs is hold-to-lift (useReorder.ts) in both the list and the
+ * rail: press for HOLD_MS without moving, the hub lifts, drag, release. One
+ * mechanism for a finger and a mouse alike, and one that cannot fire from
+ * a click or a scroll -- the 2026-08-31 mouse-only drag started on 8px of
+ * movement and is replaced by this. The order it writes is the account's
+ * (hub-order.ts), so the phone and the desktop agree. The create form that used to sit
+ * above the list moved to the compose panel (ui/Compose.tsx), which is
+ * also what made the section's height stop depending on the feature-flag
+ * fetch.
  */
 export function HubsSection({
   hubs,
@@ -90,108 +82,25 @@ export function HubsSection({
     update({ collapsedHubIds: next });
   };
 
-  // Drag-to-reorder. Mouse only (pointerType, never the user agent): touch
-  // keeps plain tap-to-open, and long-press reorder is deferred. A press on
-  // a hub header arms window-level move/up listeners that own the whole
-  // lifecycle; crossing DRAG_START_PX promotes the press to a drag.
-  // Window listeners rather than row handlers or pointer capture, for two
-  // reasons hit in testing: a fast drag can leave the pressed row before a
-  // single move event fires inside it, and capturing at pointerdown would
-  // retarget pointerup away from the header button and swallow the click
-  // that opens the hub panel. `overIndex` is the insertion slot: the count
-  // of block midpoints above the pointer.
-  //
-  // The authoritative drag lives in a ref, mirrored to state only for
-  // rendering: a fast drag delivers its pointermove and pointerup in the
-  // same frame, and reading the state closure would still see the pre-drag
-  // null at pointerup and drop nothing.
-  const dragRef = useRef<{
-    hubId: string;
-    fromIndex: number;
-    overIndex: number;
-  } | null>(null);
-  const [drag, setDragView] = useState<typeof dragRef.current>(null);
-  const setDrag = (next: typeof dragRef.current) => {
-    dragRef.current = next;
-    setDragView(next);
-  };
-  const suppressClick = useRef(false);
-  const blockRefs = useRef(new Map<string, HTMLDivElement | null>());
-
-  const clearDrag = () => {
-    setDrag(null);
+  const collapsedCategoryIds = prefs.collapsedCategoryIds ?? [];
+  const toggleCategory = (categoryId: string) => {
+    const next = collapsedCategoryIds.includes(categoryId)
+      ? collapsedCategoryIds.filter((id) => id !== categoryId)
+      : [...collapsedCategoryIds, categoryId];
+    update({ collapsedCategoryIds: next });
   };
 
-  const hitTest = (clientY: number): number => {
-    let over = 0;
-    for (const hub of hubs) {
-      const rect = blockRefs.current.get(hub.id)?.getBoundingClientRect();
-      if (rect && clientY > rect.top + rect.height / 2) over++;
-    }
-    return over;
+  // The order belongs to the account (2026-09-05): written to the server,
+  // optimistically applied here, and every other device's sidebar follows
+  // on its next refresh. See hub-order.ts.
+  const reorder = (next: HubSummary[]) => {
+    void reorderHubs(next);
   };
 
-  const dropTo = (fromIndex: number, overIndex: number) => {
-    // Only currently-present ids are written -- this is what prunes the ids
-    // of hubs since left from the stored order.
-    update({
-      hubOrder: moveItem(hubs, fromIndex, overIndex).map((hub) => hub.id),
-    });
-  };
-
-  const beginPress = (
-    hubId: string,
-    index: number,
-    event: React.PointerEvent,
-  ) => {
-    if (event.pointerType !== "mouse" || event.button !== 0) return;
-    if (dragRef.current) return;
-    // A fresh press also clears a stale suppress flag, so an aborted drag
-    // can never swallow the next click.
-    suppressClick.current = false;
-    const startY = event.clientY;
-    const pointerId = event.pointerId;
-
-    const cleanup = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onCancel);
-    };
-    const onMove = (e: PointerEvent) => {
-      if (e.pointerId !== pointerId) return;
-      try {
-        const active = dragRef.current;
-        if (active) {
-          setDrag({ ...active, overIndex: hitTest(e.clientY) });
-        } else if (Math.abs(e.clientY - startY) > DRAG_START_PX) {
-          suppressClick.current = true;
-          setDrag({ hubId, fromIndex: index, overIndex: hitTest(e.clientY) });
-        }
-      } catch {
-        // Never leave the window listeners wedged on broken state.
-        cleanup();
-        clearDrag();
-      }
-    };
-    const onUp = (e: PointerEvent) => {
-      if (e.pointerId !== pointerId) return;
-      cleanup();
-      try {
-        const active = dragRef.current;
-        if (active) dropTo(active.fromIndex, hitTest(e.clientY));
-      } finally {
-        clearDrag();
-      }
-    };
-    const onCancel = (e: PointerEvent) => {
-      if (e.pointerId !== pointerId) return;
-      cleanup();
-      clearDrag();
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onCancel);
-  };
+  const list = useReorder({ items: hubs, axis: "y", onReorder: reorder });
+  const listSlot = list.drag
+    ? indicatorSlot(list.drag.fromIndex, list.drag.overIndex)
+    : null;
 
   if (hubs.length === 0) return null;
 
@@ -204,6 +113,24 @@ export function HubsSection({
       return { count: sum.count + agg.count, mentioned: sum.mentioned || agg.mentioned };
     },
     { count: 0, mentioned: false },
+  );
+  // The rail's open hub. A stale id (a hub since left) is simply nothing.
+  const railHub = sectionCollapsed
+    ? (hubs.find((hub) => hub.id === prefs.railHubId) ?? null)
+    : null;
+
+  const channelRows = (hub: HubSummary) => (
+    <ChannelRows
+      hub={hub}
+      unread={unread}
+      mentions={mentions}
+      muted={muted}
+      occupancy={occupancy}
+      selected={selected}
+      onSelect={onSelect}
+      collapsedCategoryIds={collapsedCategoryIds}
+      onToggleCategory={toggleCategory}
+    />
   );
 
   return (
@@ -221,6 +148,9 @@ export function HubsSection({
           />
           Hubs
         </button>
+        {/* The roll-up stays on the header even with the rail showing:
+            the rail's badges are per hub, and a hub scrolled out of view
+            would otherwise take its count with it. */}
         {sectionCollapsed && total.mentioned && (
           <span
             aria-label="Mentions you"
@@ -231,41 +161,75 @@ export function HubsSection({
         )}
         {sectionCollapsed && <Badge count={total.count} />}
       </div>
+      {sectionCollapsed && (
+        <>
+          <HubRail
+            hubs={hubs}
+            unread={unread}
+            mentions={mentions}
+            muted={muted}
+            openHubId={railHub?.id ?? null}
+            onToggleHub={(hubId) =>
+              update({ railHubId: prefs.railHubId === hubId ? null : hubId })
+            }
+            onReorder={reorder}
+          />
+          {railHub && (
+            <div className="mt-1">
+              {/* The open hub's name is the way to its panel here, the
+                  same as a list header row; the rail icon itself is the
+                  show/hide toggle. */}
+              <button
+                onClick={() => onOpenHub(railHub.id)}
+                className="flex w-full items-center gap-2 rounded px-1 py-1 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                  {railHub.name}
+                </span>
+                {railHub.visibility !== "private" && (
+                  <ClassPill label={classLabel(railHub.visibility)} />
+                )}
+                <span className="shrink-0 text-xs text-neutral-500 dark:text-neutral-400">
+                  Details
+                </span>
+              </button>
+              {channelRows(railHub)}
+            </div>
+          )}
+        </>
+      )}
       {!sectionCollapsed && hubs.map((hub, index) => {
         const collapsed = prefs.collapsedHubIds.includes(hub.id);
         const agg = hubAggregate(hub, unread, mentions, muted);
-        // The insertion line, hidden at the two slots that would drop the
-        // hub right back where it is.
-        const indicatorAt = (slot: number) =>
-          drag !== null &&
-          drag.overIndex === slot &&
-          slot !== drag.fromIndex &&
-          slot !== drag.fromIndex + 1;
+        const lifted = list.drag?.id === hub.id;
+        // The whole block (header and channels) is the hit-test extent, so
+        // a drop between two expanded hubs lands between them; the press
+        // that starts the hold is the header row only.
+        const { ref, ...press } = list.itemProps(hub.id, index);
         return (
           <Fragment key={hub.id}>
-            {indicatorAt(index) && (
+            {listSlot === index && (
               <div className="mx-1 mt-2 h-0.5 rounded bg-accent-500" />
             )}
             <div
-              ref={(el) => {
-                if (el) blockRefs.current.set(hub.id, el);
-                else blockRefs.current.delete(hub.id);
-              }}
+              ref={ref}
               className={`${index === 0 ? "mt-1" : "mt-2"} ${
-                drag?.hubId === hub.id ? "opacity-50" : ""
-              }`}
+                lifted ? "relative z-10 rounded-lg bg-white shadow-lg dark:bg-neutral-900" : ""
+              } ${list.holding === hub.id ? "opacity-70" : ""}`}
+              style={
+                lifted && list.drag
+                  ? { transform: `translateY(${list.drag.offset}px) scale(1.02)` }
+                  : undefined
+              }
             >
-            <div
-              className="flex items-center gap-1"
-              onPointerDown={(event) => beginPress(hub.id, index, event)}
-            >
+            <div className="flex items-center gap-1" {...press}>
               <button
                 onClick={() => toggleCollapsed(hub.id)}
                 aria-expanded={!collapsed}
                 aria-label={collapsed ? `Expand ${hub.name}` : `Collapse ${hub.name}`}
                 // Never let this bubble into the header's own pointerdown --
-                // a later change arms drag-reorder there, and the chevron
-                // must not trigger it.
+                // that is what arms the hold-to-lift, and the chevron must
+                // not start it.
                 onPointerDown={(e) => e.stopPropagation()}
                 className="shrink-0 rounded p-0.5 text-neutral-400 hover:bg-neutral-100 dark:text-neutral-500 dark:hover:bg-neutral-800"
               >
@@ -274,19 +238,10 @@ export function HubsSection({
                 />
               </button>
               <button
-                onClick={() => {
-                  // A drag that just ended must not also open the panel.
-                  if (suppressClick.current) {
-                    suppressClick.current = false;
-                    return;
-                  }
-                  onOpenHub(hub.id);
-                }}
+                onClick={() => onOpenHub(hub.id)}
                 className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
               >
-                {/* The hub id seeds the colour, so the identity survives renames
-                    -- the cheap identicon tier; uploaded icons stay deferred. */}
-                <Avatar size="sm" name={hub.name} userId={hub.id} />
+                <HubAvatar hub={hub} size="sm" />
                 <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900 dark:text-neutral-100">
                   {hub.name}
                 </span>
@@ -306,71 +261,134 @@ export function HubsSection({
             </div>
             {/* No auto-expand when a collapsed hub holds the selected channel
                 -- deliberate v1 choice; the badge above is the substitute. */}
-            {!collapsed && (
-              <div className="mt-0.5">
-                {hub.channels.map((channel) => {
-                  const count = unread.get(channel.id) ?? 0;
-                  const inRoom = occupancy.get(channel.id)?.length ?? 0;
-                  const isVoice = channel.kind === "voice";
-                  return (
-                    <button
-                      key={channel.id}
-                      onClick={() => onSelect(channel.id)}
-                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition-colors ${
-                        selected === channel.id
-                          ? "bg-neutral-100 dark:bg-neutral-800"
-                          : "hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                      }`}
-                    >
-                      <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
-                        {isVoice ? (
-                          <HeadphonesIcon className="h-3.5 w-3.5" />
-                        ) : (
-                          "#"
-                        )}
-                      </span>
-                      <span
-                        className={`min-w-0 flex-1 truncate ${
-                          count > 0
-                            ? "font-semibold text-neutral-900 dark:text-neutral-100"
-                            : "text-neutral-700 dark:text-neutral-300"
-                        }`}
-                      >
-                        {channel.title ?? (isVoice ? "voice" : "channel")}
-                        {isVoice && inRoom > 0 && (
-                          <span
-                            aria-label={`${inRoom} in voice`}
-                            className="ml-1.5 inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400"
-                          >
-                            <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                            {inRoom}
-                          </span>
-                        )}
-                        {channel.posting === "moderators" && (
-                          <LockIcon className="ml-1 inline h-3 w-3 align-[-1px] text-neutral-400 dark:text-neutral-500" />
-                        )}
-                      </span>
-                      {muted.has(channel.id) && (
-                        <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
-                      )}
-                      {mentions.has(channel.id) && (
-                        <span
-                          aria-label="Mentions you"
-                          className="shrink-0 text-xs font-bold text-accent-600 dark:text-accent-400"
-                        >
-                          @
-                        </span>
-                      )}
-                      <Badge count={count} />
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            {!collapsed && channelRows(hub)}
             </div>
-            {index === hubs.length - 1 && indicatorAt(hubs.length) && (
+            {index === hubs.length - 1 && listSlot === hubs.length && (
               <div className="mx-1 mt-2 h-0.5 rounded bg-accent-500" />
             )}
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * One hub's channels, grouped under its categories. Shared by the vertical
+ * list and the rail's open hub, so the two never disagree about a row.
+ */
+function ChannelRows({
+  hub,
+  unread,
+  mentions,
+  muted,
+  occupancy,
+  selected,
+  onSelect,
+  collapsedCategoryIds,
+  onToggleCategory,
+}: {
+  hub: HubSummary;
+  unread: Map<string, number>;
+  mentions: Set<string>;
+  muted: Set<string>;
+  occupancy: ReadonlyMap<string, readonly string[]>;
+  selected: string | null;
+  onSelect: (conversationId: string) => void;
+  collapsedCategoryIds: readonly string[];
+  onToggleCategory: (categoryId: string) => void;
+}) {
+  const groups = groupChannels(hub.channels, hub.categories ?? []);
+  return (
+    <div className="mt-0.5">
+      {groups.map((group) => {
+        const category = group.category;
+        const collapsed =
+          category !== null && collapsedCategoryIds.includes(category.id);
+        // A collapsed heading carries its channels' roll-up, the way a
+        // collapsed hub's header does.
+        const agg = hubAggregate(group, unread, mentions, muted);
+        return (
+          <Fragment key={category?.id ?? "uncategorised"}>
+            {category && (
+              <button
+                onClick={() => onToggleCategory(category.id)}
+                aria-expanded={!collapsed}
+                className="mt-1 flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wide text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+              >
+                <ChevronLeftIcon
+                  className={`h-3 w-3 shrink-0 transition-transform ${collapsed ? "rotate-180" : "-rotate-90"}`}
+                />
+                <span className="min-w-0 flex-1 truncate">{category.name}</span>
+                {collapsed && agg.mentioned && (
+                  <span
+                    aria-label="Mentions you"
+                    className="shrink-0 text-xs font-bold normal-case tracking-normal text-accent-600 dark:text-accent-400"
+                  >
+                    @
+                  </span>
+                )}
+                {collapsed && <Badge count={agg.count} />}
+              </button>
+            )}
+            {!collapsed &&
+              group.channels.map((channel) => {
+                const count = unread.get(channel.id) ?? 0;
+                const inRoom = occupancy.get(channel.id)?.length ?? 0;
+                const isVoice = channel.kind === "voice";
+                return (
+                  <button
+                    key={channel.id}
+                    onClick={() => onSelect(channel.id)}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition-colors ${
+                      selected === channel.id
+                        ? "bg-neutral-100 dark:bg-neutral-800"
+                        : "hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                    }`}
+                  >
+                    <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
+                      {isVoice ? (
+                        <HeadphonesIcon className="h-3.5 w-3.5" />
+                      ) : (
+                        "#"
+                      )}
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 truncate ${
+                        count > 0
+                          ? "font-semibold text-neutral-900 dark:text-neutral-100"
+                          : "text-neutral-700 dark:text-neutral-300"
+                      }`}
+                    >
+                      {channel.title ?? (isVoice ? "voice" : "channel")}
+                      {isVoice && inRoom > 0 && (
+                        <span
+                          aria-label={`${inRoom} in voice`}
+                          className="ml-1.5 inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400"
+                        >
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          {inRoom}
+                        </span>
+                      )}
+                      {channel.posting === "moderators" && (
+                        <LockIcon className="ml-1 inline h-3 w-3 align-[-1px] text-neutral-400 dark:text-neutral-500" />
+                      )}
+                    </span>
+                    {muted.has(channel.id) && (
+                      <BellOffIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                    )}
+                    {mentions.has(channel.id) && (
+                      <span
+                        aria-label="Mentions you"
+                        className="shrink-0 text-xs font-bold text-accent-600 dark:text-accent-400"
+                      >
+                        @
+                      </span>
+                    )}
+                    <Badge count={count} />
+                  </button>
+                );
+              })}
           </Fragment>
         );
       })}

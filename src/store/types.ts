@@ -513,9 +513,24 @@ export type SidebarPrefs = {
    */
   hubsSectionCollapsed?: boolean;
   /**
-   * Manual hub order. Hubs not listed append in server order; ids of hubs
-   * since left are inert and get pruned on the next reorder, which writes
-   * only currently-present ids.
+   * RETIRED 2026-09-05: the hub order belongs to the account now
+   * (`hub_members.sort_order`, migration 0030). Kept so a store written
+   * before that can seed the account's order once (sidebar/rank.ts
+   * `seedHubOrder`), after which it is emptied and never read again.
    */
   hubOrder: string[];
+  /**
+   * The hub whose channels show beneath the rail while the section is
+   * folded (2026-09-05) -- a tap on a rail icon, and the second tap on the
+   * same icon clears it. Independent of `hubsSectionCollapsed`, so
+   * unfolding and folding again comes back to the same hub. An id no
+   * longer in the list is inert, like a stale `hubOrder` entry.
+   */
+  railHubId?: string | null;
+  /**
+   * Channel categories whose channels are hidden (2026-09-05). Category
+   * ids, so a category deleted and recreated starts open; stale ids are
+   * inert.
+   */
+  collapsedCategoryIds?: string[];
 };

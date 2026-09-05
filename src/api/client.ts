@@ -29,6 +29,7 @@ import type {
   EventsPage,
   HistoryKeyEntry,
   HubChannel,
+  HubCategory,
   HubDetail,
   HubEventsPage,
   HubInvite,
@@ -1076,7 +1077,19 @@ export function fetchAnnouncements(options?: {
  * the transport. The server checks the bytes really are a JPEG before it
  * stores anything, because it serves them back under that content type.
  */
-export async function uploadAvatar(bytes: Uint8Array): Promise<{ avatarKey: string }> {
+export function uploadAvatar(bytes: Uint8Array): Promise<{ avatarKey: string }> {
+  return postPicture(`${API}/account/avatar`, bytes);
+}
+
+/**
+ * A picture upload: raw JPEG bytes to a route that answers `{ avatarKey }`.
+ * The profile picture and, since 2026-09-05, a hub's picture -- the same
+ * bytes, the same answer, a different path.
+ */
+async function postPicture(
+  url: string,
+  bytes: Uint8Array,
+): Promise<{ avatarKey: string }> {
   const token = currentToken();
   const headers: Record<string, string> = {
     "content-type": "application/octet-stream",
@@ -1085,7 +1098,7 @@ export async function uploadAvatar(bytes: Uint8Array): Promise<{ avatarKey: stri
 
   let response: Response;
   try {
-    response = await fetch(`${API}/account/avatar`, {
+    response = await fetch(url, {
       method: "POST",
       headers,
       body: bytes as BodyInit,
@@ -1126,20 +1139,39 @@ export function removeAvatar(): Promise<void> {
  * account with none -- and is terminal for that key, since the key changes
  * whenever the picture does.
  */
-export async function downloadAvatar(
+export function downloadAvatar(
   userId: string,
   avatarKey: string,
 ): Promise<Uint8Array | null> {
+  return getPicture(
+    `${API}/users/${userId}/avatar?v=${encodeURIComponent(avatarKey)}`,
+  );
+}
+
+/**
+ * A hub's picture as bytes (migration 0028) -- downloadAvatar for hubs.
+ * Member-gated on the server where a person's picture is not, because a
+ * private hub's existence is exactly what a non-member must not be able to
+ * confirm; a non-member gets the same 404 a stale key gets, which this
+ * reports as "no picture" and the cache records as terminal for the key.
+ */
+export function downloadHubAvatar(
+  hubId: string,
+  avatarKey: string,
+): Promise<Uint8Array | null> {
+  return getPicture(
+    `${API}/hubs/${hubId}/avatar?v=${encodeURIComponent(avatarKey)}`,
+  );
+}
+
+async function getPicture(url: string): Promise<Uint8Array | null> {
   const token = currentToken();
   const headers: Record<string, string> = {};
   if (token) headers["authorization"] = `Bearer ${token}`;
 
   let response: Response;
   try {
-    response = await fetch(
-      `${API}/users/${userId}/avatar?v=${encodeURIComponent(avatarKey)}`,
-      { headers },
-    );
+    response = await fetch(url, { headers });
   } catch (cause) {
     throw new NetworkError(cause);
   }
@@ -1316,6 +1348,20 @@ export function fetchHub(hubId: string): Promise<HubDetail> {
   return request<HubDetail>(`${API}/hubs/${hubId}`);
 }
 
+/**
+ * The account's sidebar order for its hubs (migration 0030): the ids in
+ * the order wanted, every other membership listing after them. Answers the
+ * fresh summary list so the caller can store it as a refresh would.
+ */
+export function setHubOrder(
+  hubIds: readonly string[],
+): Promise<{ hubs: HubSummary[] }> {
+  return request<{ hubs: HubSummary[] }>(`${API}/hubs/order`, {
+    method: "PUT",
+    body: { hubIds },
+  });
+}
+
 export function renameHub(input: {
   hubId: string;
   name: string;
@@ -1324,6 +1370,75 @@ export function renameHub(input: {
     method: "PATCH",
     body: { name: input.name },
   });
+}
+
+/**
+ * The hub's avatar colour (migration 0028), moderator+. Null clears back to
+ * the hub-id-derived hue. Rides the same PATCH as rename -- one field per
+ * call, the channel PATCH's shape.
+ */
+export function setHubAvatarColor(input: {
+  hubId: string;
+  hue: number | null;
+}): Promise<HubDetail> {
+  return request<HubDetail>(`${API}/hubs/${input.hubId}`, {
+    method: "PATCH",
+    body: { avatarHue: input.hue },
+  });
+}
+
+/**
+ * The hub's picture (migration 0028), moderator+: raw JPEG bytes, prepared
+ * by ui/media.ts's prepareAvatar exactly as a profile picture is. Readable,
+ * hubs.name class, both hub classes -- labelled so where it is chosen.
+ */
+export function uploadHubAvatar(
+  hubId: string,
+  bytes: Uint8Array,
+): Promise<{ avatarKey: string }> {
+  return postPicture(`${API}/hubs/${hubId}/avatar`, bytes);
+}
+
+export function removeHubAvatar(hubId: string): Promise<void> {
+  return request<void>(`${API}/hubs/${hubId}/avatar`, { method: "DELETE" });
+}
+
+/**
+ * Channel categories (migration 0029), moderator+. A new one lands last;
+ * `position` on update is the index it should end up at and the server
+ * renumbers the rest. Deleting one files its channels back under none.
+ */
+export function createHubCategory(input: {
+  hubId: string;
+  name: string;
+}): Promise<HubCategory> {
+  return request<HubCategory>(`${API}/hubs/${input.hubId}/categories`, {
+    method: "POST",
+    body: { name: input.name },
+  });
+}
+
+export function updateHubCategory(input: {
+  hubId: string;
+  categoryId: string;
+  name?: string;
+  position?: number;
+}): Promise<HubCategory> {
+  const { hubId, categoryId, ...body } = input;
+  return request<HubCategory>(
+    `${API}/hubs/${hubId}/categories/${categoryId}`,
+    { method: "PATCH", body },
+  );
+}
+
+export function deleteHubCategory(input: {
+  hubId: string;
+  categoryId: string;
+}): Promise<void> {
+  return request<void>(
+    `${API}/hubs/${input.hubId}/categories/${input.categoryId}`,
+    { method: "DELETE" },
+  );
 }
 
 /** Owner only. Soft-deletes the hub and every channel in it. */
@@ -1358,6 +1473,8 @@ export function updateHubChannel(input: {
   slowmodeSeconds?: number | null;
   /** Voice channels only, both hub classes. Null turns auto-mute off. */
   joinMutedAbove?: number | null;
+  /** The category to file the channel under; null for none. */
+  categoryId?: string | null;
 }): Promise<HubChannel> {
   const { hubId, conversationId, ...body } = input;
   return request<HubChannel>(

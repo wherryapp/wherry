@@ -9,9 +9,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
-import { acquireAvatar, releaseAvatar } from "./avatars";
+import { acquireAvatar, releaseAvatar, type AvatarLoader } from "./avatars";
 import { DEFAULT_FILE_POLICY, type FilePolicy } from "./file-policy";
 import { ApiError, fetchAccountSettings, type Announcement,
+  downloadAvatar,
+  downloadHubAvatar,
   fetchAttachmentUsage,
 } from "../api/client";
 import type { HubSummary, VisibleStatus } from "../api/types";
@@ -1066,6 +1068,37 @@ export function useAvatarUrl(
   userId: string,
   avatarKey: string | null | undefined,
 ): string | null {
+  return useResolvedAvatar(avatarKey, userId, (key) =>
+    downloadAvatar(userId, key),
+  );
+}
+
+/**
+ * The object URL of a hub's picture (migration 0028), or null while it
+ * loads and for a hub that has none -- useAvatarUrl for hubs, sharing the
+ * same cache and reference counting because the keys share one space.
+ */
+export function useHubAvatarUrl(
+  hubId: string,
+  avatarKey: string | null | undefined,
+): string | null {
+  return useResolvedAvatar(avatarKey, hubId, (key) =>
+    downloadHubAvatar(hubId, key),
+  );
+}
+
+/**
+ * The hook the two above share: keyed by the picture, told how to fetch
+ * it. `owner` is only an effect dependency -- the route to fetch from is
+ * a function of who the key belongs to, and a component that re-points at
+ * a different person or hub with the same key (which cannot happen, keys
+ * being fresh per upload, but costs nothing to be correct about) refetches.
+ */
+function useResolvedAvatar(
+  avatarKey: string | null | undefined,
+  owner: string,
+  fetchBytes: (key: string) => ReturnType<AvatarLoader>,
+): string | null {
   // Keyed rather than a bare URL, so the answer for a *previous* key is
   // never shown for this one -- and so no state has to be cleared
   // synchronously when the key changes, which is a render the derivation
@@ -1075,6 +1108,11 @@ export function useAvatarUrl(
     url: string | null;
   } | null>(null);
 
+  // The loader is a fresh closure every render; latest-ref it so the effect
+  // keys on the picture and its owner, not on function identity.
+  const fetchRef = useRef(fetchBytes);
+  fetchRef.current = fetchBytes;
+
   useEffect(() => {
     if (!avatarKey) return;
 
@@ -1082,7 +1120,9 @@ export function useAvatarUrl(
     // Awaited before releasing even when the component is already gone: an
     // acquire that has not resolved yet still owes a release, or the URL it
     // creates is never revoked.
-    const pending = acquireAvatar(userId, avatarKey).then((url) => {
+    const pending = acquireAvatar(avatarKey, () =>
+      fetchRef.current(avatarKey),
+    ).then((url) => {
       if (!cancelled) setResolved({ key: avatarKey, url });
     });
 
@@ -1090,7 +1130,7 @@ export function useAvatarUrl(
       cancelled = true;
       void pending.finally(() => releaseAvatar(avatarKey));
     };
-  }, [userId, avatarKey]);
+  }, [owner, avatarKey]);
 
   return avatarKey && resolved?.key === avatarKey ? resolved.url : null;
 }

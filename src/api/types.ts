@@ -392,6 +392,20 @@ export type HubChannel = {
   posting: ChannelPosting;
   /** Public channels only; null means off. Moderators are exempt. */
   slowmodeSeconds: number | null;
+  /** The category this channel is filed under, null for none (2026-09-05).
+   *  Absent from an older server's answer, which reads as null. */
+  categoryId: string | null;
+  createdAt: string;
+};
+
+/**
+ * A named subsection of a hub's channel list -- layout metadata, readable
+ * in both hub classes. `position` is the display order, dense from 0.
+ */
+export type HubCategory = {
+  id: string;
+  name: string;
+  position: number;
   createdAt: string;
 };
 
@@ -418,9 +432,25 @@ export type HubSummary = {
   id: string;
   name: string;
   visibility: HubVisibility;
+  /** Storage key of the hub picture, or null -- the `v` GET /hubs/:id/avatar
+   *  takes and the cache key its bytes are held under. hubs.name class,
+   *  readable, both hub classes (2026-09-05). */
+  avatarKey: string | null;
+  /** Chosen hue behind the initials, or null for hub-id-derived. */
+  avatarHue: number | null;
   /** The caller's own role. */
   role: HubRole;
+  /**
+   * The caller's sidebar position for this hub, dense from 0, or null for
+   * a hub never placed (2026-09-05, migration 0030). The list arrives in
+   * this order already; the field says whether the account has an order
+   * at all. Absent from a summary stored by an older build, which reads as
+   * undefined -- "unknown", and sidebar/rank.ts treats it as such.
+   */
+  sortOrder?: number | null;
   memberCount: number;
+  /** In display order; empty for a hub that has never made one. */
+  categories: HubCategory[];
   channels: HubChannel[];
 };
 
@@ -428,6 +458,8 @@ export type HubDetail = {
   id: string;
   name: string;
   visibility: HubVisibility;
+  avatarKey: string | null;
+  avatarHue: number | null;
   createdAt: string;
   memberLimit: number;
   channelLimit: number;
@@ -435,6 +467,7 @@ export type HubDetail = {
   members: HubMember[];
   /** Populated only when the caller is moderator+; empty array otherwise. */
   banned: HubBanned[];
+  categories: HubCategory[];
   channels: HubChannel[];
 };
 
@@ -445,6 +478,11 @@ export type HubEventKind =
   | "member_unbanned"
   | "role_changed"
   | "renamed"
+  | "avatar_changed"
+  | "channel_moved"
+  | "category_created"
+  | "category_renamed"
+  | "category_deleted"
   | "channel_created"
   | "channel_renamed"
   | "channel_topic"

@@ -18,9 +18,18 @@
 //
 // Nothing here needs invalidating: a key names one immutable picture, and
 // choosing a new picture mints a new key (migration 0026).
+//
+// Since 2026-09-05 a hub's picture goes through here too (migration 0028):
+// the key space is shared -- every key is a fresh uuidv7, whoever it names
+// -- so the only thing that differs is which route fetches the bytes, and
+// that is what the caller passes in. `acquireAvatar` is therefore keyed by
+// the picture and told how to load it, rather than knowing about users.
 
-import { downloadAvatar } from "../api/client";
 import { store } from "../store";
+
+/** Fetches one picture's bytes; null for "nothing under that key". A
+ *  network failure throws, and is deliberately not cached (see load). */
+export type AvatarLoader = () => Promise<Uint8Array | null>;
 
 /** The blob-cache key. Shares the store with attachments, in its own
  *  namespace -- both are "bytes we already fetched", and a second object
@@ -44,8 +53,8 @@ const inFlight = new Map<string, Promise<string | null>>();
  * Every successful acquire must be matched by exactly one `releaseAvatar`.
  */
 export async function acquireAvatar(
-  userId: string,
   avatarKey: string,
+  loader: AvatarLoader,
 ): Promise<string | null> {
   const existing = held.get(avatarKey);
   if (existing) {
@@ -55,7 +64,7 @@ export async function acquireAvatar(
 
   let pending = inFlight.get(avatarKey);
   if (!pending) {
-    pending = load(userId, avatarKey).finally(() => inFlight.delete(avatarKey));
+    pending = load(avatarKey, loader).finally(() => inFlight.delete(avatarKey));
     inFlight.set(avatarKey, pending);
   }
 
@@ -86,13 +95,16 @@ export function releaseAvatar(avatarKey: string): void {
   held.delete(avatarKey);
 }
 
-async function load(userId: string, avatarKey: string): Promise<string | null> {
+async function load(
+  avatarKey: string,
+  loader: AvatarLoader,
+): Promise<string | null> {
   const cached = await store.getBlob(cacheKey(avatarKey));
   if (cached) return cached.state === "ok" ? toUrl(cached.bytes) : null;
 
   let bytes: Uint8Array | null;
   try {
-    bytes = await downloadAvatar(userId, avatarKey);
+    bytes = await loader();
   } catch {
     // A network failure or a 502 is not "there is no picture", so nothing is
     // recorded and the next mount tries again. Initials in the meantime.

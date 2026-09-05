@@ -238,3 +238,27 @@ body {
     -webkit-touch-callout: default;
   }
 }
+
+/* The folded hubs rail scrolls sideways under a finger or a trackpad, and a
+   permanent scrollbar under a row of five icons reads as a defect rather
+   than an affordance. Scoped by class rather than applied to every
+   overflow-x container, because the divider-dragged hubs section keeps its
+   vertical one on purpose. */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* While something is lifted for reordering (ui/sidebar/useReorder.ts). A
+   mouse drag across the sidebar would otherwise select every row it
+   crosses -- the chrome is only select-none under a coarse pointer, and
+   that is correct, so this is scoped to the drag rather than made
+   permanent. */
+.reordering,
+.reordering * {
+  cursor: grabbing !important;
+  -webkit-user-select: none;
+  user-select: none;
+}

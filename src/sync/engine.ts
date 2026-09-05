@@ -2280,6 +2280,19 @@ export class SyncEngine {
   }
 
   /** Forces the next tick to re-read conversations. */
+  /**
+   * Stores a hubs list the caller already holds -- the answer to a reorder,
+   * or the optimistic copy sent ahead of it -- and tells every surface,
+   * exactly as #refreshHubs would after a fetch. The sidebar draws from the
+   * stored summary, so this is the one way to move a hub without waiting
+   * for the next refresh tick.
+   */
+  async replaceHubs(hubs: HubSummary[]): Promise<void> {
+    await store.setMeta(META_HUBS, hubs);
+    this.#emit({ type: "hubs" });
+    broadcast({ type: "hubs" });
+  }
+
   invalidateConversations(): void {
     this.#lastConversationRefresh = 0;
     this.poke();

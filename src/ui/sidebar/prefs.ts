@@ -18,6 +18,8 @@ const DEFAULT_PREFS: SidebarPrefs = {
   collapsedHubIds: [],
   hubOrder: [],
   hubsSectionCollapsed: false,
+  railHubId: null,
+  collapsedCategoryIds: [],
 };
 
 let cache: SidebarPrefs | null = null;

@@ -39,6 +39,7 @@ import {
 } from "../sync/push";
 import { useAnnouncements, useAvatarUrl, useFeatures } from "./hooks";
 import { prepareAvatar } from "./media";
+import { HuePicker } from "./HuePicker";
 import {
   TEXT_SCALES,
   TEXT_SCALE_LABELS,
@@ -50,7 +51,6 @@ import { VoiceSettings } from "./voice/VoiceSettings";
 import {
   Avatar,
   Button,
-  derivedHue,
   ErrorText,
   Input,
   LoadingLine,
@@ -59,9 +59,6 @@ import {
   PanelSection,
 } from "./kit";
 
-/** Twelve hues, 30 degrees apart -- the whole wheel with no near-duplicates.
- *  Painted with Avatar's own formula, so the swatch IS the result. */
-const SWATCH_HUES = Array.from({ length: 12 }, (_, index) => index * 30);
 
 /**
  * Stamped at build time the same way BUILD_COMMIT is (see sync/engine.ts) --
@@ -527,38 +524,11 @@ export function Settings({
               userId={session.user.id}
               hue={hue}
             />
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                aria-label="Default colour"
-                title="Default"
-                onClick={() => void pickHue(null)}
-                className={`h-7 w-7 rounded-full ${
-                  hue === null
-                    ? "ring-2 ring-accent-600 ring-offset-2 dark:ring-offset-neutral-900"
-                    : ""
-                }`}
-                // The colour "Default" actually produces for this account,
-                // not a grey placeholder -- the swatch is the result.
-                style={{
-                  backgroundColor: `oklch(0.55 0.13 ${derivedHue(session.user.id)})`,
-                }}
-              />
-              {SWATCH_HUES.map((swatch) => (
-                <button
-                  key={swatch}
-                  type="button"
-                  aria-label={`Hue ${swatch} degrees`}
-                  onClick={() => void pickHue(swatch)}
-                  className={`h-7 w-7 rounded-full ${
-                    hue === swatch
-                      ? "ring-2 ring-accent-600 ring-offset-2 dark:ring-offset-neutral-900"
-                      : ""
-                  }`}
-                  style={{ backgroundColor: `oklch(0.55 0.13 ${swatch})` }}
-                />
-              ))}
-            </div>
+            <HuePicker
+              seedId={session.user.id}
+              hue={hue}
+              onPick={(next) => void pickHue(next)}
+            />
           </div>
         </PanelSection>
 

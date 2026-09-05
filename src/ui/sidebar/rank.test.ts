@@ -11,6 +11,7 @@ import {
   orderHubs,
   rankConversations,
   recencyRanker,
+  seedHubOrder,
   uuidv7Ms,
 } from "./rank.ts";
 
@@ -95,4 +96,38 @@ test("orderHubs ignores stale ids for hubs since left", () => {
   const hubs = [{ id: "a" }, { id: "b" }];
   const ordered = orderHubs(hubs, ["gone", "b", "also-gone", "a"]);
   assert.deepEqual(ordered.map((h) => h.id), ["b", "a"]);
+});
+
+test("seedHubOrder waits until the summary says whether the account has an order", () => {
+  assert.deepEqual(seedHubOrder([], ["a"]), { action: "wait" });
+  // A summary stored by a build that never carried sortOrder.
+  assert.deepEqual(seedHubOrder([{ id: "a" }], ["a"]), { action: "wait" });
+});
+
+test("seedHubOrder seeds once from a local order the account lacks", () => {
+  const hubs = [
+    { id: "b", sortOrder: null },
+    { id: "a", sortOrder: null },
+    { id: "c", sortOrder: null },
+  ];
+  const decision = seedHubOrder(hubs, ["a", "stale", "b"]);
+  assert.equal(decision.action, "seed");
+  if (decision.action === "seed") {
+    assert.deepEqual(
+      decision.order.map((hub) => hub.id),
+      ["a", "b", "c"],
+    );
+  }
+});
+
+test("seedHubOrder clears a local order the account has superseded, or that names nothing", () => {
+  assert.deepEqual(
+    seedHubOrder([{ id: "a", sortOrder: 0 }, { id: "b", sortOrder: null }], ["b", "a"]),
+    { action: "clear" },
+  );
+  assert.deepEqual(
+    seedHubOrder([{ id: "a", sortOrder: null }], ["gone"]),
+    { action: "clear" },
+  );
+  assert.deepEqual(seedHubOrder([{ id: "a", sortOrder: null }], []), { action: "clear" });
 });

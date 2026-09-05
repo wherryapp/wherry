@@ -5,13 +5,22 @@
 // (server/src/services/hub-roles.ts) for showing and hiding controls -- the
 // server enforces for real, so a stale mirror costs a 403, never a breach.
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import {
   ApiError,
   addHubMembers,
+  createHubCategory,
   createHubChannel,
   createHubInvite,
   deleteHub,
+  deleteHubCategory,
   fetchFriends,
   fetchHub,
   fetchHubEvents,
@@ -20,16 +29,21 @@ import {
   leaveHub,
   lookupUser,
   muteConversation,
+  removeHubAvatar,
   renameHub,
   revokeHubInvite,
   searchHub,
+  setHubAvatarColor,
   setHubRole,
   unbanHubMember,
   unmuteConversation,
+  updateHubCategory,
   updateHubChannel,
+  uploadHubAvatar,
   type Friend,
 } from "../api/client";
 import type {
+  HubCategory,
   HubChannel,
   HubDetail,
   HubEvent,
@@ -53,12 +67,17 @@ import {
   PanelSection,
   PencilIcon,
   Select,
+  TrashIcon,
   useConfirm,
   usePrompt,
   handleInputProps,
   HeadphonesIcon,
 } from "./kit";
 import { UserAvatar } from "./UserAvatar";
+import { HubAvatar } from "./HubAvatar";
+import { HuePicker } from "./HuePicker";
+import { prepareAvatar } from "./media";
+import { groupChannels } from "./sidebar/channels";
 import { openProfile } from "./profile";
 import { ContactCheckboxRow } from "./ContactRow";
 import { classLabel, classSentence, isServerReadable } from "./hub-class";
@@ -105,6 +124,16 @@ function hubEventText(event: HubEvent, selfUserId: string): string {
       return `${actor} made ${target} ${event.title ?? "a member"}`;
     case "renamed":
       return `${actor} named the hub "${event.title ?? ""}"`;
+    case "avatar_changed":
+      return `${actor} changed the hub picture`;
+    case "channel_moved":
+      return `${actor} moved #${event.title ?? "a channel"} to a category`;
+    case "category_created":
+      return `${actor} created the category "${event.title ?? ""}"`;
+    case "category_renamed":
+      return `${actor} renamed a category to "${event.title ?? ""}"`;
+    case "category_deleted":
+      return `${actor} deleted the category "${event.title ?? ""}"`;
     case "channel_created":
       return `${actor} created #${event.title ?? "a channel"}`;
     case "channel_renamed":
@@ -161,6 +190,14 @@ export function HubDetails({
   const [name, setName] = useState("");
   const [nameBusy, setNameBusy] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
+
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+  const avatarInput = useRef<HTMLInputElement>(null);
+
+  const [categoryName, setCategoryName] = useState("");
+  const [categoryBusy, setCategoryBusy] = useState(false);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
 
   const [channelName, setChannelName] = useState("");
   const [channelKind, setChannelKind] = useState<ChannelKind>("text");
@@ -260,6 +297,131 @@ export function HubDetails({
     }
   }
 
+  /**
+   * The hub picture, prepared in the browser exactly as a profile picture
+   * is (ui/media.ts: centre-cropped, 256px, JPEG) and sent as raw bytes.
+   * The panel re-reads the detail afterwards rather than patching state,
+   * because the summary the sidebar draws from refreshes on the wake the
+   * server sends and the two should agree about the same key.
+   */
+  async function pickHubAvatar(file: File | undefined) {
+    if (!file) return;
+    setAvatarError(null);
+    setAvatarBusy(true);
+    try {
+      const prepared = await prepareAvatar(file);
+      if ("kind" in prepared) {
+        setAvatarError(prepared.message);
+        return;
+      }
+      await uploadHubAvatar(hubId, prepared.bytes);
+      load();
+      sync.invalidateConversations();
+    } catch (caught) {
+      setAvatarError(
+        caught instanceof ApiError ? caught.message : "Could not save the picture.",
+      );
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function dropHubAvatar() {
+    setAvatarError(null);
+    setAvatarBusy(true);
+    try {
+      await removeHubAvatar(hubId);
+      load();
+      sync.invalidateConversations();
+    } catch (caught) {
+      setAvatarError(
+        caught instanceof ApiError ? caught.message : "Could not remove the picture.",
+      );
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function pickHubHue(hue: number | null) {
+    if (!detail) return;
+    setAvatarError(null);
+    const previous = detail;
+    // Optimistic: the preview repaints on the tap, and reverts on failure.
+    setDetail({ ...detail, avatarHue: hue });
+    try {
+      setDetail(await setHubAvatarColor({ hubId, hue }));
+      sync.invalidateConversations();
+    } catch (caught) {
+      setDetail(previous);
+      setAvatarError(
+        caught instanceof ApiError ? caught.message : "Could not save that colour.",
+      );
+    }
+  }
+
+  async function addCategory(event: FormEvent) {
+    event.preventDefault();
+    setCategoryBusy(true);
+    setCategoryError(null);
+    try {
+      await createHubCategory({ hubId, name: categoryName.trim() });
+      setCategoryName("");
+      load();
+      sync.invalidateConversations();
+    } catch (caught) {
+      setCategoryError(
+        caught instanceof ApiError ? caught.message : "Could not create the category.",
+      );
+    } finally {
+      setCategoryBusy(false);
+    }
+  }
+
+  async function changeCategory(
+    categoryId: string,
+    patch: { name?: string; position?: number },
+  ): Promise<void> {
+    setCategoryError(null);
+    try {
+      await updateHubCategory({ hubId, categoryId, ...patch });
+      load();
+      sync.invalidateConversations();
+    } catch (caught) {
+      setCategoryError(
+        caught instanceof ApiError ? caught.message : "Could not change the category.",
+      );
+    }
+  }
+
+  async function renameCategory(category: HubCategory): Promise<void> {
+    const next = (
+      await prompt({ message: "Category name", initial: category.name })
+    )?.trim();
+    if (!next || next === category.name) return;
+    await changeCategory(category.id, { name: next });
+  }
+
+  async function removeCategory(category: HubCategory): Promise<void> {
+    if (
+      !(await confirm({
+        message: `Delete the category "${category.name}"? Its channels stay, filed under none.`,
+        confirmLabel: "Delete",
+      }))
+    ) {
+      return;
+    }
+    setCategoryError(null);
+    try {
+      await deleteHubCategory({ hubId, categoryId: category.id });
+      load();
+      sync.invalidateConversations();
+    } catch (caught) {
+      setCategoryError(
+        caught instanceof ApiError ? caught.message : "Could not delete the category.",
+      );
+    }
+  }
+
   async function addChannel(event: FormEvent) {
     event.preventDefault();
     setChannelBusy(true);
@@ -291,6 +453,7 @@ export function HubDetails({
       posting?: "everyone" | "moderators";
       slowmodeSeconds?: number | null;
       joinMutedAbove?: number | null;
+      categoryId?: string | null;
     },
   ): Promise<void> {
     setChannelError(null);
@@ -722,9 +885,88 @@ export function HubDetails({
           {nameError && <ErrorText className="mt-1">{nameError}</ErrorText>}
         </PanelSection>
 
+        {/* The hub's picture and colour (migration 0028): the Settings
+            profile-picture section, hub-sized. Readable in BOTH classes --
+            a private hub's name was never sealed either -- and said so
+            where it is chosen, the same sentence Settings uses. Everyone
+            sees the picture; moderators get the controls. */}
+        <PanelSection
+          title="Picture"
+          description="Shown to everyone in the hub. Not encrypted."
+        >
+          <div className="flex items-center gap-3">
+            <HubAvatar hub={detail} size="lg" />
+            {manages(myRole) && (
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={avatarInput}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onInput={(event) => {
+                    const input = event.currentTarget;
+                    const file = input.files?.[0];
+                    // Cleared so picking the same file twice fires again.
+                    input.value = "";
+                    void pickHubAvatar(file);
+                  }}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={avatarBusy}
+                  onClick={() => avatarInput.current?.click()}
+                >
+                  {detail.avatarKey ? "Change" : "Choose"}
+                </Button>
+                {detail.avatarKey && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={avatarBusy}
+                    onClick={() => void dropHubAvatar()}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+          {manages(myRole) && (
+            <div className="mt-3">
+              <Note>Colour behind the initials, when there is no picture.</Note>
+              <div className="mt-2">
+                <HuePicker
+                  seedId={detail.id}
+                  hue={detail.avatarHue}
+                  onPick={(hue) => void pickHubHue(hue)}
+                  disabled={avatarBusy}
+                />
+              </div>
+            </div>
+          )}
+          {avatarError && <ErrorText className="mt-1">{avatarError}</ErrorText>}
+        </PanelSection>
+
         <PanelSection title={`Channels (${detail.channels.length})`}>
+          {/* Grouped under the categories the way the sidebar draws them
+              (sidebar/channels.ts), empties included so a category made a
+              moment ago is visible to file into. */}
+          {groupChannels(detail.channels, detail.categories ?? [], {
+            includeEmpty: true,
+          }).map((group) => (
+          <div key={group.category?.id ?? "uncategorised"}>
+          {group.category && (
+            <h3 className="mt-3 text-[0.625rem] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              {group.category.name}
+            </h3>
+          )}
+          {group.category && group.channels.length === 0 && (
+            <Note>No channels yet.</Note>
+          )}
           <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
-            {detail.channels.map((channel) => (
+            {group.channels.map((channel) => (
               <li key={channel.id} className="py-1.5">
                 <div className="flex items-center gap-2">
                   <button
@@ -806,9 +1048,37 @@ export function HubDetails({
                     )}
                   </div>
                 )}
+                {/* Where the channel is filed. Offered only once a category
+                    exists -- a select with one option is a control that
+                    does nothing. */}
+                {manages(myRole) && (detail.categories?.length ?? 0) > 0 && (
+                  <div className="ml-4 mt-1 flex items-center gap-2 text-xs">
+                    <span className="text-neutral-500 dark:text-neutral-400">
+                      Category
+                    </span>
+                    <Select
+                      value={channel.categoryId ?? ""}
+                      onChange={(e) =>
+                        void changeChannel(channel.id, {
+                          categoryId: e.target.value === "" ? null : e.target.value,
+                        })
+                      }
+                      aria-label={`Category for #${channel.title ?? "channel"}`}
+                    >
+                      <option value="">None</option>
+                      {detail.categories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
+          </div>
+          ))}
           {manages(myRole) && (
             <form onSubmit={addChannel} className="mt-2 flex gap-2">
               <Input
@@ -848,6 +1118,76 @@ export function HubDetails({
             {allMuted ? "Unmute all channels" : "Mute all channels"}
           </Button>
         </PanelSection>
+
+        {/* Channel categories (migration 0029): the headings the sidebar
+            groups channels under. Moderators only -- a member sees the
+            result in the channel list above and in the sidebar. Order here
+            is the order there; Up and Down rather than a drag, because
+            this is a settings list that changes twice a year. */}
+        {manages(myRole) && (
+          <PanelSection
+            title={`Categories (${detail.categories?.length ?? 0})`}
+            description="Headings the sidebar groups channels under. A hub with none shows its channels in one list, as before."
+          >
+            <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+              {(detail.categories ?? []).map((category, index, all) => (
+                <li key={category.id} className="flex items-center gap-1 py-1.5">
+                  <span className="min-w-0 flex-1 truncate text-sm text-neutral-900 dark:text-neutral-100">
+                    {category.name}
+                  </span>
+                  <button
+                    onClick={() => void changeCategory(category.id, { position: index - 1 })}
+                    disabled={index === 0}
+                    aria-label={`Move ${category.name} up`}
+                    className="shrink-0 rounded px-1 text-xs text-neutral-500 hover:text-neutral-800 disabled:opacity-30 dark:text-neutral-400 dark:hover:text-neutral-200"
+                  >
+                    Up
+                  </button>
+                  <button
+                    onClick={() => void changeCategory(category.id, { position: index + 1 })}
+                    disabled={index === all.length - 1}
+                    aria-label={`Move ${category.name} down`}
+                    className="shrink-0 rounded px-1 text-xs text-neutral-500 hover:text-neutral-800 disabled:opacity-30 dark:text-neutral-400 dark:hover:text-neutral-200"
+                  >
+                    Down
+                  </button>
+                  <button
+                    onClick={() => void renameCategory(category)}
+                    aria-label={`Rename ${category.name}`}
+                    className="shrink-0 rounded p-1 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                  >
+                    <PencilIcon className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => void removeCategory(category)}
+                    aria-label={`Delete ${category.name}`}
+                    className="shrink-0 rounded p-1 text-neutral-400 hover:text-red-600 dark:hover:text-red-400"
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <form onSubmit={addCategory} className="mt-2 flex gap-2">
+              <Input
+                value={categoryName}
+                onChange={(e) => setCategoryName(e.target.value)}
+                placeholder="New category name"
+                maxLength={100}
+              />
+              <Button
+                type="submit"
+                size="sm"
+                loading={categoryBusy}
+                disabled={categoryName.trim().length === 0}
+                className="shrink-0"
+              >
+                Add
+              </Button>
+            </form>
+            {categoryError && <ErrorText className="mt-1">{categoryError}</ErrorText>}
+          </PanelSection>
+        )}
 
         {/* Search reads body_text, which every v4 row has -- so an
             invite-only hub is searchable exactly like a public one. */}
