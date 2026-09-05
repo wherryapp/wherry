@@ -485,9 +485,14 @@ export const META_DELIVERED_PREFIX = "delivered.";
 
 /**
  * Device-local sidebar layout preferences: the hubs/DMs split height, which
- * hubs are collapsed, and the manual hub order. Deliberately not synced --
- * the same class as `announcements.seen`: a server column is only worth it
- * if layout must follow the account across devices, which it does not.
+ * hubs and categories are collapsed, and the rail's open hub. Deliberately
+ * not synced -- the same class as `announcements.seen`: a server column is
+ * only worth it if the thing must follow the account across devices, and
+ * layout does not. The hub ORDER used to live here too and was exactly the
+ * thing that did have to follow the account -- it moved to
+ * `hub_members.sort_order` on 2026-09-05 (migration 0030), and the field
+ * below is kept only to seed that once. Order follows the person, layout
+ * follows the screen.
  * Dying with store.clear() is correct rather than a loss, because the hub
  * ids inside are account-scoped -- surviving into another account's session
  * on this browser would be wrong. Read/written only through

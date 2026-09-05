@@ -1,5 +1,5 @@
-// Device-local sidebar layout preferences (split height, collapsed hubs,
-// manual hub order), persisted in the IndexedDB meta store under
+// Device-local sidebar layout preferences (split height, collapsed hubs and
+// categories, the rail's open hub), persisted in the IndexedDB meta store under
 // META_SIDEBAR_PREFS. This deliberately does NOT follow the hooks.ts
 // pattern of re-reading on sync events: no sync event fires for a local
 // write, so the hook owns its own invalidation -- a module-level cache and
