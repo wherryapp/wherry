@@ -16,6 +16,7 @@ import { ApiError, fetchAttachmentUsage, uploadAttachment } from "../api/client"
 import { e2e } from "../crypto";
 import { encryptBlob } from "../crypto/blob";
 import { sync } from "../sync/engine";
+import { store } from "../store";
 import {
   acceptFiles,
   filesFromTransfer,
@@ -526,6 +527,40 @@ export function Composer({
             : {}),
           ...(sealed ? sealed.ref : {}),
         });
+
+        // The bytes we just sent are the bytes this device is about to
+        // render, so keep them rather than asking for them back.
+        //
+        // Without this, sending is upload-then-immediately-download: the
+        // enqueue below causes the new bubble to render, Attachment.tsx
+        // misses the blob cache (nothing on the send path ever wrote it),
+        // and the phone re-fetches, digest-checks and decrypts the exact
+        // file it uploaded seconds earlier. On a photo that is a modest
+        // tax; on a 20 MB file it doubles both the wait and the mobile
+        // data, for bytes that never left memory.
+        //
+        // The *plaintext*, deliberately: the blobs store holds this
+        // device's copy of content, never ciphertext -- the same contract
+        // Attachment.tsx states when it caches a download. `prepared.bytes`
+        // is that content whether or not `sealed` is set, so a readable
+        // channel needs no special case.
+        //
+        // Awaited so the write lands before the enqueue that renders the
+        // bubble; racing it would just fall back to the download this
+        // exists to remove. Never fatal, though -- the bytes are on the
+        // server by now, so a full or unavailable IndexedDB costs a
+        // re-download rather than a failed send, and failing a send that
+        // has already succeeded would be far worse than the thing being
+        // optimised.
+        try {
+          await store.putBlob(uploaded.id, {
+            state: "ok",
+            mediaType: prepared.mediaType,
+            bytes: prepared.bytes,
+          });
+        } catch {
+          // Deliberately empty -- see above.
+        }
       }
 
       // Cleared before the await, so typing the next message is never blocked

@@ -176,8 +176,11 @@ export function Attachment({
    * The width stated here is what the loaded `<img>` will actually use: its
    * natural width, or what `max-h-80` allows at this aspect ratio, whichever
    * is smaller -- then `max-width: 100%` for the bubble it has to fit inside.
-   * Verified to reserve the exact loaded height across portrait, landscape,
-   * square, panoramic, small and very tall photos.
+   * Re-measured 2026-09-05 at a 375px viewport, placeholder against loaded
+   * image: 1536x2048 240x320 both; 1600x1600 268x268 both; 2048x1536
+   * 268x201 both; 2048x512 268x67 both. (The claim this replaces said the
+   * same and was true only of portrait -- the `max-width` was not binding.
+   * See the note on it below.)
    *
    * Two things here are deliberate and worth not "simplifying":
    *
@@ -188,6 +191,16 @@ export function Attachment({
    * - **`max-width` separately, not folded into the `min()`.** A percentage
    *   inside `min()` does not contribute to intrinsic sizing, so
    *   `min(100%, …)` measures as *worse* than doing nothing -- tested.
+   *   And note what makes the separate `max-width` bind at all: it resolves
+   *   against this box's containing block, which is the bubble -- so it
+   *   clamps nothing unless *the bubble* is clamped first. It was not until
+   *   2026-09-05. The stated width below is a percentage-free length, which
+   *   is a min-content floor, and a fit-content flex item cannot go under
+   *   its min-content: the bubble grew to fit this box instead of this box
+   *   shrinking to fit the bubble, and a 4:3 photo reserved 427px inside a
+   *   292px bubble on a 375px phone. `max-w-full` on the bubble (Timeline.tsx,
+   *   commented there) is the other half of this arithmetic; neither half
+   *   works alone.
    *
    * Falling back to `100%` when the sender's client recorded no dimensions:
    * there is nothing to reserve, and the old behaviour is the honest one.

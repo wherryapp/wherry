@@ -501,8 +501,33 @@ function Bubble({
           )}
         </div>
       )}
+      {/* `max-w-full` is load-bearing, and is not a redundant restatement of
+          the wrapper's `max-w-[85%]` a few lines up.
+
+          This div is a flex *item* of that wrapper (a column flex container
+          with `items-end`), so its cross size is fit-content -- and
+          fit-content can never fall below its own min-content. A percentage
+          max-width is ignored while intrinsic sizes are computed, so an
+          explicit pixel width anywhere inside becomes a min-content FLOOR
+          that the 85% cap cannot pull back. Attachment.tsx's loading
+          placeholder states exactly such a width, and has to: a percentage
+          contributes nothing, which is the whole reason the box is stated at
+          all. FileChip's `max-w-xs` is the same shape.
+
+          Measured at a 375px viewport, before this: a 4:3 photo reserved a
+          427px box inside a 292px bubble -- 451px of bubble on a 375px
+          phone, hanging off the side of the screen -- and a 4:1 panorama
+          reserved 1280px. Clamping the used width here restores the cap, and
+          with it the placeholder's own `max-width: 100%`, which until now
+          resolved against a containing block the placeholder had itself
+          widened.
+
+          It fixes the reserved HEIGHT with it: 320px was being held for a
+          photo that loads at 201px, so every non-portrait photo moved the
+          timeline by the difference on arrival -- the exact class of shift
+          `ui/anchor.ts` exists to correct. */}
       <div
-        className={`min-w-0 rounded-2xl px-3 py-2 ${
+        className={`min-w-0 max-w-full rounded-2xl px-3 py-2 ${
           mine
             ? "bg-accent-600 text-white"
             : "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
