@@ -1,6 +1,11 @@
 // The one voice session per browser profile (docs/prompts/voice-plan.md
-// §6.1): a LiveKit Room, the microphone, the remote audio, and the state
-// the UI renders. The only file that imports livekit-client's Room.
+// §6.1): a call's lifecycle, the key, and the state the UI renders. Since
+// the VoiceTransport seam (docs/prompts/native-media-plan.md §4) this file
+// imports no media SDK at all: the Room, the microphone, the remote audio
+// and the frame-encryption worker are the transport's (transport-
+// webview.ts today), chosen in index.ts; what is left here is every
+// decision -- when to join, which key, what to tell the server, what the
+// bar shows.
 //
 // What it talks to, and what it deliberately does not:
 //
@@ -23,20 +28,6 @@
 // the app.
 
 import {
-  ConnectionQuality,
-  ConnectionState,
-  isInsertableStreamSupported,
-  isScriptTransformSupported,
-  Room,
-  RoomEvent,
-  Track,
-  type LocalAudioTrack,
-  type Participant,
-  type RemoteAudioTrack,
-  type RemoteParticipant,
-  type RemoteTrack,
-} from "livekit-client";
-import {
   ApiError,
   answerCall,
   joinVoiceRoom,
@@ -51,7 +42,8 @@ import { e2e } from "../crypto";
 import { sync, type SyncEvent } from "../sync/engine";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 import { mlsSync } from "../sync/mls";
-import { CallKeyProvider, deriveCallKey } from "./keys";
+import { createTransport } from "./index";
+import { deriveCallKey } from "./keys";
 import { loadVoicePrefs } from "./prefs";
 import {
   audioPresetFor,
@@ -62,6 +54,9 @@ import {
   type MicStatus,
 } from "./rules";
 import { blip, startRingback } from "./sounds";
+import type { FrameTransformKind, VoiceQuality, VoiceTransport } from "./transport";
+
+export type { VoiceQuality } from "./transport";
 
 /** What a join needs to know about the conversation: the id, and the
  *  content class that decides whether media is frame-encrypted. Both the
@@ -91,8 +86,6 @@ export type VoiceParticipant = {
   volume: number;
 };
 
-export type VoiceQuality = "excellent" | "good" | "poor" | "lost" | "unknown";
-
 export type VoiceState = {
   phase: VoicePhase;
   conversationId: string | null;
@@ -105,7 +98,7 @@ export type VoiceState = {
   /** The MLS epoch the current key came from; null while none is set. */
   keyEpoch: number | null;
   micMuted: boolean;
-  /** The browser refused to play audio until a tap (room.startAudio). */
+  /** The browser refused to play audio until a tap (transport.startPlayback). */
   playbackBlocked: boolean;
   participants: VoiceParticipant[];
   quality: VoiceQuality;
@@ -116,11 +109,11 @@ export type VoiceState = {
   /** Rings we still hear ourselves: "Calling…" until somebody answers. */
   ringing: boolean;
   /**
-   * Frames this device could not open, and the SDK's reason for the last
-   * one. A few are expected at an epoch turn; a count that keeps climbing
-   * while a peer speaks means their key differs from ours -- the one
-   * failure the roster's `encrypted` flag cannot show, since the SFU only
-   * knows that frames are sealed, not under what.
+   * Frames this device could not open, and the transport's reason for the
+   * last one. A few are expected at an epoch turn; a count that keeps
+   * climbing while a peer speaks means their key differs from ours -- the
+   * one failure the roster's `encrypted` flag cannot show, since the SFU
+   * only knows that frames are sealed, not under what.
    */
   encryptionErrors: number;
   lastEncryptionError: string | null;
@@ -159,7 +152,7 @@ export type PeerDiagnostics = {
   /** inbound-rtp totalAudioEnergy: energy of the *decoded* audio. */
   audioEnergy: number | null;
   concealedSamples: number | null;
-  /** The attached element is playing; null when nothing is attached. */
+  /** Playback for them is running; null when nothing is attached. */
   playing: boolean | null;
 };
 
@@ -182,9 +175,9 @@ export type VoiceDiagnostics = {
   lastEncryptionError: string | null;
   keyEpoch: number | null;
   e2ee: boolean;
-  /** How this engine applies the frame transform (livekit-client picks
-   *  encoded streams on Chromium and the script transform elsewhere). */
-  transform: "encoded-streams" | "script-transform" | "none";
+  /** How this transport applies the frame transform (the webview SDK
+   *  picks encoded streams on Chromium and the script transform elsewhere). */
+  transform: FrameTransformKind;
   playbackBlocked: boolean;
   quality: VoiceQuality;
 };
@@ -198,48 +191,6 @@ const KEY_NUDGE_MS = 10_000;
  *  roster re-renders at most this often. Power, on the phones. */
 const SPEAKER_REFRESH_MS = 250;
 
-/**
- * The E2EE worker, one per call, terminated by #teardown.
- *
- * livekit-client never terminates it: the single `terminate()` in the
- * bundle belongs to a different manager, and the E2EE manager binds no
- * Disconnected handler -- so a room that ends leaves its worker running,
- * and whether an engine reclaims an unreferenced dedicated worker is not
- * something to rely on. Idle it costs no CPU, but a thread and its
- * context per call is exactly the kind of accumulation a phone in a long
- * session does not need. Owning the reference makes it one line to close.
- */
-function makeWorker(): Worker {
-  return new Worker(new URL("livekit-client/e2ee-worker", import.meta.url), {
-    type: "module",
-  });
-}
-
-function userIdOf(participant: Participant): string {
-  try {
-    const parsed = JSON.parse(participant.metadata ?? "") as { userId?: unknown };
-    if (typeof parsed.userId === "string") return parsed.userId;
-  } catch {
-    // Fall through: identity is the device id, a poor stand-in but never blank.
-  }
-  return participant.identity;
-}
-
-function qualityOf(quality: ConnectionQuality): VoiceQuality {
-  switch (quality) {
-    case ConnectionQuality.Excellent:
-      return "excellent";
-    case ConnectionQuality.Good:
-      return "good";
-    case ConnectionQuality.Poor:
-      return "poor";
-    case ConnectionQuality.Lost:
-      return "lost";
-    default:
-      return "unknown";
-  }
-}
-
 type JoinPlan = {
   kind: CallKind;
   conversation: VoiceTarget;
@@ -249,14 +200,13 @@ type JoinPlan = {
 class VoiceSession {
   #state: VoiceState = IDLE;
   #listeners = new Set<() => void>();
-  #room: Room | null = null;
-  #keys: CallKeyProvider | null = null;
+  /** The transport for the call in progress; null between calls. */
+  #transport: VoiceTransport | null = null;
   #releaseLock: (() => void) | null = null;
   #epochTimer: ReturnType<typeof setInterval> | null = null;
   #unsubscribeSync: (() => void) | null = null;
   #unsubscribeBroadcasts: (() => void) | null = null;
   #ringback: { stop: () => void } | null = null;
-  #audioHost: HTMLDivElement | null = null;
   #volumes = new Map<string, number>();
   #leaving = false;
   /** How getUserMedia failed, if it did, for the details' mic row. */
@@ -264,8 +214,6 @@ class VoiceSession {
   /** When a frame last sent the group to reconcile (see #nudgeGroup). */
   #lastNudge = 0;
   #refreshTimer: ReturnType<typeof setTimeout> | null = null;
-  /** This call's frame-encryption worker; ours to terminate (see above). */
-  #worker: Worker | null = null;
   /** Frames that failed to open, counted here and flushed to state on the
    *  roster's throttle: a mismatch fails every frame, fifty a second. */
   #encryptionErrors = 0;
@@ -313,10 +261,10 @@ class VoiceSession {
   }
 
   async setMicMuted(muted: boolean): Promise<void> {
-    const room = this.#room;
-    if (!room) return;
+    const transport = this.#transport;
+    if (!transport) return;
     try {
-      await room.localParticipant.setMicrophoneEnabled(!muted);
+      await transport.setMicrophoneEnabled(!muted);
       this.#micFailure = null;
       this.#set({ micMuted: muted, error: null });
       blip(muted ? "mute" : "unmute");
@@ -331,20 +279,20 @@ class VoiceSession {
   }
 
   async setMicDevice(deviceId: string): Promise<void> {
-    const room = this.#room;
-    if (!room) return;
+    const transport = this.#transport;
+    if (!transport) return;
     try {
-      await room.switchActiveDevice("audioinput", deviceId);
+      await transport.setInputDevice(deviceId);
     } catch (error) {
       this.#set({ error: micError(error) });
     }
   }
 
   async setSpeakerDevice(deviceId: string): Promise<void> {
-    const room = this.#room;
-    if (!room) return;
+    const transport = this.#transport;
+    if (!transport) return;
     try {
-      await room.switchActiveDevice("audiooutput", deviceId);
+      await transport.setOutputDevice(deviceId);
     } catch {
       // No setSinkId here (Safari): the picker is hidden there anyway.
     }
@@ -353,132 +301,64 @@ class VoiceSession {
   setVolume(userId: string, volume: number): void {
     const clamped = Math.max(0, Math.min(1, volume));
     this.#volumes.set(userId, clamped);
-    const room = this.#room;
-    if (room) {
-      for (const participant of room.remoteParticipants.values()) {
-        if (userIdOf(participant) !== userId) continue;
-        for (const publication of participant.audioTrackPublications.values()) {
-          const track = publication.track as RemoteAudioTrack | undefined;
-          track?.setVolume(clamped);
-        }
-      }
-    }
+    this.#transport?.setParticipantVolume(userId, clamped);
     this.#refreshParticipants();
   }
 
   /** From a tap: the browser's autoplay policy needs one. */
   async startAudio(): Promise<void> {
-    const room = this.#room;
-    if (!room) return;
+    const transport = this.#transport;
+    if (!transport) return;
     try {
-      await room.startAudio();
-      this.#set({ playbackBlocked: !room.canPlaybackAudio });
+      await transport.startPlayback();
+      this.#set({ playbackBlocked: transport.playbackBlocked() });
     } catch {
       this.#set({ playbackBlocked: true });
     }
   }
 
   /**
-   * One reading of where the sound is, for the bar's details. Stats come
-   * from the SDK's per-track getStats wrappers; everything else is flags
-   * the room already holds. Null when there is no room to read. Never
-   * throws: a stats call that fails leaves its numbers null.
+   * One reading of where the sound is, for the bar's details. The numbers
+   * are the transport's; the mic's permission failure and the encryption
+   * counters are this session's. Null when there is no call to read.
    */
   async sampleDiagnostics(): Promise<VoiceDiagnostics | null> {
-    const room = this.#room;
-    if (!room) return null;
+    const transport = this.#transport;
+    if (!transport) return null;
     const state = this.#state;
+    const stats = await transport.sampleStats();
+    if (!stats) return null;
 
-    const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
-    const local = publication?.track as LocalAudioTrack | undefined;
-    const mediaTrack = local?.mediaStreamTrack;
-    const mic = micStatus({
-      published: local !== undefined,
-      muted: publication?.isMuted ?? state.micMuted,
-      systemMuted: mediaTrack?.muted ?? false,
-      ended: mediaTrack?.readyState === "ended",
-      failure: this.#micFailure,
+    const roster = new Map(transport.participants().map((p) => [p.identity, p]));
+    const peers: PeerDiagnostics[] = stats.peers.map((peer) => {
+      const known = roster.get(peer.identity);
+      return {
+        identity: peer.identity,
+        name: known?.name ?? peer.identity,
+        level: known?.audioLevel ?? 0,
+        speaking: known?.speaking ?? false,
+        encrypted: known?.encrypted ?? false,
+        bytesReceived: peer.bytesReceived,
+        audioEnergy: peer.audioEnergy,
+        concealedSamples: peer.concealedSamples,
+        playing: peer.playing,
+      };
     });
-    let packetsSent: number | null = null;
-    let roundTripMs: number | null = null;
-    const echo: EchoReport = { echoReturnLoss: null, echoReturnLossEnhancement: null };
-    if (local) {
-      try {
-        const stats = await local.getSenderStats();
-        packetsSent = stats?.packetsSent ?? null;
-        roundTripMs =
-          stats?.roundTripTime !== undefined ? Math.round(stats.roundTripTime * 1000) : null;
-      } catch {
-        // Stats are a reading, never a requirement.
-      }
-      // The SDK's wrapper reads only outbound-rtp; the canceller's numbers
-      // live on the media-source entry of the same report, so read that
-      // straight off the sender. Absent fields stay null (WebKit).
-      try {
-        const report = await local.sender?.getStats();
-        report?.forEach((entry: RTCStats & { kind?: string; echoReturnLoss?: number; echoReturnLossEnhancement?: number }) => {
-          if (entry.type !== "media-source" || entry.kind !== "audio") return;
-          echo.echoReturnLoss = typeof entry.echoReturnLoss === "number" ? entry.echoReturnLoss : null;
-          echo.echoReturnLossEnhancement =
-            typeof entry.echoReturnLossEnhancement === "number" ? entry.echoReturnLossEnhancement : null;
-        });
-      } catch {
-        // As above.
-      }
-    }
-
-    const speaking = new Set(room.activeSpeakers.map((p) => p.identity));
-    const peers: PeerDiagnostics[] = [];
-    for (const participant of room.remoteParticipants.values()) {
-      const audio =
-        participant.getTrackPublication(Track.Source.Microphone) ??
-        [...participant.audioTrackPublications.values()][0];
-      const track = audio?.track as RemoteAudioTrack | undefined;
-      let bytesReceived: number | null = null;
-      let audioEnergy: number | null = null;
-      let concealedSamples: number | null = null;
-      if (track) {
-        try {
-          const stats = await track.getReceiverStats();
-          bytesReceived = stats?.bytesReceived ?? null;
-          audioEnergy = stats?.totalAudioEnergy ?? null;
-          concealedSamples = stats?.concealedSamples ?? null;
-        } catch {
-          // As above.
-        }
-      }
-      const element = track?.attachedElements[0];
-      peers.push({
-        identity: participant.identity,
-        name: participant.name || userIdOf(participant),
-        level: participant.audioLevel,
-        speaking: speaking.has(participant.identity),
-        encrypted: participant.isEncrypted,
-        bytesReceived,
-        audioEnergy,
-        concealedSamples,
-        playing: element ? !element.paused : null,
-      });
-    }
     peers.sort((a, b) => a.name.localeCompare(b.name));
 
     return {
       at: Date.now(),
-      mic,
-      micLevel: room.localParticipant.audioLevel,
-      packetsSent,
-      roundTripMs,
-      echo,
+      mic: micStatus({ ...stats.mic, failure: this.#micFailure }),
+      micLevel: transport.localAudioLevel(),
+      packetsSent: stats.packetsSent,
+      roundTripMs: stats.roundTripMs,
+      echo: stats.echo,
       peers,
       encryptionErrors: this.#encryptionErrors,
       lastEncryptionError: this.#lastEncryptionError,
       keyEpoch: state.keyEpoch,
       e2ee: state.e2ee,
-      transform: isInsertableStreamSupported()
-        ? "encoded-streams"
-        : isScriptTransformSupported()
-          ? "script-transform"
-          : "none",
+      transform: transport.frameTransform(),
       playbackBlocked: state.playbackBlocked,
       quality: state.quality,
     };
@@ -492,19 +372,15 @@ class VoiceSession {
       // Switching rooms: out of the old one first, then in.
       await this.#teardown({ tellServer: true, error: null });
     }
-
-    const locked = await this.#acquireLock();
-    if (!locked) {
-      this.#set({ ...IDLE, phase: "elsewhere" });
+    if (!(await this.#acquireLock())) {
+      this.#set({ ...IDLE, phase: "elsewhere", error: "You are in a call in another window." });
       return;
     }
-
-    // E2EE exactly where there is an MLS group to export a key from --
-    // i.e. everything except a readable hub channel (public, and
-    // invite-only since 2026-09-03), whose media the SFU relays in the
-    // clear and whose UI says so.
-    const e2ee = !isServerReadable(plan.conversation.hubVisibility);
     this.#leaving = false;
+    // Sealed unless the conversation says the server may read it: a
+    // public or invite-only hub channel relays media in the clear, the
+    // media half of the readable-hub exception (CLAUDE.md rule 1).
+    const e2ee = !isServerReadable(plan.conversation.hubVisibility ?? null);
     this.#set({
       ...IDLE,
       phase: "connecting",
@@ -522,13 +398,9 @@ class VoiceSession {
     }
     this.#set({ call: result.call });
 
-    let keys: CallKeyProvider | null = null;
-    let keyEpoch: number | null = null;
+    let derived: { epoch: number; secret: Uint8Array } | null = null;
     if (e2ee) {
-      const derived = await this.#deriveKeyWithPatience(
-        plan.conversation.id,
-        result.call.id,
-      );
+      derived = await this.#deriveKeyWithPatience(plan.conversation.id, result.call.id);
       if (!derived) {
         await this.#teardown({
           tellServer: true,
@@ -536,53 +408,35 @@ class VoiceSession {
         });
         return;
       }
-      keys = new CallKeyProvider();
-      await keys.setEpochKey(derived.secret, derived.epoch);
-      keyEpoch = derived.epoch;
     }
 
     const prefs = loadVoicePrefs();
-    // Built before the Room so teardown can terminate exactly the one this
-    // call used, even if constructing the Room throws.
-    const worker = keys ? makeWorker() : null;
-    const room = new Room({
-      adaptiveStream: false,
-      dynacast: false,
-      audioCaptureDefaults: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        ...(prefs.micDeviceId ? { deviceId: prefs.micDeviceId } : {}),
-      },
-      ...(prefs.speakerDeviceId
-        ? { audioOutput: { deviceId: prefs.speakerDeviceId } }
-        : {}),
-      // The bitrate is the device's chosen tier (prefs, rules.ts); dtx and
-      // red stay on at every tier -- silence suppression and the redundant
-      // frame are about loss, not fidelity. Fixed for the life of the
-      // publication: livekit-client sets encodings at publish time, so a
-      // tier changed mid-call applies to the next one.
-      publishDefaults: { dtx: true, red: true, audioPreset: audioPresetFor(prefs.audioQuality) },
-      ...(keys && worker ? { e2ee: { keyProvider: keys, worker } } : {}),
-    });
-    this.#room = room;
-    this.#keys = keys;
-    this.#worker = worker;
-    this.#wire(room);
-
+    const transport = createTransport();
+    this.#transport = transport;
     try {
-      await room.connect(result.url, result.token);
-      if (keys) await room.setE2EEEnabled(true);
+      await transport.connect(
+        {
+          url: result.url,
+          token: result.token,
+          e2ee,
+          maxBitrate: audioPresetFor(prefs.audioQuality).maxBitrate,
+          micDeviceId: prefs.micDeviceId,
+          speakerDeviceId: prefs.speakerDeviceId,
+          key: derived,
+        },
+        this.#events(),
+      );
     } catch (error) {
       await this.#teardown({ tellServer: true, error: connectError(error) });
       return;
     }
+    for (const [userId, volume] of this.#volumes) transport.setParticipantVolume(userId, volume);
 
     this.#set({
       phase: "connected",
       connectedAt: Date.now(),
-      keyEpoch,
-      playbackBlocked: !room.canPlaybackAudio,
+      keyEpoch: derived?.epoch ?? null,
+      playbackBlocked: transport.playbackBlocked(),
       ringing: plan.kind === "call" && result.call.status === "ringing",
     });
     this.#refreshParticipants();
@@ -597,8 +451,8 @@ class VoiceSession {
       serverJoinMuted: result.joinMuted,
     });
     try {
-      await room.localParticipant.setMicrophoneEnabled(true);
-      if (startMuted) await room.localParticipant.setMicrophoneEnabled(false);
+      await transport.setMicrophoneEnabled(true);
+      if (startMuted) await transport.setMicrophoneEnabled(false);
       this.#micFailure = null;
       this.#set({ micMuted: startMuted });
     } catch (error) {
@@ -606,7 +460,7 @@ class VoiceSession {
       this.#set({ micMuted: true, error: micError(error) });
     }
 
-    if (keys) this.#watchEpoch(plan.conversation.id, result.call.id);
+    if (e2ee) this.#watchEpoch(plan.conversation.id, result.call.id);
     this.#watchSync(result.call.id);
     blip("join");
   }
@@ -649,77 +503,53 @@ class VoiceSession {
     }
   }
 
-  // -- the room's events -----------------------------------------------------
+  // -- the transport's events ------------------------------------------------
 
-  #wire(room: Room): void {
-    room
-      .on(RoomEvent.ParticipantConnected, () => {
+  #events(): Parameters<VoiceTransport["connect"]>[1] {
+    return {
+      participantJoined: () => {
         this.#stopRingback();
         this.#set({ ringing: false });
         this.#refreshParticipants();
         blip("join");
-      })
-      .on(RoomEvent.ParticipantDisconnected, () => {
+      },
+      participantLeft: () => {
         this.#refreshParticipants();
         blip("leave");
-      })
-      .on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, participant) => {
-        if (track.kind !== Track.Kind.Audio) return;
-        this.#attach(track as RemoteAudioTrack, participant);
-        this.#refreshParticipants();
-      })
-      .on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
-        for (const element of track.detach()) element.remove();
-        this.#refreshParticipants();
-      })
-      .on(RoomEvent.TrackMuted, () => this.#refreshParticipants())
-      .on(RoomEvent.TrackUnmuted, () => this.#refreshParticipants())
-      .on(RoomEvent.ActiveSpeakersChanged, () => this.#refreshParticipantsSoon())
-      .on(RoomEvent.ParticipantEncryptionStatusChanged, () => this.#refreshParticipants())
-      .on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
-        if (participant.isLocal) this.#set({ quality: qualityOf(quality) });
-      })
-      .on(RoomEvent.AudioPlaybackStatusChanged, () => {
-        this.#set({ playbackBlocked: !room.canPlaybackAudio });
-      })
-      .on(RoomEvent.ConnectionStateChanged, (state) => {
+      },
+      rosterChanged: () => this.#refreshParticipants(),
+      speakersChanged: () => this.#refreshParticipantsSoon(),
+      connection: (state, quality) => {
         if (this.#leaving) return;
-        if (state === ConnectionState.Reconnecting) this.#set({ phase: "reconnecting" });
-        else if (state === ConnectionState.Connected) this.#set({ phase: "connected" });
-      })
-      .on(RoomEvent.Disconnected, () => {
-        if (this.#leaving) return;
-        // The SFU ended it (a moderator, the room closing, the call
-        // ending, or a network the SDK gave up on). Nothing to tell the
-        // server: it either did this or its webhook already knows.
-        void this.#teardown({ tellServer: false, error: "The call ended" });
-      })
-      .on(RoomEvent.EncryptionError, (error) => {
+        if (state === "reconnecting") this.#set({ phase: "reconnecting", quality });
+        else if (state === "connected") this.#set({ phase: "connected", quality });
+        else {
+          // The SFU ended it (a moderator, the room closing, the call
+          // ending, or a network the transport gave up on). Nothing to
+          // tell the server: it either did this or its webhook already
+          // knows.
+          void this.#teardown({ tellServer: false, error: "The call ended" });
+        }
+      },
+      playbackChanged: (blocked) => this.#set({ playbackBlocked: blocked }),
+      encryptionError: (reason) => {
         // Counted, not surfaced as an error: a few are expected at an
         // epoch turn. The details panel shows the count, which is how a
         // key mismatch is told apart from a silent microphone.
         this.#encryptionErrors += 1;
-        this.#lastEncryptionError = error instanceof Error ? error.message : String(error);
+        this.#lastEncryptionError = reason;
         this.#refreshParticipantsSoon();
         this.#nudgeGroup();
-      });
+      },
+    };
   }
 
   /**
-   * A frame this device could not open is evidence the group moved --
-   * a peer joined or rejoined and turned the epoch, and their frames now
-   * carry an index this keyring has no key for. Reconciling this one
-   * conversation now is the same repair the outbox runs on EPOCH_STALE;
-   * once the commit is applied, the 2-second epoch poll re-keys. Rate
-   * limited, because a device that is *ahead* also sees errors (its
-   * peer's frames are under the older key) and its reconcile finds
-   * nothing to do.
-   *
-   * The socket's `mls_commit` frame is the primary path now and arrives
-   * before any frame fails; this is the fallback for the case it cannot
-   * cover -- a socket that is down, so the client is polling and learns
-   * of the commit only from the sweep 30 seconds later. Keep both: the
-   * one that matters here is whichever runs when the network is worst.
+   * A frame that would not open is the one signal that this device may be
+   * behind on the group's epoch when the socket is down (the `mls_commit`
+   * frame is the fast path). Ask the sweep to reconcile this conversation
+   * now, at most once per KEY_NUDGE_MS -- a mismatch fails fifty frames a
+   * second, and the reconcile is a network round trip.
    */
   #nudgeGroup(): void {
     const now = Date.now();
@@ -738,35 +568,6 @@ class VoiceSession {
       });
   }
 
-  #attach(track: RemoteAudioTrack, participant: RemoteParticipant): void {
-    const host = this.#host();
-    const element = track.attach();
-    element.setAttribute("data-voice-participant", participant.identity);
-    host.appendChild(element);
-    const volume = this.#volumes.get(userIdOf(participant));
-    if (volume !== undefined) track.setVolume(volume);
-    const speaker = loadVoicePrefs().speakerDeviceId;
-    if (speaker && "setSinkId" in element) {
-      void (element as HTMLMediaElement & { setSinkId(id: string): Promise<void> })
-        .setSinkId(speaker)
-        .catch(() => {});
-    }
-  }
-
-  #host(): HTMLDivElement {
-    if (!this.#audioHost) {
-      const host = document.createElement("div");
-      host.setAttribute("data-voice-audio", "");
-      host.hidden = true;
-      // hidden would pause nothing -- audio elements play regardless of
-      // display -- but keep the host out of layout and out of a11y.
-      host.style.display = "none";
-      document.body.appendChild(host);
-      this.#audioHost = host;
-    }
-    return this.#audioHost;
-  }
-
   #refreshParticipantsSoon(): void {
     if (this.#refreshTimer) return;
     this.#refreshTimer = setTimeout(() => {
@@ -776,23 +577,17 @@ class VoiceSession {
   }
 
   #refreshParticipants(): void {
-    const room = this.#room;
-    if (!room) return;
-    const speaking = new Set(room.activeSpeakers.map((p) => p.identity));
-    const participants: VoiceParticipant[] = [];
-    for (const participant of room.remoteParticipants.values()) {
-      const userId = userIdOf(participant);
-      const audio = [...participant.audioTrackPublications.values()];
-      participants.push({
-        userId,
-        identity: participant.identity,
-        name: participant.name || userId,
-        speaking: speaking.has(participant.identity),
-        micMuted: audio.length === 0 || audio.every((pub) => pub.isMuted),
-        encrypted: participant.isEncrypted,
-        volume: this.#volumes.get(userId) ?? 1,
-      });
-    }
+    const transport = this.#transport;
+    if (!transport) return;
+    const participants: VoiceParticipant[] = transport.participants().map((p) => ({
+      userId: p.userId,
+      identity: p.identity,
+      name: p.name,
+      speaking: p.speaking,
+      micMuted: p.micMuted,
+      encrypted: p.encrypted,
+      volume: this.#volumes.get(p.userId) ?? 1,
+    }));
     participants.sort((a, b) => a.name.localeCompare(b.name));
     this.#set({
       participants,
@@ -812,14 +607,14 @@ class VoiceSession {
 
   async #refreshKey(conversationId: string, callId: string): Promise<void> {
     const handshake = e2e.handshake;
-    const keys = this.#keys;
-    if (!handshake || !keys || this.#leaving) return;
+    const transport = this.#transport;
+    if (!handshake || !transport || !this.#state.e2ee || this.#leaving) return;
     try {
       const epoch = await handshake.epoch(conversationId);
       if (epoch === null || epoch === this.#state.keyEpoch) return;
       const derived = await deriveCallKey(handshake, conversationId, callId);
       if (!derived) return;
-      await keys.setEpochKey(derived.secret, derived.epoch);
+      await transport.setEpochKey(derived.secret, derived.epoch);
       this.#set({ keyEpoch: derived.epoch });
     } catch {
       // Next tick tries again; a stale key drops frames, never the call.
@@ -894,22 +689,9 @@ class VoiceSession {
     this.#unsubscribeBroadcasts?.();
     this.#unsubscribeBroadcasts = null;
 
-    const room = this.#room;
-    const worker = this.#worker;
-    this.#room = null;
-    this.#keys = null;
-    this.#worker = null;
-    if (room) {
-      try {
-        await room.disconnect();
-      } catch {
-        // Already gone.
-      }
-    }
-    // After the disconnect, never before: the teardown's own last frames
-    // still go through the transform.
-    worker?.terminate();
-    this.#audioHost?.replaceChildren();
+    const transport = this.#transport;
+    this.#transport = null;
+    if (transport) await transport.disconnect();
 
     if (input.tellServer && call) {
       try {
@@ -924,7 +706,7 @@ class VoiceSession {
     this.#releaseLock = null;
     this.#set({ ...IDLE, error: input.error });
     this.#announce();
-    if (room) blip("leave");
+    if (transport) blip("leave");
   }
 
   #stopRingback(): void {
