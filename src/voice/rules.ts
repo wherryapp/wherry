@@ -387,3 +387,63 @@ export function isAudioQuality(value: unknown): value is AudioQuality {
 export function audioPresetFor(quality: AudioQuality): { maxBitrate: number } {
   return { maxBitrate: AUDIO_QUALITY_KBPS[quality] * 1000 };
 }
+
+// ---------------------------------------------------------------------------
+// Echo cancellation
+// ---------------------------------------------------------------------------
+
+/**
+ * The echo canceller's own reading, from the audio source's RTP stats
+ * (Chromium reports `echoReturnLoss` / `echoReturnLossEnhancement` on
+ * the `media-source` entry; WebKit reports neither). Both in dB.
+ *
+ * ERL is how much quieter the far end's sound is by the time this
+ * microphone picks it up -- the acoustic path, headphones make it huge.
+ * ERLE is how much *more* the canceller removes on top of that: the
+ * adaptive filter's actual work, climbing from ~0 as it converges and
+ * sitting near 0 when it has nothing to converge on. It is the number
+ * that separates "converging slowly" from "never locked", which is why
+ * the native media plan (docs/prompts/native-media-plan.md §2) wants it
+ * read before anything about echo is rebuilt. Null means the browser did
+ * not report it, never that the canceller is off.
+ */
+export type EchoReport = {
+  echoReturnLoss: number | null;
+  echoReturnLossEnhancement: number | null;
+};
+
+/** ERLE at or above this is a converged canceller. */
+export const ERLE_CONVERGED_DB = 12;
+/** ERLE below this is a canceller that has not (yet) found the echo path. */
+export const ERLE_IDLE_DB = 3;
+
+export type EchoState = "unreported" | "idle" | "converging" | "converged";
+
+export function echoState(report: EchoReport): EchoState {
+  const erle = report.echoReturnLossEnhancement;
+  if (erle === null || !Number.isFinite(erle)) return "unreported";
+  if (erle >= ERLE_CONVERGED_DB) return "converged";
+  if (erle >= ERLE_IDLE_DB) return "converging";
+  return "idle";
+}
+
+/**
+ * The echo row's words. Idle is deliberately not called a fault: with
+ * headphones, or while nobody else is talking, there is no echo to
+ * cancel and the reading is honestly near zero.
+ */
+export function echoLine(report: EchoReport): string {
+  const db = (value: number | null): string =>
+    value === null || !Number.isFinite(value) ? "?" : `${Math.round(value)} dB`;
+  const numbers = `ERL ${db(report.echoReturnLoss)} · ERLE ${db(report.echoReturnLossEnhancement)}`;
+  switch (echoState(report)) {
+    case "unreported":
+      return "canceller not reported by this browser";
+    case "converged":
+      return `canceller converged (${numbers})`;
+    case "converging":
+      return `canceller converging (${numbers})`;
+    case "idle":
+      return `canceller idle -- headphones, or nobody else talking yet (${numbers})`;
+  }
+}

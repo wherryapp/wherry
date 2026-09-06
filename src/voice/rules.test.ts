@@ -4,6 +4,10 @@ import type { Call } from "../api/types";
 import {
   audioPresetFor,
   callKeyContext,
+  echoLine,
+  echoState,
+  ERLE_CONVERGED_DB,
+  ERLE_IDLE_DB,
   callNotice,
   DEFAULT_AUDIO_QUALITY,
   isAudioQuality,
@@ -217,4 +221,30 @@ test("peerFlow tells nothing-arriving, unreadable, silent, not-playing and flowi
   assert.equal(peerFlow({ ...ok, playing: false }), "not-playing");
   // An engine without totalAudioEnergy still gets a verdict on the rest.
   assert.equal(peerFlow({ ...ok, energyDelta: null }), "flowing");
+});
+
+test("echo: ERLE names the canceller's state; missing numbers are unreported, never a fault", () => {
+  assert.equal(echoState({ echoReturnLoss: null, echoReturnLossEnhancement: null }), "unreported");
+  assert.equal(echoState({ echoReturnLoss: 20, echoReturnLossEnhancement: null }), "unreported");
+  assert.equal(echoState({ echoReturnLoss: 20, echoReturnLossEnhancement: Number.NaN }), "unreported");
+  assert.equal(echoState({ echoReturnLoss: 5, echoReturnLossEnhancement: 0 }), "idle");
+  assert.equal(echoState({ echoReturnLoss: 5, echoReturnLossEnhancement: ERLE_IDLE_DB - 0.1 }), "idle");
+  assert.equal(echoState({ echoReturnLoss: 5, echoReturnLossEnhancement: ERLE_IDLE_DB }), "converging");
+  assert.equal(echoState({ echoReturnLoss: 5, echoReturnLossEnhancement: ERLE_CONVERGED_DB - 0.1 }), "converging");
+  assert.equal(echoState({ echoReturnLoss: 5, echoReturnLossEnhancement: ERLE_CONVERGED_DB }), "converged");
+  assert.equal(echoState({ echoReturnLoss: 5, echoReturnLossEnhancement: 40 }), "converged");
+
+  assert.equal(
+    echoLine({ echoReturnLoss: null, echoReturnLossEnhancement: null }),
+    "canceller not reported by this browser",
+  );
+  assert.equal(
+    echoLine({ echoReturnLoss: 7.6, echoReturnLossEnhancement: 18.2 }),
+    "canceller converged (ERL 8 dB · ERLE 18 dB)",
+  );
+  assert.equal(
+    echoLine({ echoReturnLoss: null, echoReturnLossEnhancement: 6 }),
+    "canceller converging (ERL ? · ERLE 6 dB)",
+  );
+  assert.match(echoLine({ echoReturnLoss: 30, echoReturnLossEnhancement: 0.4 }), /^canceller idle -- headphones/);
 });

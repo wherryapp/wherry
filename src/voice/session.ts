@@ -57,6 +57,7 @@ import {
   audioPresetFor,
   micStatus,
   shouldJoinMuted,
+  type EchoReport,
   type MicFailure,
   type MicStatus,
 } from "./rules";
@@ -170,6 +171,12 @@ export type VoiceDiagnostics = {
   micLevel: number;
   packetsSent: number | null;
   roundTripMs: number | null;
+  /**
+   * The echo canceller's own reading from the audio source stats
+   * (`media-source`): ERL and ERLE in dB on Chromium, both null on
+   * WebKit, which reports neither. rules.ts turns them into words.
+   */
+  echo: EchoReport;
   peers: PeerDiagnostics[];
   encryptionErrors: number;
   lastEncryptionError: string | null;
@@ -394,6 +401,7 @@ class VoiceSession {
     });
     let packetsSent: number | null = null;
     let roundTripMs: number | null = null;
+    const echo: EchoReport = { echoReturnLoss: null, echoReturnLossEnhancement: null };
     if (local) {
       try {
         const stats = await local.getSenderStats();
@@ -402,6 +410,20 @@ class VoiceSession {
           stats?.roundTripTime !== undefined ? Math.round(stats.roundTripTime * 1000) : null;
       } catch {
         // Stats are a reading, never a requirement.
+      }
+      // The SDK's wrapper reads only outbound-rtp; the canceller's numbers
+      // live on the media-source entry of the same report, so read that
+      // straight off the sender. Absent fields stay null (WebKit).
+      try {
+        const report = await local.sender?.getStats();
+        report?.forEach((entry: RTCStats & { kind?: string; echoReturnLoss?: number; echoReturnLossEnhancement?: number }) => {
+          if (entry.type !== "media-source" || entry.kind !== "audio") return;
+          echo.echoReturnLoss = typeof entry.echoReturnLoss === "number" ? entry.echoReturnLoss : null;
+          echo.echoReturnLossEnhancement =
+            typeof entry.echoReturnLossEnhancement === "number" ? entry.echoReturnLossEnhancement : null;
+        });
+      } catch {
+        // As above.
       }
     }
 
@@ -446,6 +468,7 @@ class VoiceSession {
       micLevel: room.localParticipant.audioLevel,
       packetsSent,
       roundTripMs,
+      echo,
       peers,
       encryptionErrors: this.#encryptionErrors,
       lastEncryptionError: this.#lastEncryptionError,

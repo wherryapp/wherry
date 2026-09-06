@@ -10,7 +10,7 @@
 // holds and the browser's own RTP statistics.
 
 import { useVoiceDiagnostics } from "../../voice/hooks";
-import { micLine, peerFlow, peerFlowLine } from "../../voice/rules";
+import { echoLine, micLine, peerFlow, peerFlowLine } from "../../voice/rules";
 import type { VoiceDiagnostics } from "../../voice/session";
 
 function delta(current: number | null, previous: number | null): number | null {
@@ -79,6 +79,8 @@ export function CallDetails() {
           </span>
         )}
       </Row>
+
+      <Row label="Echo">{echoLine(current.echo)}</Row>
 
       {current.peers.length === 0 && (
         <Row label="Peers">nobody else is connected</Row>
