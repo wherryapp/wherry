@@ -58,6 +58,21 @@ export type LeaderHandle = {
 const HEARTBEAT_MS = 2_000;
 const STALE_MS = 8_000;
 
+// How long to wait before asking for the lock again after the *request
+// itself* was refused -- not queued, not granted-then-released, but rejected
+// before the callback ever ran. WebKit does that (`InvalidStateError` for a
+// document it no longer considers fully active, among others), and until
+// 2026-09-07 the election re-queued inside that rejection's own `.finally`:
+// request, reject, abort, request, ... an unbounded chain of microtasks with
+// no macrotask between them, which is a main thread that never returns to
+// its event loop. A three-second `sample` of an iOS-simulator page that had
+// sat at 60% CPU for days showed exactly that stack, and nothing else
+// (docs/freeze/2026-09-07-simulator-main-thread.txt). A timer is the whole
+// fix: it yields. The backoff is so a permanently refusing API costs one
+// request every half minute rather than one every tick.
+const REFUSED_RETRY_MS = 250;
+const REFUSED_RETRY_MAX_MS = 30_000;
+
 /**
  * Runs `task` in exactly one tab at a time.
  *
@@ -87,8 +102,15 @@ export function runAsLeader(name: string, task: LeaderTask): LeaderHandle {
   let holding = false;
   let controller: AbortController | null = null;
   let lastSeenLeaderAt = Date.now();
+  // Consecutive refusals, and the timer waiting to try again after one.
+  let refusals = 0;
+  let retry: ReturnType<typeof setTimeout> | null = null;
 
   const release = (): void => {
+    if (retry) {
+      clearTimeout(retry);
+      retry = null;
+    }
     controller?.abort(new DOMException("released", "AbortError"));
     controller = null;
   };
@@ -99,6 +121,7 @@ export function runAsLeader(name: string, task: LeaderTask): LeaderHandle {
     const own = new AbortController();
     controller = own;
     let completed = false;
+    let held = false;
 
     // `steal` and `signal` are mutually exclusive in the Web Locks spec, and
     // a steal never queues, so there is nothing to cancel while waiting.
@@ -109,6 +132,8 @@ export function runAsLeader(name: string, task: LeaderTask): LeaderHandle {
     void locks
       .request(name, options, async () => {
         holding = true;
+        held = true;
+        refusals = 0;
         lastSeenLeaderAt = Date.now();
         try {
           // Held for as long as this promise is pending. The lock is what
@@ -126,6 +151,9 @@ export function runAsLeader(name: string, task: LeaderTask): LeaderHandle {
         console.error("leader task failed", error);
       })
       .finally(() => {
+        // Aborted before this point means *we* withdrew the request --
+        // stop(), pause(), or the watchdog resetting for a steal.
+        const withdrawn = own.signal.aborted;
         // Being stolen from releases the lock but does *not* stop the task:
         // the callback is still awaiting it, and a former leader still polling
         // is the two-writers case the lock exists to prevent.
@@ -138,7 +166,23 @@ export function runAsLeader(name: string, task: LeaderTask): LeaderHandle {
         // its own. A loop that returned deliberately (an expired session) must
         // stay finished, or it is restarted straight into the failure that
         // ended it.
-        if (!stopped && !paused && !completed) acquire(false);
+        if (stopped || paused || completed) return;
+        // We held the lock and lost it (stolen, or the task ended by abort):
+        // queue again. A queued request waits; it cannot spin.
+        if (held) {
+          acquire(false);
+          return;
+        }
+        // Withdrawn by our own hand: whoever withdrew it re-acquires.
+        if (withdrawn) return;
+        // Refused outright, before the callback ever ran. Never re-queue from
+        // here in the same turn -- see REFUSED_RETRY_MS. A timer yields.
+        refusals += 1;
+        const delay = Math.min(REFUSED_RETRY_MS * 2 ** (refusals - 1), REFUSED_RETRY_MAX_MS);
+        retry = setTimeout(() => {
+          retry = null;
+          acquire(false);
+        }, delay);
       });
   };
 
