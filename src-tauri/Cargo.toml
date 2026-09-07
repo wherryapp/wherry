@@ -64,3 +64,17 @@ tokio = { version = "1", features = ["sync"] }
 # app's private storage the way WebKit may. See docs/mobile-setup.md.
 [target.'cfg(any(target_vendor = "apple", target_os = "windows"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+# The frame-cryptor thread leak fix (docs/prompts/native-media-plan.md §5.1,
+# gate 1), carried the only way Cargo allows for a git dependency: one commit
+# on top of the pinned upstream rev, on a branch of a fork under the
+# wherryapp org. Only `webrtc-sys` comes from the fork; `livekit` itself
+# stays on upstream at the same rev, and `webrtc-sys-build` follows the
+# patched crate's workspace. The commit is also kept in-repo as
+# patches/rust-sdks-frame-cryptor-detach.patch (with the upstream issue
+# draft beside it). When upstream merges it, delete this section and bump
+# `rev` above together with LIVEKIT_REV in src/voice.rs. Verified 2026-09-07:
+# 20 leaked FrameCryptorTransformer threads after 10 calls without it, 0
+# after 6 with it, twice, audio still sealed both ways.
+[patch."https://github.com/livekit/rust-sdks"]
+webrtc-sys = { git = "https://github.com/wherryapp/rust-sdks", rev = "bf2ea2d59290d1411d6e659229ade397bb7e667d" }

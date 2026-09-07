@@ -48,12 +48,6 @@ use livekit::e2ee::{E2eeOptions, EncryptionType};
 use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::*;
 use livekit::webrtc::native::frame_cryptor::KeyDerivationAlgorithm;
-#[cfg(debug_assertions)]
-use livekit::webrtc::audio_frame::AudioFrame;
-#[cfg(debug_assertions)]
-use livekit::webrtc::audio_source::native::NativeAudioSource;
-#[cfg(debug_assertions)]
-use livekit::webrtc::audio_source::AudioSourceOptions;
 use livekit::webrtc::stats::RtcStats;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -138,46 +132,12 @@ struct Shared {
   key_index: Mutex<i32>,
 }
 
-/// Debug builds only: with `WHERRY_VOICE_TONE=1` in the shell's environment,
-/// `voice_set_mic(true)` publishes a synthesised 440 Hz tone instead of the
-/// platform microphone. The dev Mac has no microphone (the plan's §3.1), and
-/// without *some* published track the sender's frame cryptor never exists,
-/// so neither the key walk nor the cryptor-thread gate can be exercised.
-/// Same stand-in the stage-0 spike used; not compiled into a release.
-#[cfg(debug_assertions)]
-fn dev_tone_wanted() -> bool {
-  std::env::var("WHERRY_VOICE_TONE").map(|v| v == "1").unwrap_or(false)
-}
-
-#[cfg(debug_assertions)]
-async fn tone_loop(source: NativeAudioSource) {
-  const SAMPLE_RATE: u32 = 48_000;
-  const TONE_HZ: f64 = 440.0;
-  const AMPLITUDE: f64 = 0.5;
-  let samples_per_frame = (SAMPLE_RATE / 100) as usize;
-  let step = 2.0 * std::f64::consts::PI * TONE_HZ / SAMPLE_RATE as f64;
-  let mut phase = 0.0f64;
-  let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
-  loop {
-    interval.tick().await;
-    let data: Vec<i16> = (0..samples_per_frame)
-      .map(|_| {
-        let sample = (phase.sin() * AMPLITUDE * i16::MAX as f64) as i16;
-        phase = (phase + step) % (2.0 * std::f64::consts::PI);
-        sample
-      })
-      .collect();
-    let frame = AudioFrame {
-      data: data.into(),
-      sample_rate: SAMPLE_RATE,
-      num_channels: 1,
-      samples_per_channel: samples_per_frame as u32,
-    };
-    if source.capture_frame(&frame).await.is_err() {
-      break;
-    }
-  }
-}
+// A debug-only synthesised tone once stood in for the microphone here
+// (`WHERRY_VOICE_TONE=1`), because the dev Mac had no input device while
+// stages 0 and 2 were built. It was deleted on 2026-09-07 once a real
+// microphone had been through this path (docs/prompts/native-media-plan.md
+// §5.1). A machine without a microphone gets `no_microphone` below, the
+// same answer the browser gives.
 
 struct Session {
   id: u64,
@@ -189,10 +149,6 @@ struct Session {
   mic: Option<LocalTrackPublication>,
   max_bitrate: u64,
   pump: tauri::async_runtime::JoinHandle<()>,
-  /// The debug tone's task, when `WHERRY_VOICE_TONE=1` stood in for the
-  /// microphone; aborted on disconnect.
-  #[cfg(debug_assertions)]
-  tone: Option<tauri::async_runtime::JoinHandle<()>>,
   started: Instant,
 }
 
@@ -617,8 +573,6 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     mic: None,
     max_bitrate: args.max_bitrate,
     pump: pump_task,
-    #[cfg(debug_assertions)]
-    tone: None,
     started,
   });
   Ok(result)
@@ -637,10 +591,6 @@ pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
   let Some(session) = SESSION.lock().unwrap().take() else {
     return Ok(DisconnectResult { close_ms: 0, lifetime_ms: 0 });
   };
-  #[cfg(debug_assertions)]
-  if let Some(task) = session.tone.as_ref() {
-    task.abort();
-  }
   let Session { room, keys, mic, pump, started, .. } = session;
   log::info!("voice: disconnect requested after {} ms", started.elapsed().as_millis());
   // The microphone first, so the sender's channel is torn down through the
@@ -702,26 +652,10 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
     // Muted before it was ever published: nothing to publish silence from.
     return Ok(());
   }
-  #[cfg(debug_assertions)]
-  let tone = if dev_tone_wanted() {
-    Some(NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0))
-  } else {
-    None
-  };
-  #[cfg(not(debug_assertions))]
-  let tone: Option<()> = None;
-  if tone.is_none() && audio.recording_devices().next().is_none() {
+  if audio.recording_devices().next().is_none() {
     return Err(VoiceError::new("no_microphone", "no recording device"));
   }
-
-  #[cfg(debug_assertions)]
-  let source = match tone.as_ref() {
-    Some(source) => livekit::webrtc::audio_source::RtcAudioSource::Native(source.clone()),
-    None => audio.rtc_source(),
-  };
-  #[cfg(not(debug_assertions))]
-  let source = audio.rtc_source();
-  let track = LocalAudioTrack::create_audio_track("microphone", source);
+  let track = LocalAudioTrack::create_audio_track("microphone", audio.rtc_source());
   let options = TrackPublishOptions {
     source: TrackSource::Microphone,
     // dtx and red stay on at every tier, as in the webview transport:
@@ -752,20 +686,10 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
     audio.is_recording_initialized()
   );
 
-  #[cfg(debug_assertions)]
-  let tone_task = tone.map(|source| {
-    log::warn!("voice: WHERRY_VOICE_TONE=1 -- publishing a synthesised tone, not a microphone");
-    tauri::async_runtime::spawn(tone_loop(source))
-  });
-
   let mut guard = SESSION.lock().unwrap();
   match guard.as_mut() {
     Some(session) if session.id == id => {
       session.mic = Some(publication);
-      #[cfg(debug_assertions)]
-      {
-        session.tone = tone_task;
-      }
     }
     _ => {
       // The call ended while the publish was in flight; the room is closed
