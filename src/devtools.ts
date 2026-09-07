@@ -66,12 +66,15 @@ import { saveVoicePrefs } from "./voice/prefs";
 
 type TraceEntry = {
   at: string;
-  kind: "call" | "reject" | "window-error" | "unhandled-rejection";
+  kind: "call" | "reject" | "window-error" | "unhandled-rejection" | "console";
   detail: Record<string, unknown>;
 };
 
 const buffer: TraceEntry[] = [];
 let endpoint: string | null = null;
+// The console as it was before the trace wrapped it (see installCryptoTrace):
+// record() must not feed its own mirror back into itself.
+const nativeConsole = { warn: console.warn.bind(console), error: console.error.bind(console) };
 
 declare global {
   interface Window {
@@ -90,7 +93,7 @@ function record(kind: TraceEntry["kind"], detail: Record<string, unknown>): void
   const post =
     kind !== "call" ||
     (typeof detail["method"] === "string" && detail["method"].startsWith("__"));
-  if (kind !== "call") console.error("[crypto-trace]", kind, detail);
+  if (kind !== "call" && kind !== "console") nativeConsole.error("[crypto-trace]", kind, detail);
   if (endpoint && post) {
     // Fire-and-forget; the collector is a dev scratch server.
     void fetch(endpoint, {
@@ -191,6 +194,25 @@ function installCryptoTrace(target: string): void {
       stack: reason instanceof Error ? (reason.stack ?? "") : "",
     });
   });
+
+  // The shell relays no console at all (docs/prompts/native-media-handoff.md
+  // §4), and the sync engine reports its failures with console.warn -- so
+  // warnings and errors ride along to the collector too, first argument
+  // and a short rendering of the rest. Dev only, like everything here.
+  const mirror = (level: "warn" | "error") =>
+    (...args: unknown[]): void => {
+      nativeConsole[level](...args);
+      if (typeof args[0] === "string" && args[0].startsWith("[")) return; // our own tags
+      record("console", {
+        level,
+        message: args
+          .map((a) => describeForConsole(a))
+          .join(" ")
+          .slice(0, 400),
+      });
+    };
+  console.warn = mirror("warn");
+  console.error = mirror("error");
 
   record("call", { method: "__trace-installed", args: [navigator.userAgent] });
 
@@ -356,4 +378,27 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   });
   maybeDevNative(params);
   maybeDevCall(params);
+}
+
+/** One console argument as a line: errors by name, message and any code. */
+function describeForConsole(value: unknown): string {
+  if (value instanceof Error) {
+    const extra = Object.entries(value as unknown as Record<string, unknown>)
+      .filter(([k, v]) => k !== "stack" && (typeof v === "string" || typeof v === "number"))
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(" ");
+    return `${value.name || "Error"}: ${value.message}${extra ? ` [${extra}]` : ""}`;
+  }
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && value !== null) {
+    const ctor = (value as { constructor?: { name?: string } }).constructor?.name ?? "object";
+    let body = "";
+    try {
+      body = JSON.stringify(value)?.slice(0, 200) ?? "";
+    } catch {
+      body = "";
+    }
+    return `${ctor} ${body} ${String(value)}`.trim();
+  }
+  return String(value);
 }

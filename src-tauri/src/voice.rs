@@ -855,3 +855,232 @@ pub async fn voice_stats() -> VoiceResult<Value> {
   log::debug!("voice: stats sampled ({} peer(s))", peers.len());
   Ok(out)
 }
+
+// -- the page probe (debug builds only) --------------------------------------
+//
+// Gate 2 of the plan's §5.1: a hidden shell page's timers have been seen to
+// stop -- three times mid-call, and later at boot with no call placed at all
+// -- while the page process sat idle at 0% and its main thread waited in the
+// run loop. The per-session ping in `voice_connect` starts only once a call
+// is up, so a boot that dies before placing its call is invisible to it.
+// This probe runs from `setup` for the life of the process and asks the
+// page four questions every five seconds, each answered by `page_pulse`
+// with how it was reached:
+//
+//   eval       the script itself ran -- the process still handles IPC
+//   microtask  a promise queued by it drained -- the JS event loop turned
+//   timeout    a zero-delay setTimeout fired -- DOM timers are scheduled
+//   raf        a requestAnimationFrame fired -- the page is being painted
+//              (expected to be missing while hidden; that is the spec)
+//
+// plus whatever the page can say about itself (`extra`: the dev trace
+// buffer's length and last entry, the voice session's phase). Which answers
+// go missing is what tells a suspended page from a throttled one from a
+// frozen process. Nothing here decides anything -- it reports.
+//
+// One thing to know before reading its output: **the probe is itself a
+// keepalive.** Measured 2026-09-07 (the plan's §5.1): WebKit on macOS 26
+// suspends the WebContent process of a hidden view about eight seconds
+// after its last activity, and an eval from the shell is an activity that
+// resumes it. So a page under this probe is woken every five seconds and
+// cannot show the dead-boot signature; what it shows instead is the page
+// running only in the seconds after each pulse.
+
+#[cfg(debug_assertions)]
+mod probe {
+  use std::collections::{BTreeMap, BTreeSet};
+  use std::sync::Mutex;
+
+  #[derive(Default)]
+  pub struct Answers {
+    pub eval: Option<f64>,
+    pub microtask: Option<f64>,
+    pub timeout: Option<f64>,
+    pub raf: Option<f64>,
+    pub visibility: String,
+    pub focus: bool,
+    pub ready: String,
+    pub uptime_ms: f64,
+    /// Whatever else the page could say about itself, as JSON built there.
+    pub extra: String,
+  }
+
+  /// Answers for pulses not yet reported, by pulse number.
+  pub static PENDING: Mutex<BTreeMap<u64, Answers>> = Mutex::new(BTreeMap::new());
+  /// Pulses already reported, so a late answer is logged as late.
+  pub static REPORTED: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
+  /// Five seconds unless `WHERRY_PROBE_SECS` says otherwise -- a longer
+  /// interval is how to watch the page *without* the probe keeping it
+  /// awake (see the module note).
+  pub fn interval_secs() -> u64 {
+    std::env::var("WHERRY_PROBE_SECS").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(5)
+  }
+
+  pub fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|d| d.as_millis() as f64)
+      .unwrap_or(0.0)
+  }
+}
+
+/// The page's answer to the boot-time probe. The command exists in every
+/// build so the handler list is one list; only debug builds send pulses.
+#[tauri::command]
+#[allow(unused_variables)]
+pub fn page_pulse(
+  pulse: u64,
+  sent_at: f64,
+  via: String,
+  visibility: String,
+  focus: bool,
+  ready: String,
+  uptime: f64,
+  extra: String,
+) {
+  #[cfg(debug_assertions)]
+  {
+    let after = probe::now_ms() - sent_at;
+    if probe::REPORTED.lock().unwrap().contains(&pulse) {
+      log::warn!("page: pulse #{pulse} LATE {via} after {after:.0} ms (visibility={visibility} focus={focus})");
+      return;
+    }
+    let mut pending = probe::PENDING.lock().unwrap();
+    let answers = pending.entry(pulse).or_default();
+    match via.as_str() {
+      "eval" => answers.eval = Some(after),
+      "microtask" => answers.microtask = Some(after),
+      "timeout" => answers.timeout = Some(after),
+      "raf" => answers.raf = Some(after),
+      _ => {}
+    }
+    answers.visibility = visibility;
+    answers.focus = focus;
+    answers.ready = ready;
+    answers.uptime_ms = uptime;
+    answers.extra = extra;
+  }
+}
+
+/// Start the probe. Debug builds only, from `setup`; see the module note.
+#[cfg(debug_assertions)]
+pub fn start_page_probe(app: AppHandle) {
+  tauri::async_runtime::spawn(async move {
+    let mut ticks = tokio::time::interval(std::time::Duration::from_secs(probe::interval_secs()));
+    let mut pulse: u64 = 0;
+    loop {
+      ticks.tick().await;
+      if pulse > 0 {
+        report_pulse(&app, pulse);
+      }
+      pulse += 1;
+      let Some(window) = app.webview_windows().into_values().next() else {
+        log::warn!("page: pulse #{pulse} not sent -- no window");
+        continue;
+      };
+      let sent_at = probe::now_ms();
+      let script = format!(
+        r#"(function () {{
+  var inv = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+  if (!inv) return;
+  var extra = function () {{
+    try {{
+      var t = window.__cryptoTrace || [];
+      var last = t.length ? t[t.length - 1] : null;
+      var v = window.__voice ? window.__voice.getState() : null;
+      return {{
+        trace: t.length,
+        last: last ? (last.detail.method || last.kind) + "@" + last.at.slice(11, 19) : null,
+        voice: v ? v.phase + (v.error ? " (" + v.error + ")" : "") : null
+      }};
+    }} catch (e) {{ return {{ err: String(e) }}; }}
+  }};
+  var base = {{ pulse: {pulse}, sentAt: {sent_at}, visibility: document.visibilityState,
+    focus: document.hasFocus(), ready: document.readyState, uptime: performance.now(),
+    extra: JSON.stringify(extra()) }};
+  var send = function (via) {{ inv('page_pulse', Object.assign({{ via: via }}, base)).catch(function () {{}}); }};
+  send('eval');
+  Promise.resolve().then(function () {{ send('microtask'); }});
+  setTimeout(function () {{ send('timeout'); }}, 0);
+  requestAnimationFrame(function () {{ send('raf'); }});
+}})()"#
+      );
+      if let Err(error) = window.eval(&script) {
+        log::warn!("page: pulse #{pulse} eval failed: {error}");
+      }
+    }
+  });
+}
+
+#[cfg(debug_assertions)]
+fn report_pulse(app: &AppHandle, pulse: u64) {
+  let answers = probe::PENDING.lock().unwrap().remove(&pulse);
+  {
+    let mut reported = probe::REPORTED.lock().unwrap();
+    reported.insert(pulse);
+    reported.retain(|p| pulse.saturating_sub(*p) < 50);
+  }
+  let window = app
+    .webview_windows()
+    .into_values()
+    .next()
+    .map(|w| {
+      format!(
+        "window visible={} focused={} minimized={} occluded={}",
+        w.is_visible().unwrap_or(false),
+        w.is_focused().unwrap_or(false),
+        w.is_minimized().unwrap_or(false),
+        window_occluded(&w)
+      )
+    })
+    .unwrap_or_else(|| "no window".to_string());
+  let Some(a) = answers else {
+    log::warn!("page: pulse #{pulse} UNANSWERED -- the eval did not run in {} s ({window})", probe::interval_secs());
+    return;
+  };
+  let show = |v: Option<f64>| v.map(|ms| format!("{ms:.0}ms")).unwrap_or_else(|| "MISSING".to_string());
+  let line = format!(
+    "page: pulse #{pulse} eval={} microtask={} timeout={} raf={} visibility={} focus={} ready={} uptime={:.0}s {} ({window})",
+    show(a.eval),
+    show(a.microtask),
+    show(a.timeout),
+    show(a.raf),
+    a.visibility,
+    a.focus,
+    a.ready,
+    a.uptime_ms / 1000.0,
+    a.extra
+  );
+  if a.eval.is_none() || a.microtask.is_none() || a.timeout.is_none() {
+    log::warn!("{line}");
+  } else {
+    log::info!("{line}");
+  }
+}
+
+/// Ground truth for the probe's line: is the window on screen at all, by the
+/// window server's own account (`NSWindow.occlusionState`)? WebKit's log
+/// stops reporting occlusion once detection is switched off, so this is the
+/// only reading left that says whether the switch is being exercised.
+#[cfg(debug_assertions)]
+fn window_occluded(window: &tauri::WebviewWindow) -> String {
+  #[cfg(target_os = "macos")]
+  {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let Ok(ns_window) = window.ns_window() else {
+      return "?".to_string();
+    };
+    if ns_window.is_null() {
+      return "?".to_string();
+    }
+    // NSWindowOcclusionStateVisible == 1 << 1.
+    let state: usize = unsafe { msg_send![ns_window as *mut AnyObject, occlusionState] };
+    return if state & 2 == 0 { "yes".to_string() } else { "no".to_string() };
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    let _ = window;
+    "n/a".to_string()
+  }
+}

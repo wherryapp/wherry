@@ -65,6 +65,14 @@ tokio = { version = "1", features = ["sync"] }
 [target.'cfg(any(target_vendor = "apple", target_os = "windows"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
+# Keeping the page scheduled on macOS (lib.rs, "Keeping the page scheduled"):
+# one Key-Value-Coding call on the WKWebView, which needs a message send and
+# two Foundation types. Both crates are already in the graph through wry and
+# tao; this adds no download, only a direct dependency.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSValue"] }
+
 # The frame-cryptor thread leak fix (docs/prompts/native-media-plan.md §5.1,
 # gate 1), carried the only way Cargo allows for a git dependency: one commit
 # on top of the pinned upstream rev, on a branch of a fork under the

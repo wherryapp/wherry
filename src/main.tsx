@@ -13,6 +13,7 @@ import { lockPageZoom } from "./ui/zoom";
 import { restoreTextScale } from "./ui/text-scale";
 import { startIdleTracking } from "./sync/idle";
 import { probeNativeMedia } from "./voice/native-media";
+import { keepPageScheduled } from "./page-scheduling";
 
 // Before the first render, so the shell is sized correctly on the first
 // paint rather than jumping once the listeners attach.
@@ -59,6 +60,13 @@ void probeNativeMedia();
 // Not awaited: nothing on screen depends on it, and notifications are the
 // only thing that does.
 void registerServiceWorker();
+
+// The desktop shell keeps this page scheduled while its window is covered
+// (page-scheduling.ts): without it, WebKit on macOS 26 suspends the page
+// process -- no sync, no notifications, no call re-keying -- as soon as
+// another window is over it. One command, not awaited; the page runs the
+// same either way until the window is covered.
+void keepPageScheduled();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root is missing from index.html");

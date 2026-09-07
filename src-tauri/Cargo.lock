@@ -5642,6 +5642,8 @@ dependencies = [
  "keyring",
  "livekit",
  "log",
+ "objc2",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tauri",
