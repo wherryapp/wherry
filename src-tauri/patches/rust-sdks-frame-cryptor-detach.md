@@ -12,8 +12,24 @@ reclaimed (`docs/prompts/native-media-plan.md` §5.1, gate 1).
 threads after 10 calls on the unpatched bridge; 0 after 6 calls with the
 patch, twice, with the audio still sealed both ways.
 
-**Not yet in the build.** Cargo cannot apply a patch file to a git
-dependency. To carry it, either:
+**In the build since 2026-09-07 (evening)** through the fork:
+`wherryapp/rust-sdks`, branch `wherry/frame-cryptor-detach`, commit
+`bf2ea2d59290d1411d6e659229ade397bb7e667d` — the `[patch]` section in
+`client/src-tauri/Cargo.toml`. **The upstream pull request has not been
+opened** (the session that would have opened it was not allowed to);
+the branch is pushed and the command is:
+
+```bash
+gh pr create --repo livekit/rust-sdks --base main \
+  --head wherryapp:wherry/frame-cryptor-detach \
+  --title "webrtc-sys: detach the frame transformer when a FrameCryptor is destroyed" \
+  --body-file client/src-tauri/patches/rust-sdks-frame-cryptor-detach.md
+```
+
+(the body below the rule is written to be that PR's description). When it
+merges, delete the `[patch]` section and bump `rev` with `LIVEKIT_REV`.
+
+Cargo cannot apply a patch file to a git dependency, so the choices were:
 
 - fork `livekit/rust-sdks` (under the `wherryapp` org), `git am` this
   file on a branch from `dee418bb`, and add to `client/src-tauri/Cargo.toml`:
