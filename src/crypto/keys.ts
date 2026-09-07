@@ -32,6 +32,7 @@
 import { Aes128Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 import { argon2id } from "hash-wasm";
+import { recordCall } from "../diagnostics";
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -96,21 +97,39 @@ export type Wrapped = {
   params: KdfParams;
 };
 
-/** Derives the 32-byte key-encryption-key from a password or recovery code. */
+/**
+ * Derives the 32-byte key-encryption-key from a password or recovery code.
+ *
+ * Timed into the diagnostics record, and it is the one KDF chokepoint so
+ * one label covers every caller. The reason is the open iPhone freeze
+ * (`docs/freeze-diagnostics.md`): the instrument otherwise wraps only the
+ * `E2EProvider`, and this is *not* a provider method, so a first login --
+ * the one moment Argon2id runs, and the moment the freeze reproduces --
+ * would have shown a big stall with no slow call beside it, which that
+ * runbook reads as "not crypto" and would have sent the hunt the wrong
+ * way. Deliberately expensive by design (64 MiB, 3 passes), so a slow
+ * reading here is not automatically a fault; it is a number to weigh
+ * against the stall it sits next to.
+ */
 export async function deriveKek(
   secret: string,
   salt: Uint8Array,
   params: KdfParams,
 ): Promise<Uint8Array> {
-  return await argon2id({
-    password: secret,
-    salt,
-    memorySize: params.m,
-    iterations: params.t,
-    parallelism: params.p,
-    hashLength: 32,
-    outputType: "binary",
-  });
+  const startedAt = Date.now();
+  try {
+    return await argon2id({
+      password: secret,
+      salt,
+      memorySize: params.m,
+      iterations: params.t,
+      parallelism: params.p,
+      hashLength: 32,
+      outputType: "binary",
+    });
+  } finally {
+    recordCall("keys.deriveKek", Date.now() - startedAt);
+  }
 }
 
 /**
