@@ -27,3 +27,15 @@ rustflags = ["-L", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeD
 # above: invisible to every other target, identical in every shell.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Fetch git dependencies with the system `git`, not cargo's built-in
+# libgit2. The media crate's repository carries libyuv as a submodule from
+# chromium.googlesource.com, and on the macOS release runner libgit2 over
+# SecureTransport failed to clone it four times in a row -- four minutes
+# each, sixteen minutes to learn one boolean (2026-09-07, run
+# 34127682652; Windows fetched the same thing fine). The system git
+# handles googlesource's smart-HTTP transfer where libgit2 does not; this
+# is cargo's own documented answer to that error, and the dev Mac already
+# has the checkout so nothing changes here.
+[net]
+git-fetch-with-cli = true
