@@ -24,6 +24,16 @@
 // app's storage in the private data dir rather than evicting it the way
 // WebKit may for an inactive iOS app.
 
+// The native media transport (docs/prompts/native-media-plan.md, stage 2):
+// the first Rust here that is not a passthrough, and the reason the rule
+// above is now "decisions in TypeScript, mechanism in Rust, and the
+// boundary is a named interface" -- the interface being `VoiceTransport`
+// in client/src/voice/transport.ts, with `transport-native.ts` on the
+// other side of these commands. Desktop only; the phones keep the webview
+// transport and never compile this.
+#[cfg(desktop)]
+mod voice;
+
 #[cfg(any(target_vendor = "apple", target_os = "windows"))]
 fn vault_entry(key: &str) -> Result<keyring::Entry, String> {
   keyring::Entry::new("app.wherry", key).map_err(|e| e.to_string())
@@ -114,14 +124,39 @@ pub fn run() {
     }
   }));
 
-  builder
+  let builder = builder
     // Registration only -- the JS side (sync/desktop-notify.ts) owns every
     // decision about when a notification is deserved.
     .plugin(tauri_plugin_notification::init())
     // Registration only, same as notification: the client decides what to
     // open and when (api/shell.ts's openExternal); this provides the API.
-    .plugin(tauri_plugin_opener::init())
-    .invoke_handler(tauri::generate_handler![vault_get, vault_set, vault_delete])
+    .plugin(tauri_plugin_opener::init());
+
+  // One `generate_handler!` per platform shape: the macro takes a single
+  // list, and the voice commands exist only where the media crate does.
+  #[cfg(not(desktop))]
+  let builder =
+    builder.invoke_handler(tauri::generate_handler![vault_get, vault_set, vault_delete]);
+  #[cfg(desktop)]
+  let builder = builder.invoke_handler(tauri::generate_handler![
+    vault_get,
+    vault_set,
+    vault_delete,
+    voice::voice_probe,
+    voice::voice_devices,
+    voice::voice_connect,
+    voice::voice_disconnect,
+    voice::voice_set_mic,
+    voice::voice_set_input_device,
+    voice::voice_set_output_device,
+    voice::voice_set_epoch_key,
+    voice::voice_set_playback,
+    voice::voice_roster,
+    voice::voice_stats,
+    voice::voice_pong,
+  ]);
+
+  builder
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

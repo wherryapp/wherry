@@ -11,7 +11,7 @@ import {
   supportsSpeakerSelection,
   type AudioDevices,
 } from "../../voice/devices";
-import { useVoicePrefs } from "../../voice/hooks";
+import { useNativeMediaAvailable, useVoicePrefs } from "../../voice/hooks";
 import { saveVoicePrefs } from "../../voice/prefs";
 import {
   AUDIO_QUALITY_KBPS,
@@ -40,6 +40,10 @@ export function VoiceSettings({
   canChooseQuality: boolean;
 }) {
   const prefs = useVoicePrefs();
+  const nativeAvailable = useNativeMediaAvailable();
+  /** The engine is here and this device chose it: the lists below come
+   *  from the shell, and the browser's microphone test does not apply. */
+  const native = nativeAvailable && prefs.nativeMedia;
   const [devices, setDevices] = useState<AudioDevices>({ inputs: [], outputs: [] });
 
   useEffect(() => {
@@ -55,7 +59,8 @@ export function VoiceSettings({
       cancelled = true;
       off();
     };
-  }, []);
+    // Re-read when the engine flips: the two id spaces do not overlap.
+  }, [native]);
 
   if (!mediaSupported()) {
     return (
@@ -116,6 +121,27 @@ export function VoiceSettings({
         Play a sound for incoming calls
       </label>
 
+      {nativeAvailable && (
+        <label className="flex items-start gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+          <input
+            type="checkbox"
+            checked={prefs.nativeMedia}
+            onChange={(e) => saveVoicePrefs({ nativeMedia: e.target.checked })}
+            className="mt-0.5 h-4 w-4"
+          />
+          <span className="grid gap-1">
+            <span>Use the app's own audio engine</span>
+            <span className="text-xs text-neutral-500 dark:text-neutral-400">
+              Experimental. Captures and plays call audio in the app itself rather
+              than in the web view: one echo canceller on every desktop, devices by
+              name, and a microphone the app owns. Applies to the next call you
+              join. While it is on, turning somebody down mutes them rather than
+              lowering them.
+            </span>
+          </span>
+        </label>
+      )}
+
       <label className="grid gap-1 text-sm text-neutral-700 dark:text-neutral-200">
         Microphone
         <Select
@@ -148,7 +174,15 @@ export function VoiceSettings({
         </label>
       )}
 
-      <MicMeter deviceId={prefs.micDeviceId} onDevicesNamed={() => void listAudioDevices().then(setDevices)} />
+      {native ? (
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          The microphone test below belongs to the web view. With the app's audio
+          engine on, the call bar's Details panel is where the microphone's level
+          reads during a call.
+        </p>
+      ) : (
+        <MicMeter deviceId={prefs.micDeviceId} onDevicesNamed={() => void listAudioDevices().then(setDevices)} />
+      )}
     </div>
   );
 }

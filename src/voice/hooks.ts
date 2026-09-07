@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { fetchVoiceActive } from "../api/client";
 import type { Call, RoomOccupancy } from "../api/types";
 import { useSyncEvents } from "../ui/hooks";
+import { nativeMediaAvailable, subscribeNativeMedia } from "./native-media";
 import { loadVoicePrefs, subscribeVoicePrefs, type VoicePrefs } from "./prefs";
 import { reduceRings, type Ring } from "./rules";
 import { voice, type VoiceDiagnostics, type VoiceState } from "./session";
@@ -32,6 +33,11 @@ export function useVoicePrefs(): VoicePrefs {
     readPrefs,
     readPrefs,
   );
+}
+
+/** Whether this shell has its own media engine (native-media.ts's probe). */
+export function useNativeMediaAvailable(): boolean {
+  return useSyncExternalStore(subscribeNativeMedia, nativeMediaAvailable, nativeMediaAvailable);
 }
 
 /** The self-heal cadence: matches the engine's conversation refresh. */

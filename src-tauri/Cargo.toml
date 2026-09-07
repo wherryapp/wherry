@@ -37,6 +37,20 @@ tauri-plugin-opener = "2"
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
+# The native media transport (src/voice.rs; docs/prompts/native-media-plan.md
+# §5). Desktop only: the phones keep the webview transport, and this crate
+# never enters their graph. A git revision rather than the 0.8.4 release on
+# purpose -- PlatformAudio's thread-affinity fix (rust-sdks #1212) merged on
+# 2026-09-03 and is not in a published crate yet (the plan's §1.3); bump
+# `rev` and LIVEKIT_REV in voice.rs together. rustls, never native-tls:
+# libwebrtc links BoringSSL statically and a dynamic OpenSSL in the same
+# process crashes at init on Linux (the plan's §1.4). Building it downloads
+# the prebuilt libwebrtc archive from the SDK's GitHub releases at compile
+# time and needs clang 21 on Linux; release.yml carries both.
+livekit = { git = "https://github.com/livekit/rust-sdks", rev = "dee418bba599fd505fa548ac6b9ab3379fc548fc", features = ["rustls-tls-native-roots"] }
+# Only for naming the room event receiver's type; the runtime is Tauri's.
+tokio = { version = "1", features = ["sync"] }
+
 # The OS keychain behind the vault_* commands in lib.rs -- the one place the
 # shell holds data rather than merely registering a plugin, and the reason
 # is iOS: WebKit may evict an inactive app's IndexedDB and localStorage,

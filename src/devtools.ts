@@ -33,6 +33,22 @@
 //                                    frame encryption) needs exercising with
 //                                    no finger on the glass.
 //
+//   &devhold=<seconds>&devcycles=<n> With ?devcall: leave after <seconds>
+//                                    connected, wait a beat, and place the
+//                                    call again, <n> times in all -- the
+//                                    join/leave soak the native media plan's
+//                                    stage 2 is gated on, from a shell nobody
+//                                    can tap. Without them the call is placed
+//                                    once and left ringing or connected.
+//
+//   ?devnative=1 (or 0)              Turns the desktop shell's own media
+//                                    engine on (or off) for this device before
+//                                    anything places a call -- the Settings
+//                                    toggle, for a shell nothing can tap.
+//                                    Stored like the toggle stores it
+//                                    (voice/prefs.ts), so it outlives the
+//                                    URL; pass 0 to put the device back.
+//
 //   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
 //                                    environment rather than the URL, for a
 //                                    shell in `tauri ios dev` -- which loads
@@ -46,6 +62,7 @@
 import { login } from "./api/client";
 import { loadSession, saveSession } from "./api/session";
 import { unlockAccountKey } from "./crypto/account";
+import { saveVoicePrefs } from "./voice/prefs";
 
 type TraceEntry = {
   at: string;
@@ -243,13 +260,24 @@ const DEV_CALL_DELAY_MS = 4_000;
 /** How long the auto-call waits for a session to appear before giving up. */
 const DEV_CALL_SESSION_WAIT_MS = 30_000;
 
+function maybeDevNative(params: URLSearchParams): void {
+  const value = params.get("devnative");
+  if (value === null) return;
+  saveVoicePrefs({ nativeMedia: value === "1" });
+  params.delete("devnative");
+  const query = params.size > 0 ? `?${params}` : "";
+  window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+}
+
 function maybeDevCall(params: URLSearchParams): void {
   const conversationId = params.get("devcall") ?? devEnv("VITE_DEVCALL");
   if (!conversationId) return;
+  const holdMs = Number(params.get("devhold") ?? "0") * 1000;
+  const cycles = Math.max(1, Number(params.get("devcycles") ?? "1"));
   if (params.has("devcall")) {
     // Out of the URL before anything can copy it: a reload must not place
     // a second call.
-    params.delete("devcall");
+    for (const key of ["devcall", "devhold", "devcycles"]) params.delete(key);
     const query = params.size > 0 ? `?${params}` : "";
     window.history.replaceState(null, "", `${window.location.pathname}${query}`);
   }
@@ -266,6 +294,23 @@ function maybeDevCall(params: URLSearchParams): void {
       // frame-encrypted, which is the path worth exercising. A public
       // room's plain relay is not what this instrument is for.
       void voice.startCall({ id: conversationId, hubVisibility: null });
+      if (holdMs > 0) {
+        let placed = 1;
+        const cycle = (): void => {
+          setTimeout(() => {
+            void voice.leave().then(() => {
+              console.error(`[voice-cycle] left after cycle ${placed} of ${cycles}`);
+              if (placed >= cycles) return;
+              placed += 1;
+              setTimeout(() => {
+                void voice.startCall({ id: conversationId, hubVisibility: null });
+                cycle();
+              }, 3_000);
+            });
+          }, holdMs);
+        };
+        cycle();
+      }
       // The same reading the bar's "Details" shows, to the console every
       // few seconds while connected. console.error rather than log on
       // purpose: `tauri ios dev` relays the webview's errors into its own
@@ -273,7 +318,12 @@ function maybeDevCall(params: URLSearchParams): void {
       // has.
       setInterval(() => {
         void voice.sampleDiagnostics().then((sample) => {
-          if (sample) console.error("[voice-diag]", JSON.stringify(sample));
+          if (!sample) return;
+          console.error("[voice-diag]", JSON.stringify(sample));
+          // And to the ?trace= collector when one is armed: the desktop
+          // shell relays no console at all, and this is the only readout a
+          // call placed in it has.
+          record("call", { method: "__voice-diag", args: [sample] });
         });
       }, DEV_DIAG_INTERVAL_MS);
     });
@@ -304,5 +354,6 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   void import("./voice/session").then(({ voice }) => {
     window.__voice = voice;
   });
+  maybeDevNative(params);
   maybeDevCall(params);
 }

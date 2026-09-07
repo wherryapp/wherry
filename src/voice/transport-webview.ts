@@ -26,6 +26,7 @@ import {
   type RemoteTrack,
 } from "livekit-client";
 import { keyIndexFor, KEYRING_SIZE, type EchoReport } from "./rules";
+import { userIdFromMetadata } from "./transport-rules";
 import type {
   FrameTransformKind,
   TransportConnectOptions,
@@ -85,13 +86,7 @@ function makeWorker(): Worker {
 }
 
 function userIdOf(participant: Participant): string {
-  try {
-    const parsed = JSON.parse(participant.metadata ?? "") as { userId?: unknown };
-    if (typeof parsed.userId === "string") return parsed.userId;
-  } catch {
-    // Fall through: identity is the device id, a poor stand-in but never blank.
-  }
-  return participant.identity;
+  return userIdFromMetadata(participant.metadata, participant.identity);
 }
 
 function qualityOf(quality: ConnectionQuality): VoiceQuality {

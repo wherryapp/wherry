@@ -26,6 +26,14 @@ export type VoicePrefs = {
    * every other feature flag here is; see the 0021 migration's note.
    */
   audioQuality: AudioQuality;
+  /**
+   * Run calls through the shell's own media engine rather than the
+   * webview (docs/prompts/native-media-plan.md §5). Off by default: the
+   * native transport ships dark and is turned on per device. Honoured only
+   * where the engine exists (native-media.ts's probe); elsewhere the value
+   * is stored and ignored. Read at join, so it applies to the next call.
+   */
+  nativeMedia: boolean;
 };
 
 const DEFAULTS: VoicePrefs = {
@@ -34,6 +42,7 @@ const DEFAULTS: VoicePrefs = {
   micDeviceId: null,
   speakerDeviceId: null,
   audioQuality: DEFAULT_AUDIO_QUALITY,
+  nativeMedia: false,
 };
 
 export function loadVoicePrefs(): VoicePrefs {
@@ -53,6 +62,7 @@ export function loadVoicePrefs(): VoicePrefs {
       audioQuality: isAudioQuality(parsed.audioQuality)
         ? parsed.audioQuality
         : DEFAULT_AUDIO_QUALITY,
+      nativeMedia: parsed.nativeMedia === true,
     };
   } catch {
     return { ...DEFAULTS };

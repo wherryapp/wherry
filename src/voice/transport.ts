@@ -102,7 +102,9 @@ export type TransportStats = {
   peers: TransportPeerStats[];
 };
 
-export type FrameTransformKind = "encoded-streams" | "script-transform" | "none";
+/** How the frame cipher is applied: the browser SDK's two mechanisms, none
+ *  at all, or the shell's own engine (libwebrtc's FrameCryptor in-process). */
+export type FrameTransformKind = "encoded-streams" | "script-transform" | "none" | "native";
 
 export interface VoiceTransport {
   connect(options: TransportConnectOptions, events: TransportEvents): Promise<void>;

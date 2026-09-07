@@ -1,0 +1,933 @@
+// The native media transport -- stage 2 of docs/prompts/native-media-plan.md.
+//
+// This is the first Rust in the shell that is not a passthrough, and the
+// rule it lives under is the plan's §7 rewrite of the old "no IPC, no Rust
+// logic": **decisions in TypeScript, mechanism in Rust, and the boundary is
+// a named interface.** The interface is `VoiceTransport`
+// (client/src/voice/transport.ts); `transport-native.ts` is the TypeScript
+// half of this implementation and every command here mirrors one of its
+// methods. Nothing in this file decides anything: which key index an epoch
+// maps to, whether a volume means silence, what an encryption state means,
+// whether a device id is still valid -- all of that arrives already decided,
+// and this file captures, encrypts, sends, receives and plays.
+//
+// Desktop only (`#[cfg(desktop)]` at the `mod` site): the phones keep the
+// webview transport, and the `livekit` crate is not in their dependency
+// graph at all.
+//
+// What stage 0 (the plan's §3.1) settled and this file keeps:
+//
+// - `KeyProviderOptions` must say `KeyDerivationAlgorithm::HKDF`. The Rust
+//   default is PBKDF2; the JS side, given a buffer, uses HKDF. Leave the
+//   default and every frame is silence.
+// - `KeyProvider::set_shared_key(key, index)` stores the key but never moves
+//   the *sender's* cryptor onto that index -- the JS SDK does both in one
+//   call. `apply_key_index` is the walk, run after every key change, after
+//   the microphone publishes (that is when the sender's cryptor exists) and
+//   on every subscription for good measure.
+// - `PlatformAudio` is held for the life of the process (`AUDIO`), never
+//   per call: the macOS capture-thread teardown race the plan's §1.3
+//   describes lives on the acquire/release path, and Settings needs the
+//   handle for device enumeration when no call is running anyway.
+// - `E2eeStateChanged` does not fire for frames that fail to open under a
+//   wrong key (only `MissingKey`), so the encryption-error count in the
+//   call details is weaker here than in the webview; the state names are
+//   forwarded as-is and TypeScript decides which count.
+// - The crate has no per-remote-track gain. `voice_set_playback` enables
+//   or disables a participant's audio track at the WebRTC level, which is
+//   silence or full volume; the TypeScript side decides what a volume maps
+//   to.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use livekit::e2ee::key_provider::{KeyProvider, KeyProviderOptions};
+use livekit::e2ee::{E2eeOptions, EncryptionType};
+use livekit::options::{AudioEncoding, TrackPublishOptions};
+use livekit::prelude::*;
+use livekit::webrtc::native::frame_cryptor::KeyDerivationAlgorithm;
+#[cfg(debug_assertions)]
+use livekit::webrtc::audio_frame::AudioFrame;
+#[cfg(debug_assertions)]
+use livekit::webrtc::audio_source::native::NativeAudioSource;
+#[cfg(debug_assertions)]
+use livekit::webrtc::audio_source::AudioSourceOptions;
+use livekit::webrtc::stats::RtcStats;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter};
+#[cfg(debug_assertions)]
+use tauri::Manager;
+use tokio::sync::mpsc::UnboundedReceiver;
+
+/// Which SDK revision this shell carries; shown by the probe so a call
+/// details readout can name it. Bump with the `rev` in Cargo.toml.
+pub const LIVEKIT_REV: &str = "rust-sdks dee418bb (2026-09-03)";
+
+/// The name every event from this module is emitted under.
+const EVENT: &str = "voice";
+
+/// Mirrors `KEYRING_SIZE` in client/src/voice/rules.ts and the
+/// `keyringSize` the webview transport passes to livekit-client. The
+/// *index* into the ring is computed in TypeScript and arrives with the key;
+/// the ring's size is a property both sides' key providers must agree on.
+const KEYRING_SIZE: i32 = 16;
+/// The JS SDK's default `ratchetSalt`; the Rust default is the same bytes,
+/// spelled out here so the match is visible rather than coincidental.
+const RATCHET_SALT: &[u8] = b"LKFrameEncryptionKey";
+
+// -- errors -----------------------------------------------------------------
+
+/// What a command reports when it fails: a code the TypeScript side maps to
+/// the browser error names `session.ts` already understands
+/// (`transport-rules.ts`), and the SDK's own words for the details panel.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceError {
+  pub code: &'static str,
+  pub message: String,
+}
+
+impl VoiceError {
+  fn new(code: &'static str, message: impl Into<String>) -> Self {
+    Self { code, message: message.into() }
+  }
+}
+
+type VoiceResult<T> = Result<T, VoiceError>;
+
+// -- the audio device module ------------------------------------------------
+
+/// The one `PlatformAudio` handle, created on first use and never released
+/// (see the header). `None` until then, or if the platform has no audio
+/// devices at all -- the SDK refuses to construct it in that case.
+static AUDIO: Mutex<Option<PlatformAudio>> = Mutex::new(None);
+
+fn platform_audio() -> VoiceResult<PlatformAudio> {
+  let mut held = AUDIO.lock().unwrap();
+  if let Some(audio) = held.as_ref() {
+    return Ok(audio.clone());
+  }
+  let audio = PlatformAudio::new()
+    .map_err(|e| VoiceError::new("audio_unavailable", format!("PlatformAudio::new: {e:?}")))?;
+  *held = Some(audio.clone());
+  Ok(audio)
+}
+
+// -- the session ------------------------------------------------------------
+
+/// Counts connects for the life of the process. Every event carries the
+/// session it belongs to, so a listener that outlives a call cannot mistake
+/// the next call's events for its own.
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+/// State the event pump and the commands both touch.
+#[derive(Default)]
+struct Shared {
+  /// The local participant's last reported connection quality, lowercased
+  /// (`excellent`, `good`, `poor`, `lost`); `unknown` before the first.
+  quality: Mutex<String>,
+  /// Per remote identity, whether their audio should play. Applied when a
+  /// track is subscribed as well as on demand, so a participant who joins
+  /// after the listener turned them down stays turned down.
+  playback: Mutex<HashMap<String, bool>>,
+  /// The key index every cryptor should sit on; walked onto new cryptors
+  /// as they appear.
+  key_index: Mutex<i32>,
+}
+
+/// Debug builds only: with `WHERRY_VOICE_TONE=1` in the shell's environment,
+/// `voice_set_mic(true)` publishes a synthesised 440 Hz tone instead of the
+/// platform microphone. The dev Mac has no microphone (the plan's §3.1), and
+/// without *some* published track the sender's frame cryptor never exists,
+/// so neither the key walk nor the cryptor-thread gate can be exercised.
+/// Same stand-in the stage-0 spike used; not compiled into a release.
+#[cfg(debug_assertions)]
+fn dev_tone_wanted() -> bool {
+  std::env::var("WHERRY_VOICE_TONE").map(|v| v == "1").unwrap_or(false)
+}
+
+#[cfg(debug_assertions)]
+async fn tone_loop(source: NativeAudioSource) {
+  const SAMPLE_RATE: u32 = 48_000;
+  const TONE_HZ: f64 = 440.0;
+  const AMPLITUDE: f64 = 0.5;
+  let samples_per_frame = (SAMPLE_RATE / 100) as usize;
+  let step = 2.0 * std::f64::consts::PI * TONE_HZ / SAMPLE_RATE as f64;
+  let mut phase = 0.0f64;
+  let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
+  loop {
+    interval.tick().await;
+    let data: Vec<i16> = (0..samples_per_frame)
+      .map(|_| {
+        let sample = (phase.sin() * AMPLITUDE * i16::MAX as f64) as i16;
+        phase = (phase + step) % (2.0 * std::f64::consts::PI);
+        sample
+      })
+      .collect();
+    let frame = AudioFrame {
+      data: data.into(),
+      sample_rate: SAMPLE_RATE,
+      num_channels: 1,
+      samples_per_channel: samples_per_frame as u32,
+    };
+    if source.capture_frame(&frame).await.is_err() {
+      break;
+    }
+  }
+}
+
+struct Session {
+  id: u64,
+  room: Arc<Room>,
+  keys: Option<KeyProvider>,
+  shared: Arc<Shared>,
+  /// The microphone, once it has been published; `None` before the first
+  /// `voice_set_mic(true)`.
+  mic: Option<LocalTrackPublication>,
+  max_bitrate: u64,
+  pump: tauri::async_runtime::JoinHandle<()>,
+  /// The debug tone's task, when `WHERRY_VOICE_TONE=1` stood in for the
+  /// microphone; aborted on disconnect.
+  #[cfg(debug_assertions)]
+  tone: Option<tauri::async_runtime::JoinHandle<()>>,
+  started: Instant,
+}
+
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+
+fn session_id() -> Option<u64> {
+  SESSION.lock().unwrap().as_ref().map(|s| s.id)
+}
+
+/// The room and the shared state of the current session, cloned out so no
+/// lock is held across an await.
+fn current() -> VoiceResult<(u64, Arc<Room>, Arc<Shared>)> {
+  let guard = SESSION.lock().unwrap();
+  let session = guard.as_ref().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
+  Ok((session.id, session.room.clone(), session.shared.clone()))
+}
+
+/// The JS twin is `onSetEncryptionKey(key, undefined, index)`, which also
+/// moves every cryptor onto the index; here that is a separate walk.
+fn apply_key_index(room: &Room, index: i32) -> usize {
+  let cryptors = room.e2ee_manager().frame_cryptors();
+  for cryptor in cryptors.values() {
+    cryptor.set_key_index(index);
+  }
+  cryptors.len()
+}
+
+// -- what the webview sees --------------------------------------------------
+
+/// One remote participant, as `TransportParticipant` wants it minus the
+/// `userId`, which TypeScript parses out of `metadata` exactly as the
+/// webview transport does (the server puts `{ userId }` there).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterEntry {
+  identity: String,
+  name: String,
+  metadata: String,
+  speaking: bool,
+  /// No audio publication, or every one of them muted -- the same reading
+  /// `transport-webview.ts` takes from `audioTrackPublications`.
+  mic_muted: bool,
+  encrypted: bool,
+  audio_level: f32,
+  /// Whether their audio track is enabled for playout here.
+  playing: Option<bool>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Roster {
+  participants: Vec<RosterEntry>,
+  local_level: f32,
+}
+
+fn audio_publications(participant: &RemoteParticipant) -> Vec<RemoteTrackPublication> {
+  participant
+    .track_publications()
+    .into_values()
+    .filter(|publication| publication.kind() == TrackKind::Audio)
+    .collect()
+}
+
+fn roster(room: &Room) -> Roster {
+  let mut participants: Vec<RosterEntry> = room
+    .remote_participants()
+    .into_iter()
+    .map(|(identity, participant)| {
+      let audio = audio_publications(&participant);
+      let playing = audio.iter().find_map(|publication| match publication.track() {
+        Some(RemoteTrack::Audio(track)) => Some(track.rtc_track().enabled()),
+        _ => None,
+      });
+      RosterEntry {
+        identity: identity.to_string(),
+        name: participant.name(),
+        metadata: participant.metadata(),
+        speaking: participant.is_speaking(),
+        mic_muted: audio.is_empty() || audio.iter().all(|publication| publication.is_muted()),
+        encrypted: participant.is_encrypted(),
+        audio_level: participant.audio_level(),
+        playing,
+      }
+    })
+    .collect();
+  participants.sort_by(|a, b| a.identity.cmp(&b.identity));
+  Roster { participants, local_level: room.local_participant().audio_level() }
+}
+
+/// Everything the pump tells the webview. `session` is on every variant so
+/// the listener can drop what is not its own.
+#[derive(Serialize, Clone, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Event {
+  /// The roster changed: somebody joined or left, a track came or went, a
+  /// mute or encryption status moved. Carries the whole snapshot.
+  Roster { roster: Roster },
+  /// Active speakers moved; the roster's `speaking` and levels are fresh.
+  Speakers { roster: Roster },
+  ParticipantJoined,
+  ParticipantLeft,
+  /// The local connection: `connected`, `reconnecting` or `disconnected`,
+  /// with the last known quality word.
+  Connection { state: String, quality: String },
+  /// The SDK's frame-cryption state for one participant, by name
+  /// (`Ok`, `MissingKey`, `DecryptionFailed`, ...). TypeScript decides which
+  /// of these count as a frame that failed to open.
+  Encryption { identity: String, state: String },
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct Envelope {
+  session: u64,
+  #[serde(flatten)]
+  event: Event,
+}
+
+fn emit(app: &AppHandle, session: u64, event: Event) {
+  if let Err(error) = app.emit(EVENT, Envelope { session, event }) {
+    log::warn!("voice: emit failed: {error}");
+  }
+}
+
+fn apply_playback(shared: &Shared, participant: &RemoteParticipant) {
+  let wanted = shared.playback.lock().unwrap().get(participant.identity().as_str()).copied();
+  let Some(enabled) = wanted else { return };
+  for publication in audio_publications(participant) {
+    if let Some(RemoteTrack::Audio(track)) = publication.track() {
+      track.rtc_track().set_enabled(enabled);
+    }
+  }
+}
+
+async fn pump(
+  app: AppHandle,
+  session: u64,
+  room: Arc<Room>,
+  shared: Arc<Shared>,
+  mut rx: UnboundedReceiver<RoomEvent>,
+) {
+  let quality = || shared.quality.lock().unwrap().clone();
+  while let Some(event) = rx.recv().await {
+    match event {
+      RoomEvent::Connected { .. } => {
+        emit(&app, session, Event::Connection { state: "connected".into(), quality: quality() });
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+      }
+      RoomEvent::ParticipantConnected(_) => {
+        emit(&app, session, Event::ParticipantJoined);
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+      }
+      RoomEvent::ParticipantDisconnected(_) => {
+        emit(&app, session, Event::ParticipantLeft);
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+      }
+      RoomEvent::TrackSubscribed { participant, publication, .. } => {
+        log::info!(
+          "voice: subscribed to {} from {} ({:?})",
+          publication.sid(),
+          participant.identity(),
+          publication.encryption_type()
+        );
+        // A cryptor was just created for this track; put it on the index
+        // everything else is on. Harmless for a receiver (the frame trailer
+        // names its own index), and what makes the walk complete.
+        let index = *shared.key_index.lock().unwrap();
+        apply_key_index(&room, index);
+        apply_playback(&shared, &participant);
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+      }
+      RoomEvent::TrackUnsubscribed { .. }
+      | RoomEvent::TrackMuted { .. }
+      | RoomEvent::TrackUnmuted { .. }
+      | RoomEvent::TrackPublished { .. }
+      | RoomEvent::TrackUnpublished { .. }
+      | RoomEvent::ParticipantEncryptionStatusChanged { .. }
+      | RoomEvent::ParticipantNameChanged { .. }
+      | RoomEvent::ParticipantMetadataChanged { .. } => {
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+      }
+      RoomEvent::ActiveSpeakersChanged { .. } => {
+        emit(&app, session, Event::Speakers { roster: roster(&room) });
+      }
+      RoomEvent::ConnectionQualityChanged { quality: q, participant } => {
+        if matches!(participant, Participant::Local(_)) {
+          let word = format!("{q:?}").to_lowercase();
+          *shared.quality.lock().unwrap() = word.clone();
+          emit(&app, session, Event::Connection { state: "connected".into(), quality: word });
+        }
+      }
+      RoomEvent::ConnectionStateChanged(state) => {
+        let word = match state {
+          ConnectionState::Connected => "connected",
+          ConnectionState::Reconnecting => "reconnecting",
+          ConnectionState::Disconnected => "disconnected",
+        };
+        emit(&app, session, Event::Connection { state: word.into(), quality: quality() });
+      }
+      RoomEvent::Reconnecting => {
+        emit(&app, session, Event::Connection { state: "reconnecting".into(), quality: quality() });
+      }
+      RoomEvent::Reconnected => {
+        emit(&app, session, Event::Connection { state: "connected".into(), quality: quality() });
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+      }
+      RoomEvent::Disconnected { reason } => {
+        log::info!("voice: disconnected ({reason:?})");
+        emit(&app, session, Event::Connection { state: "disconnected".into(), quality: quality() });
+      }
+      RoomEvent::E2eeStateChanged { participant, state } => {
+        log::info!("voice: e2ee state for {} is {state:?}", participant.identity());
+        emit(
+          &app,
+          session,
+          Event::Encryption {
+            identity: participant.identity().to_string(),
+            state: format!("{state:?}"),
+          },
+        );
+      }
+      _ => {}
+    }
+  }
+  log::debug!("voice: pump for session {session} ended");
+}
+
+// -- commands ---------------------------------------------------------------
+
+/// Feature detection for the TypeScript side: the command exists only in a
+/// desktop shell, so `invoke` failing is the answer on the phones and on
+/// the web. Also acquires the audio device module, per the header.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Probe {
+  livekit_rev: &'static str,
+  recording_devices: usize,
+  playout_devices: usize,
+  aec: String,
+  agc: String,
+  ns: String,
+}
+
+#[tauri::command]
+pub fn voice_probe() -> VoiceResult<Probe> {
+  let audio = platform_audio()?;
+  Ok(Probe {
+    livekit_rev: LIVEKIT_REV,
+    recording_devices: audio.recording_devices().count(),
+    playout_devices: audio.playout_devices().count(),
+    aec: format!("{:?}", audio.active_aec_type()),
+    agc: format!("{:?}", audio.active_agc_type()),
+    ns: format!("{:?}", audio.active_ns_type()),
+  })
+}
+
+/// `devices.ts`'s shape: labels are real and ids are stable, with no
+/// permission grant needed -- the two things the browser's enumeration
+/// cannot offer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDevice {
+  device_id: String,
+  label: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDevices {
+  inputs: Vec<AudioDevice>,
+  outputs: Vec<AudioDevice>,
+}
+
+#[tauri::command]
+pub fn voice_devices() -> VoiceResult<AudioDevices> {
+  let audio = platform_audio()?;
+  Ok(AudioDevices {
+    inputs: audio
+      .recording_devices()
+      .map(|d| AudioDevice { device_id: d.id.as_str().to_string(), label: d.name })
+      .collect(),
+    outputs: audio
+      .playout_devices()
+      .map(|d| AudioDevice { device_id: d.id.as_str().to_string(), label: d.name })
+      .collect(),
+  })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyArgs {
+  /// The MLS exporter secret, 32 bytes.
+  secret: Vec<u8>,
+  /// Already reduced to the ring by `rules.ts`'s `keyIndexFor`.
+  key_index: i32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectArgs {
+  url: String,
+  token: String,
+  e2ee: bool,
+  max_bitrate: u64,
+  /// Ids from `voice_devices`, already checked against the current list by
+  /// the TypeScript side; `None` means the platform default.
+  mic_device_id: Option<String>,
+  speaker_device_id: Option<String>,
+  key: Option<KeyArgs>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectResult {
+  session: u64,
+  connect_ms: u64,
+  roster: Roster,
+}
+
+#[tauri::command]
+pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<ConnectResult> {
+  if session_id().is_some() {
+    return Err(VoiceError::new("already_connected", "a call is already running"));
+  }
+  let started = Instant::now();
+  let audio = platform_audio()?;
+
+  if let Some(id) = args.mic_device_id.as_deref() {
+    audio
+      .set_recording_device(&RecordingDeviceId::from_unchecked_guid(id))
+      .map_err(|e| VoiceError::new("device", format!("set_recording_device: {e:?}")))?;
+  }
+  if let Some(id) = args.speaker_device_id.as_deref() {
+    audio
+      .set_playout_device(&PlayoutDeviceId::from_unchecked_guid(id))
+      .map_err(|e| VoiceError::new("device", format!("set_playout_device: {e:?}")))?;
+  }
+
+  let shared = Arc::new(Shared::default());
+  *shared.quality.lock().unwrap() = "unknown".into();
+
+  let keys = if args.e2ee {
+    let key = args
+      .key
+      .ok_or_else(|| VoiceError::new("key_required", "e2ee is on but no key was given"))?;
+    // transport-webview.ts's CallKeyProvider, parameter for parameter, plus
+    // the derivation the JS side gets for free from createKeyMaterialFromBuffer.
+    let options = KeyProviderOptions {
+      ratchet_window_size: 0,
+      ratchet_salt: RATCHET_SALT.to_vec(),
+      failure_tolerance: -1,
+      key_ring_size: KEYRING_SIZE,
+      key_derivation_algorithm: KeyDerivationAlgorithm::HKDF,
+    };
+    let provider = KeyProvider::with_shared_key(options, key.secret.clone());
+    provider.set_shared_key(key.secret, key.key_index);
+    *shared.key_index.lock().unwrap() = key.key_index;
+    Some(provider)
+  } else {
+    None
+  };
+
+  let mut options = RoomOptions::default();
+  options.auto_subscribe = true;
+  options.encryption = keys
+    .clone()
+    .map(|key_provider| E2eeOptions { encryption_type: EncryptionType::Gcm, key_provider });
+
+  let (room, rx) = Room::connect(&args.url, &args.token, options)
+    .await
+    .map_err(|e| VoiceError::new("connect_failed", e.to_string()))?;
+  let room = Arc::new(room);
+  let id = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
+  log::info!(
+    "voice: session {id} connected to {} as {} in {} ms (e2ee {}, key index {})",
+    room.name(),
+    room.local_participant().identity(),
+    started.elapsed().as_millis(),
+    keys.is_some(),
+    *shared.key_index.lock().unwrap()
+  );
+  let pump_task =
+    tauri::async_runtime::spawn(pump(app.clone(), id, room.clone(), shared.clone(), rx));
+  // Debug builds: ask the page, from the shell's side, whether it is still
+  // running -- an eval runs even when the page's own timers are throttled,
+  // so a pong that stops means the page itself is suspended.
+  #[cfg(debug_assertions)]
+  {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+      let mut ticks = tokio::time::interval(std::time::Duration::from_secs(5));
+      loop {
+        ticks.tick().await;
+        if session_id() != Some(id) {
+          break;
+        }
+        if let Some(window) = app.webview_windows().into_values().next() {
+          let script = format!(
+            "window.__TAURI_INTERNALS__.invoke('voice_pong', {{ session: {id}, sentAt: {}, visibility: document.visibilityState, focus: document.hasFocus() }})",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+          );
+          if let Err(error) = window.eval(&script) {
+            log::warn!("voice: ping eval failed: {error}");
+          }
+        }
+      }
+    });
+  }
+
+  let result = ConnectResult {
+    session: id,
+    connect_ms: started.elapsed().as_millis() as u64,
+    roster: roster(&room),
+  };
+
+  // Another connect could not have raced in: the command runs on the one
+  // webview's calls in order, and `session_id()` was None above.
+  *SESSION.lock().unwrap() = Some(Session {
+    id,
+    room,
+    keys,
+    shared,
+    mic: None,
+    max_bitrate: args.max_bitrate,
+    pump: pump_task,
+    #[cfg(debug_assertions)]
+    tone: None,
+    started,
+  });
+  Ok(result)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisconnectResult {
+  close_ms: u64,
+  lifetime_ms: u64,
+}
+
+/// Idempotent: a second call, or one with no session, answers zeros.
+#[tauri::command]
+pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
+  let Some(session) = SESSION.lock().unwrap().take() else {
+    return Ok(DisconnectResult { close_ms: 0, lifetime_ms: 0 });
+  };
+  #[cfg(debug_assertions)]
+  if let Some(task) = session.tone.as_ref() {
+    task.abort();
+  }
+  let Session { room, keys, mic, pump, started, .. } = session;
+  log::info!("voice: disconnect requested after {} ms", started.elapsed().as_millis());
+  // The microphone first, so the sender's channel is torn down through the
+  // SDK's own unpublish path before the peer connection closes under it.
+  if let Some(publication) = mic {
+    if let Err(error) = room.local_participant().unpublish_track(&publication.sid()).await {
+      log::warn!("voice: unpublish on disconnect: {error}");
+    }
+    log::info!("voice: microphone unpublished");
+  }
+  if let Ok(audio) = platform_audio() {
+    if let Err(error) = audio.stop_recording() {
+      log::debug!("voice: stop_recording on disconnect: {error:?}");
+    }
+  }
+  log::info!("voice: closing room");
+  let t0 = Instant::now();
+  if let Err(error) = room.close().await {
+    log::warn!("voice: close: {error}");
+  }
+  let close_ms = t0.elapsed().as_millis() as u64;
+  log::info!("voice: session closed in {close_ms} ms after {} ms", started.elapsed().as_millis());
+  pump.abort();
+  drop(keys);
+  drop(room);
+  Ok(DisconnectResult { close_ms, lifetime_ms: started.elapsed().as_millis() as u64 })
+}
+
+/// The microphone: published on the first `true`, then muted and unmuted
+/// in place. Recording is stopped while muted so the OS privacy indicator
+/// tells the truth (the SDK's own documented pattern), and started again
+/// on unmute.
+#[tauri::command]
+pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
+  let (id, room, shared) = current()?;
+  let (existing, max_bitrate) = {
+    let guard = SESSION.lock().unwrap();
+    let session = guard.as_ref().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
+    (session.mic.clone(), session.max_bitrate)
+  };
+  let audio = platform_audio()?;
+
+  if let Some(publication) = existing {
+    if enabled {
+      if let Err(error) = audio.start_recording() {
+        log::warn!("voice: start_recording on unmute: {error:?}");
+      }
+      publication.unmute();
+    } else {
+      publication.mute();
+      if let Err(error) = audio.stop_recording() {
+        log::debug!("voice: stop_recording on mute: {error:?}");
+      }
+    }
+    return Ok(());
+  }
+
+  if !enabled {
+    // Muted before it was ever published: nothing to publish silence from.
+    return Ok(());
+  }
+  #[cfg(debug_assertions)]
+  let tone = if dev_tone_wanted() {
+    Some(NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0))
+  } else {
+    None
+  };
+  #[cfg(not(debug_assertions))]
+  let tone: Option<()> = None;
+  if tone.is_none() && audio.recording_devices().next().is_none() {
+    return Err(VoiceError::new("no_microphone", "no recording device"));
+  }
+
+  #[cfg(debug_assertions)]
+  let source = match tone.as_ref() {
+    Some(source) => livekit::webrtc::audio_source::RtcAudioSource::Native(source.clone()),
+    None => audio.rtc_source(),
+  };
+  #[cfg(not(debug_assertions))]
+  let source = audio.rtc_source();
+  let track = LocalAudioTrack::create_audio_track("microphone", source);
+  let options = TrackPublishOptions {
+    source: TrackSource::Microphone,
+    // dtx and red stay on at every tier, as in the webview transport:
+    // silence suppression and the redundant frame are about loss, not
+    // fidelity.
+    dtx: true,
+    red: true,
+    audio_encoding: Some(AudioEncoding { max_bitrate }),
+    ..Default::default()
+  };
+  let publication = room
+    .local_participant()
+    .publish_track(LocalTrack::Audio(track), options)
+    .await
+    .map_err(|e| VoiceError::new("mic_failed", format!("publish: {e}")))?;
+  if let Err(error) = audio.start_recording() {
+    // Publishing a device-sourced track initialises recording on its own;
+    // an explicit start that then fails is worth a log line, not a
+    // failed call.
+    log::warn!("voice: start_recording after publish: {error:?}");
+  }
+  // The sender's cryptor exists now: put it on the current index.
+  let index = *shared.key_index.lock().unwrap();
+  let cryptors = apply_key_index(&room, index);
+  log::info!(
+    "voice: microphone published as {} (recording {}), {cryptors} cryptor(s) on index {index}",
+    publication.sid(),
+    audio.is_recording_initialized()
+  );
+
+  #[cfg(debug_assertions)]
+  let tone_task = tone.map(|source| {
+    log::warn!("voice: WHERRY_VOICE_TONE=1 -- publishing a synthesised tone, not a microphone");
+    tauri::async_runtime::spawn(tone_loop(source))
+  });
+
+  let mut guard = SESSION.lock().unwrap();
+  match guard.as_mut() {
+    Some(session) if session.id == id => {
+      session.mic = Some(publication);
+      #[cfg(debug_assertions)]
+      {
+        session.tone = tone_task;
+      }
+    }
+    _ => {
+      // The call ended while the publish was in flight; the room is closed
+      // or closing and the publication goes with it.
+    }
+  }
+  Ok(())
+}
+
+#[tauri::command]
+pub fn voice_set_input_device(device_id: String) -> VoiceResult<()> {
+  platform_audio()?
+    .switch_recording_device(&RecordingDeviceId::from_unchecked_guid(&device_id))
+    .map_err(|e| VoiceError::new("device", format!("switch_recording_device: {e:?}")))
+}
+
+#[tauri::command]
+pub fn voice_set_output_device(device_id: String) -> VoiceResult<()> {
+  platform_audio()?
+    .switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(&device_id))
+    .map_err(|e| VoiceError::new("device", format!("switch_playout_device: {e:?}")))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyResult {
+  key_index: i32,
+  cryptors: usize,
+}
+
+#[tauri::command]
+pub fn voice_set_epoch_key(key: KeyArgs) -> VoiceResult<KeyResult> {
+  let guard = SESSION.lock().unwrap();
+  let session = guard.as_ref().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
+  let keys = session
+    .keys
+    .as_ref()
+    .ok_or_else(|| VoiceError::new("encryption_off", "frame encryption is off for this call"))?;
+  keys.set_shared_key(key.secret, key.key_index);
+  *session.shared.key_index.lock().unwrap() = key.key_index;
+  let cryptors = apply_key_index(&session.room, key.key_index);
+  log::info!("voice: key set at index {}, {cryptors} cryptor(s) walked", key.key_index);
+  Ok(KeyResult { key_index: key.key_index, cryptors })
+}
+
+/// Enable or disable one participant's audio at the WebRTC track level.
+/// Remembered for tracks that arrive later.
+#[tauri::command]
+pub fn voice_set_playback(identity: String, enabled: bool) -> VoiceResult<()> {
+  let (_, room, shared) = current()?;
+  shared.playback.lock().unwrap().insert(identity.clone(), enabled);
+  if let Some(participant) = room.remote_participants().get(&ParticipantIdentity::from(identity)) {
+    apply_playback(&shared, participant);
+  }
+  Ok(())
+}
+
+/// The page's answer to the shell's ping (see `voice_connect`). The ping
+/// itself runs only in debug builds; the command is always there so the
+/// handler list is one list.
+#[tauri::command]
+pub fn voice_pong(session: u64, sent_at: f64, visibility: String, focus: bool) {
+  let now = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_millis() as f64)
+    .unwrap_or(0.0);
+  log::info!("voice: pong session {session} after {:.0} ms, visibility={visibility} focus={focus}", now - sent_at);
+}
+
+#[tauri::command]
+pub fn voice_roster() -> VoiceResult<Roster> {
+  let (_, room, _) = current()?;
+  Ok(roster(&room))
+}
+
+fn summarize_local(stats: &[RtcStats], out: &mut Value) {
+  for entry in stats {
+    match entry {
+      RtcStats::OutboundRtp(s) => {
+        out["packetsSent"] = json!(s.sent.packets_sent);
+      }
+      RtcStats::RemoteInboundRtp(s) => {
+        out["roundTripMs"] = json!((s.remote_inbound.round_trip_time * 1000.0).round());
+      }
+      RtcStats::MediaSource(s) => {
+        out["echo"] = json!({
+          "echoReturnLoss": s.audio.echo_return_loss,
+          "echoReturnLossEnhancement": s.audio.echo_return_loss_enhancement,
+        });
+      }
+      _ => {}
+    }
+  }
+}
+
+fn summarize_inbound(stats: &[RtcStats], out: &mut Value) {
+  for entry in stats {
+    if let RtcStats::InboundRtp(s) = entry {
+      out["bytesReceived"] = json!(s.inbound.bytes_received);
+      out["audioEnergy"] = json!(s.inbound.total_audio_energy);
+      out["concealedSamples"] = json!(s.inbound.concealed_samples);
+    }
+  }
+}
+
+/// One reading in `TransportStats`'s shape (transport.ts). Numbers a stats
+/// call cannot produce are left null; nothing here throws for a missing
+/// number.
+#[tauri::command]
+pub async fn voice_stats() -> VoiceResult<Value> {
+  let (_, room, _) = current()?;
+  let (mic, audio_ok) = {
+    let guard = SESSION.lock().unwrap();
+    let session = guard.as_ref().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
+    (session.mic.clone(), true)
+  };
+  let recording = if audio_ok {
+    platform_audio().map(|audio| audio.is_recording_initialized()).unwrap_or(false)
+  } else {
+    false
+  };
+  let muted = mic.as_ref().map(|p| p.is_muted()).unwrap_or(true);
+  let mut out = json!({
+    "mic": {
+      "published": mic.is_some(),
+      "muted": muted,
+      // The browser's `track.muted`: the source is not delivering. Here
+      // that is a published, unmuted microphone whose device is not
+      // recording.
+      "systemMuted": mic.is_some() && !muted && !recording,
+      "ended": false,
+    },
+    "packetsSent": null,
+    "roundTripMs": null,
+    "echo": { "echoReturnLoss": null, "echoReturnLossEnhancement": null },
+    "peers": [],
+  });
+  if let Some(LocalTrack::Audio(track)) = mic.as_ref().and_then(|p| p.track()) {
+    if let Ok(stats) = track.get_stats().await {
+      summarize_local(&stats, &mut out);
+    }
+  }
+  let mut peers = Vec::new();
+  for (identity, participant) in room.remote_participants() {
+    let mut peer = json!({
+      "identity": identity.to_string(),
+      "bytesReceived": null,
+      "audioEnergy": null,
+      "concealedSamples": null,
+      "playing": null,
+    });
+    if let Some(publication) = audio_publications(&participant).into_iter().next() {
+      if let Some(RemoteTrack::Audio(track)) = publication.track() {
+        peer["playing"] = json!(track.rtc_track().enabled());
+        if let Ok(stats) = track.get_stats().await {
+          summarize_inbound(&stats, &mut peer);
+        }
+      }
+    }
+    peers.push(peer);
+  }
+  out["peers"] = json!(peers);
+  log::debug!("voice: stats sampled ({} peer(s))", peers.len());
+  Ok(out)
+}

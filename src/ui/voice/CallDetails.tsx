@@ -57,6 +57,8 @@ function transformName(transform: VoiceDiagnostics["transform"]): string {
       return "script transform";
     case "none":
       return "unsupported here";
+    case "native":
+      return "native audio engine";
   }
 }
 

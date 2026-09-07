@@ -12,6 +12,7 @@ import { trackVisualViewport } from "./ui/viewport";
 import { lockPageZoom } from "./ui/zoom";
 import { restoreTextScale } from "./ui/text-scale";
 import { startIdleTracking } from "./sync/idle";
+import { probeNativeMedia } from "./voice/native-media";
 
 // Before the first render, so the shell is sized correctly on the first
 // paint rather than jumping once the listeners attach.
@@ -48,6 +49,12 @@ stripReloadMarker();
 // the iPhone freeze reports point at -- is measured like any other. See
 // diagnostics.ts for what it is trying to settle.
 startStallDetector();
+
+// Whether this shell carries its own media engine (voice/native-media.ts):
+// one command round trip in a Tauri shell, an immediate no outside one,
+// cached for the transport chooser and the Settings toggle, both of which
+// need the answer synchronously.
+void probeNativeMedia();
 
 // Not awaited: nothing on screen depends on it, and notifications are the
 // only thing that does.

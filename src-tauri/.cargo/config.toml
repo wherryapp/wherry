@@ -18,3 +18,12 @@
 # way no path fails (the linker error above), which mobile-setup.md explains.
 [target.aarch64-apple-ios-sim]
 rustflags = ["-L", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/lib/darwin"]
+
+# The native media transport's one Windows requirement (the plan's §1.4):
+# the prebuilt libwebrtc is built against the static CRT, and any crate in
+# the graph compiling C++ against the dynamic one produces the
+# MT_StaticRelease / MD_DynamicRelease link mismatch (rust-sdks #277, open
+# since 2023). Per-target for the same fingerprint reason as the entry
+# above: invisible to every other target, identical in every shell.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
