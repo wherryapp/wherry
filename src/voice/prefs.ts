@@ -28,10 +28,14 @@ export type VoicePrefs = {
   audioQuality: AudioQuality;
   /**
    * Run calls through the shell's own media engine rather than the
-   * webview (docs/prompts/native-media-plan.md §5). Off by default: the
-   * native transport ships dark and is turned on per device. Honoured only
-   * where the engine exists (native-media.ts's probe); elsewhere the value
-   * is stored and ignored. Read at join, so it applies to the next call.
+   * webview (docs/prompts/native-media-plan.md §5). **On by default since
+   * 2026-09-07 (evening)**, the maintainer's decision once both of the
+   * plan's §5.1 gates were answered; it shipped dark on 2026-09-07 morning
+   * and was turned on per device until then. Honoured only where the engine
+   * exists (native-media.ts's probe -- the desktop shell), so on the web
+   * and the phones the value is stored and ignored and this default changes
+   * nothing there. A device that unticks the box keeps its choice. Read at
+   * join, so it applies to the next call.
    */
   nativeMedia: boolean;
 };
@@ -42,7 +46,7 @@ const DEFAULTS: VoicePrefs = {
   micDeviceId: null,
   speakerDeviceId: null,
   audioQuality: DEFAULT_AUDIO_QUALITY,
-  nativeMedia: false,
+  nativeMedia: true,
 };
 
 export function loadVoicePrefs(): VoicePrefs {
@@ -62,7 +66,7 @@ export function loadVoicePrefs(): VoicePrefs {
       audioQuality: isAudioQuality(parsed.audioQuality)
         ? parsed.audioQuality
         : DEFAULT_AUDIO_QUALITY,
-      nativeMedia: parsed.nativeMedia === true,
+      nativeMedia: parsed.nativeMedia !== false,
     };
   } catch {
     return { ...DEFAULTS };

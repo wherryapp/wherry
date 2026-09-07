@@ -14,7 +14,7 @@ patch, twice, with the audio still sealed both ways.
 
 **In the build since 2026-09-07 (evening)** through the fork:
 `wherryapp/rust-sdks`, branch `wherry/frame-cryptor-detach`, commit
-`bf2ea2d59290d1411d6e659229ade397bb7e667d` — the `[patch]` section in
+`73ff28ce949cd1122c0e13d8376acfd8368fa2f4` — the `[patch]` section in
 `client/src-tauri/Cargo.toml`. **The upstream pull request is open:
 [livekit/rust-sdks#1408](https://github.com/livekit/rust-sdks/pull/1408)**
 (opened by the maintainer on 2026-09-07 with the command below; a session

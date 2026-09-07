@@ -85,4 +85,4 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSValue"] }
 # 20 leaked FrameCryptorTransformer threads after 10 calls without it, 0
 # after 6 with it, twice, audio still sealed both ways.
 [patch."https://github.com/livekit/rust-sdks"]
-webrtc-sys = { git = "https://github.com/wherryapp/rust-sdks", rev = "bf2ea2d59290d1411d6e659229ade397bb7e667d" }
+webrtc-sys = { git = "https://github.com/wherryapp/rust-sdks", rev = "73ff28ce949cd1122c0e13d8376acfd8368fa2f4" }

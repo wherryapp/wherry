@@ -5574,7 +5574,7 @@ dependencies = [
 [[package]]
 name = "webrtc-sys"
 version = "0.3.43"
-source = "git+https://github.com/wherryapp/rust-sdks?rev=bf2ea2d59290d1411d6e659229ade397bb7e667d#bf2ea2d59290d1411d6e659229ade397bb7e667d"
+source = "git+https://github.com/wherryapp/rust-sdks?rev=73ff28ce949cd1122c0e13d8376acfd8368fa2f4#73ff28ce949cd1122c0e13d8376acfd8368fa2f4"
 dependencies = [
  "cc",
  "cxx",
@@ -5588,7 +5588,7 @@ dependencies = [
 [[package]]
 name = "webrtc-sys-build"
 version = "0.3.19"
-source = "git+https://github.com/wherryapp/rust-sdks?rev=bf2ea2d59290d1411d6e659229ade397bb7e667d#bf2ea2d59290d1411d6e659229ade397bb7e667d"
+source = "git+https://github.com/wherryapp/rust-sdks?rev=73ff28ce949cd1122c0e13d8376acfd8368fa2f4#73ff28ce949cd1122c0e13d8376acfd8368fa2f4"
 dependencies = [
  "anyhow",
  "fs2",
