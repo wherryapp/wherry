@@ -1,0 +1,45 @@
+From bf2ea2d59290d1411d6e659229ade397bb7e667d Mon Sep 17 00:00:00 2001
+From: Connor Tarabocchia <connorcjcj11@gmail.com>
+Date: Mon, 7 Sep 2026 09:31:03 -0400
+Subject: [PATCH] webrtc-sys: detach the frame transformer when a FrameCryptor
+ is destroyed
+
+FrameCryptor's constructors attach a FrameCryptorTransformer to the
+RtpSender or RtpReceiver they were given, and the destructor only
+unregistered the observer. libwebrtc keeps a transformer alive for as long
+as it is set on the sender/receiver, so every FrameCryptor left its
+transformer -- and the thread that transformer owns -- behind until the
+peer connection was destroyed. Measured from a Room that is connected,
+publishes one audio track under E2EE and closes: one leaked
+FrameCryptorTransformer thread per cryptor per room, never reclaimed.
+
+Clear the transformer on the sender/receiver in the destructor.
+---
+ webrtc-sys/src/frame_cryptor.cpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/webrtc-sys/src/frame_cryptor.cpp b/webrtc-sys/src/frame_cryptor.cpp
+index 1ff1b0b7..2cf22826 100644
+--- a/webrtc-sys/src/frame_cryptor.cpp
++++ b/webrtc-sys/src/frame_cryptor.cpp
+@@ -169,6 +169,17 @@ FrameCryptor::~FrameCryptor() {
+   if (observer_) {
+     unregister_observer();
+   }
++  // Detach the transformer from the sender/receiver it was attached to in
++  // the constructor. Without this the RtpSender/RtpReceiver keeps the
++  // FrameCryptorTransformer (and the thread it owns) alive for as long as
++  // it exists, which outlives this object -- one leaked
++  // FrameCryptorTransformer thread per cryptor per room.
++  if (sender_) {
++    sender_->SetEncoderToPacketizerFrameTransformer(nullptr);
++  }
++  if (receiver_) {
++    receiver_->SetDepacketizerToDecoderFrameTransformer(nullptr);
++  }
+ }
+ 
+ void FrameCryptor::register_observer(
+-- 
+2.55.0
+
