@@ -24,6 +24,10 @@
 // app's storage in the private data dir rather than evicting it the way
 // WebKit may for an inactive iOS app.
 
+// Stage 0 of the native media plan; see the feature in Cargo.toml.
+#[cfg(feature = "media-spike")]
+mod spike;
+
 #[cfg(any(target_vendor = "apple", target_os = "windows"))]
 fn vault_entry(key: &str) -> Result<keyring::Entry, String> {
   keyring::Entry::new("app.wherry", key).map_err(|e| e.to_string())
@@ -114,15 +118,40 @@ pub fn run() {
     }
   }));
 
-  builder
+  let builder = builder
     // Registration only -- the JS side (sync/desktop-notify.ts) owns every
     // decision about when a notification is deserved.
     .plugin(tauri_plugin_notification::init())
     // Registration only, same as notification: the client decides what to
     // open and when (api/shell.ts's openExternal); this provides the API.
-    .plugin(tauri_plugin_opener::init())
-    .invoke_handler(tauri::generate_handler![vault_get, vault_set, vault_delete])
+    .plugin(tauri_plugin_opener::init());
+
+  #[cfg(not(feature = "media-spike"))]
+  let builder =
+    builder.invoke_handler(tauri::generate_handler![vault_get, vault_set, vault_delete]);
+  #[cfg(feature = "media-spike")]
+  let builder = builder.invoke_handler(tauri::generate_handler![
+    vault_get,
+    vault_set,
+    vault_delete,
+    spike::spike_info,
+    spike::spike_connect,
+    spike::spike_set_key,
+    spike::spike_disconnect,
+    spike::spike_stats,
+    spike::spike_devices,
+    spike::spike_audio_release,
+    spike::spike_switch_playout,
+    spike::spike_switch_recording,
+    spike::spike_start_recording,
+    spike::spike_stop_recording,
+    spike::spike_capture,
+  ]);
+
+  builder
     .setup(|app| {
+      #[cfg(feature = "media-spike")]
+      spike::start_driver_loop(app.handle().clone());
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()

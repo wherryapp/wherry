@@ -17,6 +17,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 
+[features]
+# Stage 0 of docs/prompts/native-media-plan.md: the throwaway probe in
+# src/spike.rs. Off by default, so `pnpm tauri dev` and every release build
+# are exactly what they were; `pnpm tauri dev --features media-spike
+# --config tauri.spike.conf.json` is the one command that turns it on. The
+# feature, the module, the three optional dependencies below and the -ObjC
+# line in build.rs all go together when the spike is deleted.
+media-spike = ["dep:livekit", "dep:tokio", "dep:tokio-stream"]
+
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +41,16 @@ tauri-plugin-notification = "2"
 # app itself away, so the update banner and the version-floor wall need
 # this to have anywhere to send people. Registration only, like the rest.
 tauri-plugin-opener = "2"
+
+# The media spike's SDK (see [features]). A git revision rather than the
+# 0.8.4 crate on purpose: PlatformAudio's thread-affinity fix (rust-sdks
+# #1212) merged on 2026-09-03 and is not in a published release yet -- the
+# plan's §1.3. rustls, never native-tls: libwebrtc links BoringSSL
+# statically and a dynamic OpenSSL in the same process crashes at init on
+# Linux (the plan's §1.4).
+livekit = { git = "https://github.com/livekit/rust-sdks", rev = "dee418bba599fd505fa548ac6b9ab3379fc548fc", features = ["rustls-tls-native-roots"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros", "net", "io-util"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
 
 # Desktop only -- there is no second instance to guard against on mobile.
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
