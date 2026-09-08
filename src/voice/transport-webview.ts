@@ -447,6 +447,7 @@ export class WebviewTransport implements VoiceTransport {
         audioLevel: participant.audioLevel,
         camera: participant.getTrackPublication(Track.Source.Camera) !== undefined,
         screen: participant.getTrackPublication(Track.Source.ScreenShare) !== undefined,
+        cameraMuted: participant.getTrackPublication(Track.Source.Camera)?.isMuted ?? false,
       });
     }
     return list;

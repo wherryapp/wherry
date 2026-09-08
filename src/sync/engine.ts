@@ -256,6 +256,12 @@ export type SyncEvent =
       status: "ringing" | "active" | "ended";
       reason: string | null;
       participants: { userId: string; deviceId: string | null; joined: boolean }[];
+      /** Present only on a frame sent to THIS device, and today only
+       *  `VIDEO_OVER_GRANT`: a video track this device published was above
+       *  its publish grant and the SFU muted it. Never on a broadcast
+       *  frame, which is what keeps it an error channel rather than a
+       *  second state field. */
+      error?: "VIDEO_OVER_GRANT";
     }
   | { type: "voice_presence"; conversationId: string; occupants: string[] };
 
@@ -1753,6 +1759,10 @@ export class SyncEngine {
           deviceId: typeof p.deviceId === "string" ? p.deviceId : null,
           joined: p.joined,
         }));
+      // Deliberately narrowed to the one value rather than passed through:
+      // an unknown error name from a newer server must not reach the UI as
+      // a string nobody wrote a sentence for.
+      const error = frame["error"] === "VIDEO_OVER_GRANT" ? ("VIDEO_OVER_GRANT" as const) : undefined;
       const event = {
         type: "call_state",
         callId,
@@ -1760,9 +1770,13 @@ export class SyncEngine {
         status,
         reason: typeof reason === "string" ? reason : null,
         participants: cleaned,
+        ...(error ? { error } : {}),
       } as const;
       this.#emit(event);
-      broadcast(event);
+      // NOT broadcast to the other tabs when it carries an error: the frame
+      // was addressed to this device, and the tab holding the call is this
+      // one (the Web Lock guarantees it).
+      if (!error) broadcast(event);
       return;
     }
 

@@ -118,6 +118,20 @@ export type TransportParticipant = {
    *  from this; whether it is *subscribed* is the viewer's own choice. */
   camera: boolean;
   screen: boolean;
+  /**
+   * That publication is muted -- which is what "camera off" and the
+   * background pause both actually are.
+   *
+   * Worth stating because it is not what it looks like: livekit-client's
+   * `setCameraEnabled(false)` **mutes** the publication and stops the
+   * underlying device track; it does not unpublish (a *screen* share, by
+   * contrast, is unpublished, which is why there is no muted screen). So a
+   * peer whose camera is off still has a camera publication, and without
+   * this flag their tile would be an indefinitely black rectangle instead
+   * of an honest "camera paused" -- exactly the frozen-frame outcome the
+   * plan's §2 set out to avoid.
+   */
+  cameraMuted: boolean;
 };
 
 /** What the session wants to hear about. Every handler is optional. */

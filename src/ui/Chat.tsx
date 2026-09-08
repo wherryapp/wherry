@@ -12,6 +12,7 @@ import { PinsPanel } from "./PinsPanel";
 import { CallBar } from "./voice/CallBar";
 import { CallButton } from "./voice/CallButton";
 import { IncomingCall } from "./voice/IncomingCall";
+import { CallStage } from "./voice/CallStage";
 import { VoiceRoom } from "./voice/VoiceRoom";
 import { useVoice, useVoiceSignals } from "../voice/hooks";
 import { voice } from "../voice/session";
@@ -335,6 +336,19 @@ export function Chat({
     session.user.id,
     features.voice,
   );
+  // The video stage: opened by the bar's "Show video", closed by the X, the
+  // back gesture or Escape, and closed automatically when a call ends -- a
+  // stage left open would otherwise cover the next conversation opened. It
+  // shows in the thread area for the call's OWN conversation only, so
+  // reading another thread during a call still shows that thread.
+  const [stageOpen, setStageOpen] = useState(false);
+  useEffect(() => {
+    if (voiceState.phase === "idle") setStageOpen(false);
+  }, [voiceState.phase]);
+  const showStage =
+    stageOpen &&
+    voiceState.conversationId !== null &&
+    voiceState.conversationId === selected;
   // Only the count; the list itself renders in Settings. Zero whenever the
   // announcements flag is off, so the dot is dark exactly when the feature is.
   const { unread: unreadAnnouncements } = useAnnouncements();
@@ -393,6 +407,25 @@ export function Chat({
         void voice.toggleMic();
         return;
       }
+      // Camera and screen, desktop only: a phone has no modifier keys, and
+      // a screen cannot be shared from either webview at all (§8 of the
+      // video plan). Both are no-ops where the transport or the grant does
+      // not carry the source, rather than a shortcut that fails loudly.
+      if (
+        isDesktop &&
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        (event.key.toLowerCase() === "v" || event.key.toLowerCase() === "s")
+      ) {
+        if (voiceState.phase !== "connected") return;
+        const camera = event.key.toLowerCase() === "v";
+        const source = camera ? "camera" : "screen";
+        if (!voiceState.grant?.sources.includes(source)) return;
+        if (!voiceState.capabilities[source]) return;
+        event.preventDefault();
+        void (camera ? voice.toggleCamera() : voice.toggleScreenShare());
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         if (panelOpen) return;
         event.preventDefault();
@@ -424,6 +457,8 @@ export function Chat({
     groupDetailsOpen,
     hubDetailsFor,
     pinsFor,
+    voiceState.grant,
+    voiceState.capabilities,
     voiceState.phase,
   ]);
 
@@ -789,7 +824,12 @@ export function Chat({
       <StatusLine />
       <UpdateBanner />
       {features.voice && (
-        <CallBar conversations={conversations} selfUserId={session.user.id} />
+        <CallBar
+          conversations={conversations}
+          selfUserId={session.user.id}
+          stageOpen={stageOpen}
+          onToggleStage={() => setStageOpen((open) => !open)}
+        />
       )}
 
       <div className="flex min-h-0 flex-1">
@@ -933,7 +973,14 @@ export function Chat({
                     </Button>
                   )}
                 </div>
-                {current?.channelKind === "voice" ? (
+                {showStage ? (
+                  <CallStage
+                    state={voiceState}
+                    selfName={session.user.displayName}
+                    selfUserId={session.user.id}
+                    onClose={() => setStageOpen(false)}
+                  />
+                ) : current?.channelKind === "voice" ? (
                   <VoiceRoom
                     conversation={current}
                     occupants={occupancy.get(current.id) ?? []}

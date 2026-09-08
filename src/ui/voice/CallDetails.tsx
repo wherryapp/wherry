@@ -127,6 +127,29 @@ export function CallDetails() {
         )}
       </Row>
 
+      <Row label="Video">
+        {current.grant}
+        {!current.capabilities.renderVideo && (
+          <span className="text-neutral-500 dark:text-neutral-400">
+            {" "}· this device's audio engine cannot send or show video (switch engine for
+            the call, from the bar)
+          </span>
+        )}
+        {current.capabilities.renderVideo && !current.capabilities.screen && (
+          <span className="text-neutral-500 dark:text-neutral-400">
+            {" "}· this browser cannot share a screen
+          </span>
+        )}
+        {current.video.length === 0 && (
+          <span className="text-neutral-500 dark:text-neutral-400"> · nothing sending or arriving</span>
+        )}
+      </Row>
+      {current.video.map((track) => (
+        <Row key={track.label} label={track.label}>
+          {track.line}
+        </Row>
+      ))}
+
       <Row label="Playback">
         {current.playbackBlocked ? "blocked until a tap" : "allowed"}
         {" · "}

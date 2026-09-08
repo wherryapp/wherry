@@ -7,14 +7,16 @@ import { useEffect, useRef, useState } from "react";
 import { Button, Select } from "../kit";
 import {
   listAudioDevices,
+  listVideoDevices,
   mediaSupported,
   onDeviceChange,
   supportsSpeakerSelection,
   type AudioDevices,
+  type VideoDevice,
 } from "../../voice/devices";
 import { useNativeMediaAvailable, useVoicePrefs } from "../../voice/hooks";
 import { nativeMediaProbe } from "../../voice/native-media";
-import { saveVoicePrefs, type VoicePrefs } from "../../voice/prefs";
+import { saveVoicePrefs, type VideoQualityTier, type VoicePrefs } from "../../voice/prefs";
 import {
   AUDIO_QUALITY_KBPS,
   isAudioQuality,
@@ -59,8 +61,16 @@ const QUALITY_LABELS: Readonly<Record<AudioQuality, string>> = {
   musicHighQuality: "High quality",
 };
 
+/** The camera tiers, in ascending order, with the words the picker shows. */
+const VIDEO_QUALITY_LABELS: Readonly<Record<VideoQualityTier, string>> = {
+  standard: "Standard — 360p, easiest on battery and data",
+  auto: "Automatic — up to 720p (default)",
+  hd: "High — whatever this call allows",
+};
+
 export function VoiceSettings({
   canChooseQuality,
+  cameraLimit,
 }: {
   /**
    * The `voice_quality` flag: off for everyone by default, on per account.
@@ -69,6 +79,14 @@ export function VoiceSettings({
    * when it is off; nobody is shown a setting they cannot change.
    */
   canChooseQuality: boolean;
+  /**
+   * This account's camera ceiling outside any hub, from
+   * `/account/settings`'s `videoLimits`. Null means no camera anywhere --
+   * the flag is off, or a policy row withheld it -- and the whole camera
+   * section is hidden rather than shown failing. Advisory in exactly the
+   * way the flag is: the per-call token is what actually decides.
+   */
+  cameraLimit: { maxHeight: number; maxFps: number } | null;
 }) {
   const prefs = useVoicePrefs();
   const nativeAvailable = useNativeMediaAvailable();
@@ -223,6 +241,8 @@ export function VoiceSettings({
         </label>
       )}
 
+      {cameraLimit && <CameraSection tier={prefs.videoQuality} deviceId={prefs.cameraDeviceId} limit={cameraLimit} />}
+
       {native ? (
         <p className="text-xs text-neutral-500 dark:text-neutral-400">
           The microphone test belongs to the web view. With the app's audio engine
@@ -232,6 +252,134 @@ export function VoiceSettings({
       ) : (
         <MicMeter deviceId={prefs.micDeviceId} onDevicesNamed={() => void listAudioDevices().then(setDevices)} />
       )}
+    </div>
+  );
+}
+
+/**
+ * The camera picker, its tier, and a live preview.
+ *
+ * The preview is its own `getUserMedia`, released on unmount and on stop --
+ * deliberately not the call's track, because this is answered *before* a
+ * call and because holding a camera open in Settings is exactly the kind of
+ * light nobody wants left on. Cameras come from the browser's list even
+ * where the app's audio engine is on: video publishes through the web view
+ * in v1 (docs/prompts/video-execution-handoff.md §0).
+ */
+function CameraSection({
+  tier,
+  deviceId,
+  limit,
+}: {
+  tier: VideoQualityTier;
+  deviceId: string | null;
+  limit: { maxHeight: number; maxFps: number };
+}) {
+  const [cameras, setCameras] = useState<VideoDevice[]>([]);
+  const [previewing, setPreviewing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const element = useRef<HTMLVideoElement | null>(null);
+  const stopRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = (): void => {
+      void listVideoDevices().then((list) => {
+        if (!cancelled) setCameras(list);
+      });
+    };
+    load();
+    const off = onDeviceChange(load);
+    return () => {
+      cancelled = true;
+      off();
+      stopRef.current?.();
+    };
+  }, []);
+
+  const preview = async (): Promise<void> => {
+    stopRef.current?.();
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: deviceId ? { deviceId: { exact: deviceId } } : true,
+      });
+      // The first granted prompt unlocks the labels; re-read the list.
+      void listVideoDevices().then(setCameras);
+      if (element.current) element.current.srcObject = stream;
+      setPreviewing(true);
+      stopRef.current = () => {
+        for (const track of stream.getTracks()) track.stop();
+        if (element.current) element.current.srcObject = null;
+        setPreviewing(false);
+        stopRef.current = null;
+      };
+    } catch (e) {
+      const name = e instanceof Error ? e.name : "";
+      setError(
+        name === "NotAllowedError"
+          ? "Camera access was refused. Allow it in the browser's site settings."
+          : "The camera could not be started.",
+      );
+    }
+  };
+
+  return (
+    <div className="grid gap-2">
+      <label className="grid gap-1 text-sm text-neutral-700 dark:text-neutral-200">
+        Camera
+        <Select
+          value={deviceId ?? ""}
+          onChange={(e) => saveVoicePrefs({ cameraDeviceId: e.target.value || null })}
+        >
+          <option value="">Default</option>
+          {cameras.map((camera) => (
+            <option key={camera.deviceId} value={camera.deviceId}>
+              {camera.label}
+            </option>
+          ))}
+        </Select>
+      </label>
+
+      <label className="grid gap-1 text-sm text-neutral-700 dark:text-neutral-200">
+        Video quality
+        <Select
+          value={tier}
+          onChange={(e) => saveVoicePrefs({ videoQuality: e.target.value as VideoQualityTier })}
+        >
+          {(["standard", "auto", "hd"] as VideoQualityTier[]).map((value) => (
+            <option key={value} value={value}>
+              {VIDEO_QUALITY_LABELS[value]}
+            </option>
+          ))}
+        </Select>
+        <span className="text-xs text-neutral-500 dark:text-neutral-400">
+          Calls on this account allow up to {limit.maxHeight}p, and this setting
+          can only ask for less. Applies to the next call you join.
+        </span>
+      </label>
+
+      <div className="flex items-start gap-3">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => (previewing ? stopRef.current?.() : void preview())}
+        >
+          {previewing ? "Stop preview" : "Preview camera"}
+        </Button>
+        <video
+          ref={element}
+          muted
+          playsInline
+          autoPlay
+          // Mirrored, like every self-view: an unmirrored preview of your
+          // own face reads as somebody else's.
+          className={`aspect-video w-40 rounded bg-neutral-900 object-cover scale-x-[-1] ${
+            previewing ? "" : "hidden"
+          }`}
+        />
+      </div>
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
     </div>
   );
 }

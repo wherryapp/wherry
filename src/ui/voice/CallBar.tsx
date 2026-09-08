@@ -15,8 +15,11 @@ import {
   MicIcon,
   MicOffIcon,
   PhoneOffIcon,
+  ScreenShareIcon,
   Select,
   SpeakerIcon,
+  VideoIcon,
+  VideoOffIcon,
 } from "../kit";
 import { listAudioDevices, onDeviceChange, supportsSpeakerSelection, type AudioDevices } from "../../voice/devices";
 import { useVoice, useVoicePrefs } from "../../voice/hooks";
@@ -32,12 +35,37 @@ function elapsed(since: number | null, now: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/**
+ * The reason a video button is disabled, or null when it is not.
+ *
+ * Three different answers, and telling them apart is the whole point of
+ * disabling rather than hiding: the grant does not carry the source (the
+ * button is hidden -- nothing to explain), this engine cannot do video
+ * (the switch below is the fix), or this browser cannot (nothing is).
+ */
+function videoDisabledReason(
+  state: ReturnType<typeof useVoice>,
+  source: "camera" | "screen",
+): string | null {
+  if (state.capabilities[source]) return null;
+  if (!state.capabilities.renderVideo) {
+    return "Video runs through the browser engine on this device";
+  }
+  return source === "camera"
+    ? "This browser cannot open a camera"
+    : "This browser cannot share a screen";
+}
+
 export function CallBar({
   conversations,
   selfUserId,
+  stageOpen,
+  onToggleStage,
 }: {
   conversations: readonly StoredConversation[];
   selfUserId: string;
+  stageOpen: boolean;
+  onToggleStage: () => void;
 }) {
   const state = useVoice();
   const [now, setNow] = useState(() => Date.now());
@@ -74,6 +102,14 @@ export function CallBar({
       </div>
     );
   }
+
+  const cameraReason = videoDisabledReason(state, "camera");
+  const screenReason = videoDisabledReason(state, "screen");
+  // Anything to look at: our own camera or screen, or anyone else's.
+  const anyVideo =
+    state.camera.on ||
+    state.screen.on ||
+    state.participants.some((participant) => participant.camera || participant.screen);
 
   const conversation = conversations.find((c) => c.id === state.conversationId);
   const title = conversation ? conversationTitle(conversation, selfUserId) : "Call";
@@ -138,6 +174,52 @@ export function CallBar({
         >
           {state.micMuted ? <MicOffIcon /> : <MicIcon />}
         </IconButton>
+        {state.grant?.sources.includes("camera") && (
+          <IconButton
+            label={state.camera.on ? "Turn camera off" : "Turn camera on"}
+            title={cameraReason ?? undefined}
+            disabled={cameraReason !== null}
+            onClick={() => void voice.toggleCamera()}
+            aria-pressed={state.camera.on}
+            className={
+              cameraReason
+                ? "cursor-not-allowed opacity-40"
+                : state.camera.on
+                  ? "text-accent-600 dark:text-accent-400"
+                  : ""
+            }
+          >
+            {state.camera.on ? <VideoIcon /> : <VideoOffIcon />}
+          </IconButton>
+        )}
+        {state.grant?.sources.includes("screen") && (
+          <IconButton
+            label={state.screen.on ? "Stop sharing screen" : "Share screen"}
+            title={screenReason ?? undefined}
+            disabled={screenReason !== null}
+            onClick={() => void voice.toggleScreenShare()}
+            aria-pressed={state.screen.on}
+            className={
+              screenReason
+                ? "cursor-not-allowed opacity-40"
+                : state.screen.on
+                  ? "text-accent-600 dark:text-accent-400"
+                  : ""
+            }
+          >
+            <ScreenShareIcon />
+          </IconButton>
+        )}
+        {anyVideo && (
+          <IconButton
+            label={stageOpen ? "Hide video" : "Show video"}
+            onClick={onToggleStage}
+            aria-pressed={stageOpen}
+            className={stageOpen ? "text-accent-600 dark:text-accent-400" : ""}
+          >
+            <VideoIcon />
+          </IconButton>
+        )}
         <IconButton
           label="Audio devices"
           onClick={() => setDevicesOpen((open) => !open)}
@@ -165,6 +247,30 @@ export function CallBar({
       {state.error && state.phase === "connected" && (
         <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{state.error}</p>
       )}
+
+      {/*
+        The desktop shell's own media engine has no camera capture and no
+        way to put a received frame on screen (video's stage 3N is what
+        changes that), so somebody who wants video here rejoins this one
+        call through the webview engine. One reconnect -- a second or two
+        of silence -- and their `nativeMedia` preference is untouched,
+        because they did not change their mind about audio.
+      */}
+      {!state.capabilities.renderVideo &&
+        state.phase === "connected" &&
+        state.engineOverride === null &&
+        (state.grant?.sources.length ?? 0) > 0 && (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-neutral-600 dark:text-neutral-300">
+              {state.participants.some((p) => p.camera || p.screen)
+                ? "Somebody has video on, and this device's audio engine cannot show it."
+                : "Video runs through the browser engine on this device."}
+            </span>
+            <Button size="sm" onClick={() => void voice.switchEngineForThisCall()}>
+              Switch engine for this call
+            </Button>
+          </div>
+        )}
 
       {devicesOpen && <DevicePicker onClose={() => setDevicesOpen(false)} />}
 

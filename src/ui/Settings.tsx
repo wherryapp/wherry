@@ -204,6 +204,10 @@ export function Settings({
   // so it can be turned off for people who should not see it, and defaulting
   // to visible until the fetch resolves would flash it at exactly them.
   const [tipJarEnabled, setTipJarEnabled] = useState(false);
+  /** This account's camera ceiling outside any hub, or null for no camera
+   *  anywhere -- what decides whether Settings shows a camera section at
+   *  all. Advisory: the per-call token is what actually decides. */
+  const [cameraLimit, setCameraLimit] = useState<{ maxHeight: number; maxFps: number } | null>(null);
 
   // The minimal announcements surface: a section that exists only while
   // there are announcements to show (the feature flag off means the engine
@@ -240,6 +244,11 @@ export function Settings({
         setDevices(deviceList.devices);
         setUsage(attachmentUsage);
         setTipJarEnabled(settings.features.tipJar);
+        setCameraLimit(
+          settings.videoLimits?.sources.includes("camera")
+            ? (settings.videoLimits.camera ?? null)
+            : null,
+        );
       } catch {
         setError("Could not load your settings.");
       }
@@ -632,7 +641,10 @@ export function Settings({
             title="Voice"
             description="Calls and voice rooms, on this device."
           >
-            <VoiceSettings canChooseQuality={features.voiceQuality} />
+            <VoiceSettings
+              canChooseQuality={features.voiceQuality}
+              cameraLimit={cameraLimit}
+            />
           </PanelSection>
         )}
 

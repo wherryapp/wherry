@@ -270,6 +270,10 @@ export class NativeTransport implements VoiceTransport {
         audioLevel: entry.audioLevel,
         camera: entry.hasCamera,
         screen: entry.hasScreen,
+        // The shell reports a publication's existence, not its mute state:
+        // this engine cannot render video at all until stage 3N, so the
+        // distinction buys nothing here.
+        cameraMuted: false,
       };
     });
   }

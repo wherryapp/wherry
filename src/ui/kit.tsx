@@ -354,6 +354,79 @@ export function MicOffIcon({ className }: IconProps) {
   );
 }
 
+export function VideoIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <rect x="2" y="5" width="11" height="10" rx="2" />
+      <path d="m13 9.5 4.2-2.6a.5.5 0 0 1 .8.4v5.4a.5.5 0 0 1-.8.4L13 10.5z" />
+    </svg>
+  );
+}
+
+export function VideoOffIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M13 8V7a2 2 0 0 0-2-2H6.5M4 5.2A2 2 0 0 0 2 7v6a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-.5" />
+      <path d="m13 9.5 4.2-2.6a.5.5 0 0 1 .8.4v5.4a.5.5 0 0 1-.8.4L15 11.6" />
+      <path d="m3 17 14-14" />
+    </svg>
+  );
+}
+
+export function ScreenShareIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <rect x="2" y="3.5" width="16" height="11" rx="2" />
+      <path d="M7 17.5h6M10 11V6.5M8 8.5 10 6.5l2 2" />
+    </svg>
+  );
+}
+
+export function PinnedIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <path d="M13.5 2.5 17.5 6.5M12 4 9 7l-4 1-1.5 1.5 7 7L12 15l1-4 3-3" />
+      <path d="m8 12-5.5 5.5" />
+    </svg>
+  );
+}
+
 export function SpeakerIcon({ className }: IconProps) {
   return (
     <svg

@@ -100,6 +100,11 @@ export type VoiceParticipant = {
    *  screen. What the stage draws a tile from. */
   camera: boolean;
   screen: boolean;
+  /** Their camera publication is muted -- their camera is off, or their app
+   *  is in the background. The tile says "camera paused" rather than
+   *  showing a black rectangle; see TransportParticipant for why a camera
+   *  turned off is a muted publication and not an absent one. */
+  cameraMuted: boolean;
 };
 
 export type VoiceState = {
@@ -228,6 +233,12 @@ export type VoiceDiagnostics = {
   quality: VoiceQuality;
   /** What this call would allow this device to send, in one sentence. */
   grant: string;
+  /** What this transport can actually do with video. In the readout
+   *  because "the camera button is disabled" and "this call does not allow
+   *  a camera" are different answers and only one of them is fixable from
+   *  here -- and because the desktop shell relays no console, so this is
+   *  the only place its answer can be read. */
+  capabilities: TransportCapabilities;
   /** One row per video track, sent or received, already worded. */
   video: { label: string; line: string }[];
 };
@@ -533,6 +544,7 @@ class VoiceSession {
       playbackBlocked: state.playbackBlocked,
       quality: state.quality,
       grant: grantLine(state.grant),
+      capabilities: state.capabilities,
       video: stats.video.map((track) => ({
         label:
           track.identity === "self"
@@ -792,6 +804,7 @@ class VoiceSession {
       volume: this.#volumes.get(p.userId) ?? 1,
       camera: p.camera,
       screen: p.screen,
+      cameraMuted: p.cameraMuted,
     }));
     participants.sort((a, b) => a.name.localeCompare(b.name));
     this.#set({
@@ -908,6 +921,16 @@ class VoiceSession {
   #watchSync(callId: string): void {
     const handle = (event: SyncEvent): void => {
       if (event.type !== "call_state" || event.callId !== callId) return;
+      if (event.error === "VIDEO_OVER_GRANT") {
+        // The SFU muted the track; there is nothing to undo locally except
+        // the button, which must not keep saying the camera is on.
+        this.#set({
+          camera: { on: false, paused: false },
+          screen: { on: false },
+          error: "Your video exceeds this call's limit and was stopped.",
+        });
+        return;
+      }
       const call = this.#state.call;
       if (call) this.#set({ call: { ...call, status: event.status, endReason: event.reason } });
       if (event.status === "ended" && !this.#leaving) {
