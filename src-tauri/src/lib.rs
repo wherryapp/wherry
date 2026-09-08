@@ -221,10 +221,6 @@ pub fn run() {
           set_window_occlusion_detection(&window, false)?;
         }
       }
-      // And its opposite number: `WHERRY_HIDE=1` starts with the window hidden,
-      // which is the one state that reproduces the dead boot on demand (a
-      // view that has never been visible gets no grace). A second launch
-      // shows it again, through the single-instance plugin above.
       // `WHERRY_NO_VAULT=1` says so once at boot: a shell that has silently
       // stopped restoring its session should say why in the log that is the
       // only console it has.
@@ -232,6 +228,11 @@ pub fn run() {
       if vault_disabled() {
         log::warn!("shell: keychain vault disabled (WHERRY_NO_VAULT=1)");
       }
+      // And the keep-awake switch's opposite number: `WHERRY_HIDE=1` starts
+      // with the window hidden, which is the one state that reproduces the
+      // dead boot on demand (a view that has never been visible gets no
+      // grace). A second launch shows it again, through the single-instance
+      // plugin above.
       #[cfg(all(desktop, debug_assertions))]
       if std::env::var("WHERRY_HIDE").ok().as_deref() == Some("1") {
         use tauri::Manager;
