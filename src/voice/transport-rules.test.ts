@@ -10,6 +10,8 @@ import {
   playbackEnabledFor,
   publishErrorMessage,
   qualityFromWord,
+  SCREEN_AUDIENCE_STEP,
+  screenOptionsFor,
   userIdFromMetadata,
   videoCodecFor,
   videoOptionsFor,
@@ -173,5 +175,35 @@ describe("publishErrorMessage", () => {
   it("has a sentence for anything it does not recognise", () => {
     assert.equal(publishErrorMessage("boom", "camera"), "The camera could not be started.");
     assert.equal(publishErrorMessage("boom", "screen"), "The screen could not be shared.");
+  });
+});
+
+describe("screenOptionsFor", () => {
+  const grant = { maxHeight: 1080, maxFps: 15 };
+  it("leaves a small call alone", () => {
+    assert.deepEqual(screenOptionsFor(grant, 2), grant);
+    assert.deepEqual(screenOptionsFor(grant, SCREEN_AUDIENCE_STEP), grant);
+  });
+  it("drops one height step past the audience threshold, never the frame rate", () => {
+    // The frame rate is the cap that bounds the worst case (a video playing
+    // in a shared window), so it survives the step: what a big audience
+    // multiplies is the per-viewer bitrate, and height is what carries it.
+    assert.deepEqual(screenOptionsFor(grant, SCREEN_AUDIENCE_STEP + 1), {
+      maxHeight: 720,
+      maxFps: 15,
+    });
+    assert.deepEqual(screenOptionsFor({ maxHeight: 720, maxFps: 15 }, 40), {
+      maxHeight: 360,
+      maxFps: 15,
+    });
+  });
+  it("has nowhere to step from the bottom rung", () => {
+    assert.deepEqual(screenOptionsFor({ maxHeight: 360, maxFps: 15 }, 500), {
+      maxHeight: 360,
+      maxFps: 15,
+    });
+  });
+  it("is null for a grant that does not carry a screen", () => {
+    assert.equal(screenOptionsFor(null, 2), null);
   });
 });

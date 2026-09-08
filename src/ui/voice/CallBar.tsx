@@ -56,6 +56,26 @@ function videoDisabledReason(
     : "This browser cannot share a screen";
 }
 
+/**
+ * Whether to show a video button at all.
+ *
+ * Hidden when the grant does not carry the source -- nothing to explain --
+ * and hidden again when the transport cannot do it and *nothing here can
+ * fix that*: neither phone webview can share a screen and no web-side
+ * switch changes it (the plan's §8), so offering a permanently dead
+ * control is worse than offering none. It stays visible-but-disabled in
+ * the one case that has a way out: a desktop shell on its own audio
+ * engine, where the switch beside it is the fix.
+ */
+function showsVideoButton(
+  state: ReturnType<typeof useVoice>,
+  source: "camera" | "screen",
+): boolean {
+  if (!state.grant?.sources.includes(source)) return false;
+  if (state.capabilities[source]) return true;
+  return !state.capabilities.renderVideo;
+}
+
 export function CallBar({
   conversations,
   selfUserId,
@@ -174,7 +194,7 @@ export function CallBar({
         >
           {state.micMuted ? <MicOffIcon /> : <MicIcon />}
         </IconButton>
-        {state.grant?.sources.includes("camera") && (
+        {showsVideoButton(state, "camera") && (
           <IconButton
             label={state.camera.on ? "Turn camera off" : "Turn camera on"}
             title={cameraReason ?? undefined}
@@ -192,7 +212,7 @@ export function CallBar({
             {state.camera.on ? <VideoIcon /> : <VideoOffIcon />}
           </IconButton>
         )}
-        {state.grant?.sources.includes("screen") && (
+        {showsVideoButton(state, "screen") && (
           <IconButton
             label={state.screen.on ? "Stop sharing screen" : "Share screen"}
             title={screenReason ?? undefined}

@@ -419,7 +419,7 @@ class VoiceSession {
     const transport = this.#transport;
     if (!transport) return;
     try {
-      await transport.setScreenShareEnabled(on);
+      await transport.setScreenShareEnabled(on, this.#state.participants.length + 1);
       this.#set({ screen: { on }, error: null });
     } catch (error) {
       // A cancelled picker is not a failure worth a red line, but it is

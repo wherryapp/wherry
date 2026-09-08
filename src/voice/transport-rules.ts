@@ -173,6 +173,45 @@ export function cameraCeilingFor(
 }
 
 /**
+ * Past how many people in the call a screen drops one height step.
+ *
+ * The plan's §2 audience rule, and the number is a *default to revisit on
+ * the first measurement*, not a measured constraint: a screen at 1080p is
+ * the single most expensive thing on the SFU (about 3 Mbps at 15 fps, per
+ * the plan's §6) and it is fanned out to everybody, so the cost is linear
+ * in the audience while the benefit is not. Twelve is the same number the
+ * seeded policy uses for `topLayerCallSize`, deliberately: one call size
+ * past which this application stops spending on fidelity.
+ */
+export const SCREEN_AUDIENCE_STEP = 12;
+
+/** The height ladder a screen steps down through. */
+const SCREEN_HEIGHTS = [360, 720, 1080] as const;
+
+/**
+ * The screen ceiling for a call of this size: the grant, dropped one step
+ * where the audience is large.
+ *
+ * Evaluated **at publish time only** and never re-applied mid-share. A
+ * republish is a black frame and a fresh key frame for every viewer, and
+ * doing that because somebody joined would make a big call visibly worse
+ * for everybody each time it grew. The person who starts sharing to forty
+ * people gets the smaller screen; the person who was already sharing to
+ * eleven keeps what they had.
+ */
+export function screenOptionsFor(
+  granted: { maxHeight: number; maxFps: number } | null,
+  audience: number,
+): { maxHeight: number; maxFps: number } | null {
+  if (!granted) return null;
+  if (audience <= SCREEN_AUDIENCE_STEP) return granted;
+  const index = SCREEN_HEIGHTS.findIndex((height) => height >= granted.maxHeight);
+  // A ceiling below the bottom rung, or exactly it, has nowhere to go.
+  if (index <= 0) return granted;
+  return { ...granted, maxHeight: SCREEN_HEIGHTS[index - 1]! };
+}
+
+/**
  * The grant as the transport wants it: a ceiling per source, present only
  * where the source is actually granted. Two shapes rather than one because
  * "may publish a camera" and "how big a camera" are different questions

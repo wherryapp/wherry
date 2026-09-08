@@ -36,7 +36,7 @@ import {
   type VideoPreset,
 } from "livekit-client";
 import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
-import { publishErrorMessage, userIdFromMetadata } from "./transport-rules";
+import { publishErrorMessage, screenOptionsFor, userIdFromMetadata } from "./transport-rules";
 import type {
   FrameTransformKind,
   TransportCapabilities,
@@ -341,10 +341,13 @@ export class WebviewTransport implements VoiceTransport {
     this.#reattach("self", "camera");
   }
 
-  async setScreenShareEnabled(on: boolean): Promise<void> {
+  async setScreenShareEnabled(on: boolean, audience = 1): Promise<void> {
     const room = this.#room;
     if (!room) return;
-    const ceiling = this.#video.screen;
+    // The audience step, read now and never re-applied: see
+    // transport-rules.ts's screenOptionsFor for why a republish mid-share
+    // would be worse than the bandwidth it saved.
+    const ceiling = screenOptionsFor(this.#video.screen, audience);
     try {
       await room.localParticipant.setScreenShareEnabled(on, {
         // No tab or system audio in v1: the checkbox is a second audio

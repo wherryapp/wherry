@@ -230,7 +230,9 @@ export interface VoiceTransport {
 
   /** `deviceId` null is the platform default camera. */
   setCameraEnabled(on: boolean, deviceId: string | null): Promise<void>;
-  setScreenShareEnabled(on: boolean): Promise<void>;
+  /** `audience` is the call's size at publish time; the transport steps a
+   *  large call's screen down one height (transport-rules.ts). */
+  setScreenShareEnabled(on: boolean, audience?: number): Promise<void>;
 
   /**
    * The one DOM crossing on this interface, and it is on purpose: audio

@@ -391,6 +391,23 @@ function maybeDevCamera(params: URLSearchParams): void {
     return stream;
   };
 
+  // The screen, on the same terms and for the same reason: the pane cannot
+  // open the system picker either, and `getDisplayMedia` needs a user
+  // gesture no synthetic click satisfies. A canvas goes through the same
+  // publish options, the same `contentHint` and the same frame cryptor, so
+  // it answers everything about the *path*; what it cannot answer is the
+  // picker and the macOS Screen Recording prompt, which are device rows.
+  const realGetDisplayMedia = media.getDisplayMedia?.bind(media);
+  media.getDisplayMedia = async (
+    constraints?: DisplayMediaStreamOptions,
+  ): Promise<MediaStream> => {
+    void constraints;
+    void realGetDisplayMedia;
+    return (canvas as HTMLCanvasElement & {
+      captureStream(fps?: number): MediaStream;
+    }).captureStream(DEV_CAMERA.fps);
+  };
+
   media.enumerateDevices = async (): Promise<MediaDeviceInfo[]> => {
     const devices = await realEnumerate();
     if (devices.some((device) => device.kind === "videoinput")) return devices;
