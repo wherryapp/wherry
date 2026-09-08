@@ -683,7 +683,30 @@ export function videoLine(stats: {
 export type VideoButtonState = {
   capabilities: { camera: boolean; screen: boolean; renderVideo: boolean };
   grant: { sources: readonly VideoSource[] } | null;
+  /** The per-call engine switch, already taken or still available. */
+  engineOverride: "webview" | null;
 };
+
+/**
+ * Whether pressing this button means switching engines first.
+ *
+ * A desktop shell on its own audio engine cannot do video (until 3N ships
+ * on that platform), and the way out is one reconnect through the browser
+ * engine. Until 2026-09-08 that was a separate *Switch engine* button
+ * beside a disabled camera -- two presses for one intention. Now the
+ * camera button *is* the switch: the session rejoins and then turns the
+ * camera on, and this predicate is how the button and the session agree
+ * on when that applies. False once the switch has been taken, and false
+ * on any transport that can render.
+ */
+export function videoNeedsSwitch(state: VideoButtonState, source: VideoSource): boolean {
+  if (state.capabilities[source]) return false;
+  return !state.capabilities.renderVideo && state.engineOverride === null;
+}
+
+/** The button's hover text while `videoNeedsSwitch` is true. */
+export const VIDEO_SWITCH_NOTE =
+  "Switches this call to the browser engine first — a second or two of silence";
 
 /**
  * The reason a video button is disabled, or null when it is not.
@@ -691,7 +714,8 @@ export type VideoButtonState = {
  * Three different answers, and telling them apart is the whole point of
  * disabling rather than hiding: the grant does not carry the source (the
  * button is hidden -- nothing to explain), this engine cannot do video
- * (the switch in the bar is the fix), or this browser cannot (nothing is).
+ * (the button switches engines and is *not* disabled -- see
+ * `videoNeedsSwitch`), or this browser cannot (nothing is).
  */
 export function videoDisabledReason(
   state: VideoButtonState,
@@ -699,7 +723,9 @@ export function videoDisabledReason(
 ): string | null {
   if (state.capabilities[source]) return null;
   if (!state.capabilities.renderVideo) {
-    return "Video runs through the browser engine on this device";
+    return videoNeedsSwitch(state, source)
+      ? null
+      : "Video runs through the browser engine on this device";
   }
   return source === "camera"
     ? "This browser cannot open a camera"

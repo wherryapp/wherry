@@ -57,6 +57,7 @@ import {
   subscriptionFor,
   videoJustStarted,
   videoLine,
+  videoNeedsSwitch,
   type EchoReport,
   type MicFailure,
   type MicStatus,
@@ -415,6 +416,10 @@ class VoiceSession {
   // -- video ---------------------------------------------------------------
 
   async setCameraEnabled(on: boolean): Promise<void> {
+    // The camera button is the engine switch on a transport that cannot
+    // do video (rules.ts's `videoNeedsSwitch`): one press rejoins through
+    // the browser engine and *then* turns the camera on, rather than two.
+    if (on && videoNeedsSwitch(this.#state, "camera")) await this.switchEngineForThisCall();
     const transport = this.#transport;
     if (!transport) return;
     try {
@@ -455,6 +460,7 @@ class VoiceSession {
   }
 
   async setScreenShareEnabled(on: boolean): Promise<void> {
+    if (on && videoNeedsSwitch(this.#state, "screen")) await this.switchEngineForThisCall();
     const transport = this.#transport;
     if (!transport) return;
     try {

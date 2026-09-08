@@ -16,6 +16,7 @@ import { useVoicePrefs } from "../../voice/hooks";
 import { useSelfStatus } from "../hooks";
 import { voice } from "../../voice/session";
 import { notifyDesktopCall, windowIsFocused } from "../../sync/desktop-notify";
+import { useBackLayer } from "../back";
 
 export function IncomingCall({
   ring,
@@ -66,6 +67,15 @@ export function IncomingCall({
     onDismiss(ring.callId);
     void declineCall(ring.callId).catch(() => {});
   };
+
+  // Back declines. This sheet was the one dismissible layer that never
+  // registered, so on Android a back press during a ring at the top level
+  // had no entry of ours to spend and quit the app with the far end still
+  // ringing (found 2026-09-08, reading the code). Decline rather than a
+  // swallowed press: dismissing a ring is what back means on a phone, and
+  // a press that did nothing would read as a hung screen.
+  useBackLayer(true, decline);
+
 
   return (
     <div

@@ -13,7 +13,12 @@
 // row is only ever about what *this* device is doing.
 
 import { useVoice } from "../../voice/hooks";
-import { showsVideoButton, videoDisabledReason } from "../../voice/rules";
+import {
+  VIDEO_SWITCH_NOTE,
+  showsVideoButton,
+  videoDisabledReason,
+  videoNeedsSwitch,
+} from "../../voice/rules";
 import { voice } from "../../voice/session";
 import {
   IconButton,
@@ -60,7 +65,11 @@ export function CallControls({
       {showsVideoButton(state, "camera") && (
         <IconButton
           label={state.camera.on ? "Turn camera off" : "Turn camera on"}
-          title={cameraReason ?? undefined}
+          // On a transport that cannot do video the press *is* the engine
+          // switch (rules.ts's videoNeedsSwitch); the hover text says so.
+          title={
+            cameraReason ?? (videoNeedsSwitch(state, "camera") ? VIDEO_SWITCH_NOTE : undefined)
+          }
           disabled={cameraReason !== null}
           onClick={() => void voice.toggleCamera()}
           aria-pressed={state.camera.on}
@@ -79,7 +88,9 @@ export function CallControls({
       {showsVideoButton(state, "screen") && (
         <IconButton
           label={state.screen.on ? "Stop sharing screen" : "Share screen"}
-          title={screenReason ?? undefined}
+          title={
+            screenReason ?? (videoNeedsSwitch(state, "screen") ? VIDEO_SWITCH_NOTE : undefined)
+          }
           disabled={screenReason !== null}
           onClick={() => void voice.toggleScreenShare()}
           aria-pressed={state.screen.on}
