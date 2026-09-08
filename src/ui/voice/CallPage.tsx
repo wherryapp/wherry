@@ -21,7 +21,7 @@
 import { useEffect, useRef } from "react";
 import { useBackLayer } from "../back";
 import { useIsDesktop } from "../viewport";
-import { IconButton, LockIcon, XIcon } from "../kit";
+import { Button, IconButton, LockIcon, XIcon } from "../kit";
 import { CallControls } from "./CallControls";
 import { voice, type VoiceState } from "../../voice/session";
 import { VideoTile } from "./VideoTile";
@@ -148,7 +148,13 @@ export function CallPage({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const tiles = tilesOf(state, selfName, selfUserId);
+  // A transport that cannot render video has no tiles to draw, not even
+  // dead ones: the native audio engine reports every video capability
+  // false, and drawing a `<video>` nothing can ever attach to would be a
+  // black rectangle with somebody's name under it. The empty state says
+  // the true thing instead, and offers the same way out the bar does.
+  const canRender = state.capabilities.renderVideo;
+  const tiles = canRender ? tilesOf(state, selfName, selfUserId) : [];
   const featured = featureOf(tiles, state.pinned);
   const rest = featured ? tiles.filter((tile) => tile.key !== featured.key) : tiles;
   // `key` is React's, not a prop: spreading a Tile whole would set it twice.
@@ -207,13 +213,34 @@ export function CallPage({
 
       {tiles.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-          <p className="text-sm text-neutral-400">
-            Nobody has a camera or a screen on yet.
-          </p>
-          <p className="max-w-xs text-xs text-neutral-500">
-            Turn yours on below, or leave this open — anybody who starts will
-            appear here.
-          </p>
+          {canRender ? (
+            <>
+              <p className="text-sm text-neutral-400">
+                Nobody has a camera or a screen on yet.
+              </p>
+              <p className="max-w-xs text-xs text-neutral-500">
+                Turn yours on below, or leave this open — anybody who starts
+                will appear here.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-neutral-400">
+                This device is using its own audio engine, which cannot show
+                video.
+              </p>
+              <p className="max-w-xs text-xs text-neutral-500">
+                Switching for this call reconnects it through the browser
+                engine — a second or two of silence. Your setting is not
+                changed.
+              </p>
+              {state.engineOverride === null && (
+                <Button size="sm" onClick={() => void voice.switchEngineForThisCall()}>
+                  Switch engine for this call
+                </Button>
+              )}
+            </>
+          )}
         </div>
       ) : (
         <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">

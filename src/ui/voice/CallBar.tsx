@@ -183,7 +183,13 @@ export function CallBar({
             onOpen={onOpenCall}
           />
         )}
-        {!showThumbnail && liveCount > 0 && (
+        {/*
+          The badge is hidden on a transport that cannot render video, for
+          the same reason the thumbnail is: it would invite somebody to a
+          page with nothing on it. The bar already says the true thing in
+          that case -- the line and the switch below.
+        */}
+        {!showThumbnail && liveCount > 0 && state.capabilities.renderVideo && (
           <button
             type="button"
             onClick={onOpenCall}
