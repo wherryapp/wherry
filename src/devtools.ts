@@ -75,6 +75,11 @@
 //                                    and sat at bytesSent 0 forever, which
 //                                    reads convincingly like a broken codec
 //                                    (docs/prompts/video-plan.md §9.1).
+//   &devcamerasize=WxH&devcamerafps=N
+//                                    The sweep at another size and rate. The
+//                                    default 640x480 at 10 fps proves a
+//                                    decode; a measurement of a 720p tile
+//                                    needs a source that is really 720p.
 //   &devvideo=1                      With ?devcall: turn the camera on a few
 //                                    seconds after the call connects.
 //
@@ -360,6 +365,19 @@ function maybeDevProcessing(params: URLSearchParams): void {
 /** The canvas source's size and rate: 640x480 at 10 fps is enough to prove
  *  a decode and cheap enough to run in a throttled tab. */
 const DEV_CAMERA = { width: 640, height: 480, fps: 10 };
+/** `&devcamerasize=1280x720&devcamerafps=30`: the sweep at another size, so a
+ *  720p tile can be measured from a source that is really 720p. */
+function devCameraSize(params: URLSearchParams): { width: number; height: number; fps: number } {
+  const parts = (params.get("devcamerasize") ?? "").split("x").map(Number);
+  const width = parts[0] ?? 0;
+  const height = parts[1] ?? 0;
+  const fps = Number(params.get("devcamerafps") ?? "");
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : DEV_CAMERA.width,
+    height: Number.isFinite(height) && height > 0 ? height : DEV_CAMERA.height,
+    fps: Number.isFinite(fps) && fps > 0 ? fps : DEV_CAMERA.fps,
+  };
+}
 
 /**
  * Replaces the camera with a drawn canvas for this page.
@@ -379,9 +397,10 @@ function maybeDevCamera(params: URLSearchParams): void {
   const query = params.size > 0 ? `?${params}` : "";
   window.history.replaceState(null, "", `${window.location.pathname}${query}`);
 
+  const size = devCameraSize(params);
   const canvas = document.createElement("canvas");
-  canvas.width = DEV_CAMERA.width;
-  canvas.height = DEV_CAMERA.height;
+  canvas.width = size.width;
+  canvas.height = size.height;
   const context = canvas.getContext("2d");
   let x = 0;
   setInterval(() => {
@@ -391,7 +410,7 @@ function maybeDevCamera(params: URLSearchParams): void {
     context.fillStyle = "#f0f0ff";
     context.fillRect(x, 40, 120, canvas.height - 80);
     x = (x + 37) % (canvas.width - 120);
-  }, Math.round(1000 / DEV_CAMERA.fps));
+  }, Math.round(1000 / size.fps));
 
   const media = navigator.mediaDevices;
   const realGetUserMedia = media.getUserMedia.bind(media);
@@ -401,7 +420,7 @@ function maybeDevCamera(params: URLSearchParams): void {
     if (!constraints?.video) return realGetUserMedia(constraints);
     const stream = (canvas as HTMLCanvasElement & {
       captureStream(fps?: number): MediaStream;
-    }).captureStream(DEV_CAMERA.fps);
+    }).captureStream(size.fps);
     if (!constraints.audio) return stream;
     // A call asking for both: give it the canvas for video and whatever
     // the browser will give for audio, rather than failing the whole ask.
@@ -428,7 +447,7 @@ function maybeDevCamera(params: URLSearchParams): void {
     void realGetDisplayMedia;
     return (canvas as HTMLCanvasElement & {
       captureStream(fps?: number): MediaStream;
-    }).captureStream(DEV_CAMERA.fps);
+    }).captureStream(size.fps);
   };
 
   media.enumerateDevices = async (): Promise<MediaDeviceInfo[]> => {

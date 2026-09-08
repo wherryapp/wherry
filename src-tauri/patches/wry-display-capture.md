@@ -1,8 +1,20 @@
 # wry — the display-capture permission delegate (written 2026-09-08)
 
-**Status: written, not applied and not verified.** The `[patch]` section
-in `Cargo.toml` still points wry at crates.io. Read the "Why this is not
+**Status: written, not applied and not verified — and its fate now hangs
+on stage 3N's render path** (2026-09-08). The `[patch]` section in
+`Cargo.toml` still points wry at crates.io. Read the "Why this is not
 applied yet" section before wiring it; it is the honest half of this file.
+
+The argument for leaving it alone was that native screen share on the
+desktop shell's own engine would make it a nicety for a minority. That
+argument depends on stage 3N shipping, and 3N's spike (2026-09-08,
+`docs/prompts/video-next-stages-handoff.md` §2.4) found its render path
+(a) **too expensive** — 2.4× the webview transport's CPU where the bar
+was 1.5×. Path (b), a native view per tile, is unbuilt. **If (b) is not
+built, the webview transport is the only thing that shows video on macOS
+and this patch becomes the macOS screen-share route**, not a nicety —
+and its spike goes to the front of the keyboard session's queue. Whoever
+settles (b) settles this.
 
 ## What is wrong
 
