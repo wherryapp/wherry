@@ -181,6 +181,19 @@ export function CallPage({
       aria-modal="true"
       aria-label={`Call — ${title}`}
       className="fixed inset-0 z-40 flex flex-col bg-neutral-950"
+      // `fixed inset-0` is positioned against the viewport, which is
+      // exactly what escapes the safe-area padding index.css puts on the
+      // app root -- so on hardware whose edges are not rectangles the
+      // header drew *under* the clock and the Dynamic Island. Seen on the
+      // iOS simulator, 2026-09-08; `PhotoViewer` is fixed for the same
+      // reason and pays the same tax. The background stays black through
+      // the inset strips, which is what a video surface wants anyway.
+      style={{
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
+        paddingLeft: "env(safe-area-inset-left, 0px)",
+        paddingRight: "env(safe-area-inset-right, 0px)",
+      }}
     >
       <header className="flex items-center gap-3 border-b border-neutral-800 px-3 py-2">
         <span className="min-w-0 flex-1">
