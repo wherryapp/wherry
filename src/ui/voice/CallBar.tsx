@@ -20,6 +20,7 @@ import { Avatar, Button, LockIcon, MicOffIcon, Select, VideoIcon } from "../kit"
 import { CallControls } from "./CallControls";
 import { CallPreview } from "./CallPreview";
 import { previewTileOf } from "../../voice/rules";
+import { useIsDesktop } from "../viewport";
 import { listAudioDevices, onDeviceChange, supportsSpeakerSelection, type AudioDevices } from "../../voice/devices";
 import { useVoice, useVoicePrefs } from "../../voice/hooks";
 import { saveVoicePrefs } from "../../voice/prefs";
@@ -47,6 +48,7 @@ export function CallBar({
 }) {
   const state = useVoice();
   const prefs = useVoicePrefs();
+  const isDesktop = useIsDesktop();
   const [now, setNow] = useState(() => Date.now());
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -88,8 +90,17 @@ export function CallBar({
   const liveCount = state.participants.filter(
     (participant) => participant.screen || (participant.camera && !participant.cameraMuted),
   ).length;
+  // The thumbnail is a desktop affordance. On a phone the bar is one row
+  // for a title, a roster, five controls and this -- and the title is the
+  // first thing squeezed out, which at 375px left the bar reading "R"
+  // instead of who you are talking to. Below `md` the badge carries the
+  // same message in a quarter of the width, and the call page is a tap
+  // away for the picture itself.
   const showThumbnail =
-    prefs.videoPreview === "thumbnail" && preview !== null && state.capabilities.renderVideo;
+    isDesktop &&
+    prefs.videoPreview === "thumbnail" &&
+    preview !== null &&
+    state.capabilities.renderVideo;
 
   const conversation = conversations.find((c) => c.id === state.conversationId);
   const title = conversation ? conversationTitle(conversation, selfUserId) : "Call";
@@ -104,7 +115,14 @@ export function CallBar({
 
   return (
     <div className="border-b border-accent-200 bg-accent-50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950">
-      <div className="flex items-center gap-3">
+      {/*
+        Wrapping, and the title with a floor under it. At 375px a title, a
+        roster, an indicator and five controls do not fit on one line, and
+        what a single flex row gives up first is the flexible child -- so
+        the bar read "R…" instead of who the call was with. The controls
+        drop to their own line instead, which is what a phone has room for.
+      */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {/*
           The whole title block is the door to the call page. A row of text
           that opens something has to be a real button or a keyboard never
@@ -115,7 +133,7 @@ export function CallBar({
           type="button"
           onClick={onOpenCall}
           aria-label={`Open the call — ${title}`}
-          className="min-w-0 flex-1 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-500"
+          className="min-w-[7rem] flex-1 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-500"
         >
           <span className="flex items-center gap-1.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">
             <span className="min-w-0 truncate">{title}</span>
@@ -177,7 +195,9 @@ export function CallBar({
           </button>
         )}
 
-        <CallControls onOpenDevices={() => setDevicesOpen((open) => !open)} />
+        <div className="ml-auto flex items-center gap-3">
+          <CallControls onOpenDevices={() => setDevicesOpen((open) => !open)} />
+        </div>
       </div>
 
       {state.playbackBlocked && (

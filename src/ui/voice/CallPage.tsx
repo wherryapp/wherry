@@ -99,7 +99,16 @@ function withoutKey({ key: _key, ...rest }: Tile): Omit<Tile, "key"> {
   return rest;
 }
 
-/** Whose tile is enlarged: the pin, else the only screen, else nobody. */
+/**
+ * Whose tile is enlarged: the pin, else the only screen, else — when there
+ * is only one thing to look at — that one thing.
+ *
+ * The last clause is not a special case so much as the absence of a
+ * choice: a single tile dropped into the grid took half the width of a
+ * page that had nothing else on it, which reads as a layout fault rather
+ * than a decision. Two or more go back to the grid, where the sizes carry
+ * meaning again.
+ */
 function featureOf(tiles: readonly Tile[], pinned: string | null): Tile | null {
   if (pinned) {
     const screen = tiles.find((tile) => tile.identity === pinned && tile.source === "screen");
@@ -107,7 +116,9 @@ function featureOf(tiles: readonly Tile[], pinned: string | null): Tile | null {
     const camera = tiles.find((tile) => tile.identity === pinned);
     if (camera) return camera;
   }
-  return tiles.find((tile) => tile.source === "screen") ?? null;
+  const screen = tiles.find((tile) => tile.source === "screen");
+  if (screen) return screen;
+  return tiles.length === 1 ? (tiles[0] ?? null) : null;
 }
 
 export function CallPage({
