@@ -19,6 +19,16 @@
          cannot be made and getUserMedia fails silently. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- HAND EDIT, video (docs/prompts/video-next-stages-handoff.md §5.1).
+         The same mechanism one line up: wry's WebChromeClient can only ask
+         for a runtime permission the manifest declares, so without this
+         getUserMedia({video}) fails and the camera button reads as broken
+         rather than refused. The uses-feature says required="false" on
+         purpose: a camera is not needed to use the app, and declaring the
+         permission alone would otherwise let a store listing exclude
+         devices that have none. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
