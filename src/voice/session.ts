@@ -38,6 +38,7 @@ import {
 import { loadSession } from "../api/session";
 import type { Call, CallKind, HubVisibility, JoinResult, VideoLimits } from "../api/types";
 import { isServerReadable } from "../api/hub-class";
+import { SHELL } from "../api/shell";
 import { e2e } from "../crypto";
 import { sync, type SyncEvent } from "../sync/engine";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
@@ -251,6 +252,36 @@ const KEY_NUDGE_MS = 10_000;
 /** Speaker changes arrive several times a second while anyone talks; the
  *  roster re-renders at most this often. Power, on the phones. */
 const SPEAKER_REFRESH_MS = 250;
+
+/**
+ * Whether this device's platform stops camera capture in the background on
+ * its own -- which is the only reason the background pause exists
+ * (rules.ts's `cameraOnVisibility`).
+ *
+ * A phone does: WKWebView mutes capture when an iOS app leaves the
+ * foreground, and Android blocks it without a foreground service. A
+ * desktop does not, and pausing there turned somebody's camera off for the
+ * whole call the moment they looked at another tab -- which is exactly
+ * what a person does while watching a shared screen.
+ *
+ * Two ways of asking, because neither is sufficient alone. `SHELL` is
+ * baked at build time and is definitive for the two phone bundles. Mobile
+ * *web* has no such marker, so it is sensed by the absence of any fine
+ * pointer -- `any-pointer` rather than `pointer` for the reason
+ * ui/viewport.ts spells out: a touchscreen laptop reports a coarse
+ * *primary* pointer while still having a mouse, and gating on the primary
+ * pointer would put that machine back on the phone rule it does not need.
+ * A device with no fine pointer anywhere is a phone or a tablet.
+ *
+ * Erring towards *not* pausing is the safe direction: the cost of a wrong
+ * "desktop" is a frozen tile the platform was going to freeze anyway, and
+ * the cost of a wrong "phone" is a camera that dies on every tab switch.
+ */
+function capturePausesInBackground(): boolean {
+  if (SHELL === "ios" || SHELL === "android") return true;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return !window.matchMedia("(any-pointer: fine)").matches;
+}
 
 type JoinPlan = {
   kind: CallKind;
@@ -866,6 +897,7 @@ class VoiceSession {
         hidden: document.visibilityState === "hidden",
         cameraOn: this.#state.camera.on,
         paused: this.#state.camera.paused,
+        platformPausesCapture: capturePausesInBackground(),
       });
       if (decision === "nothing") return;
       const transport = this.#transport;

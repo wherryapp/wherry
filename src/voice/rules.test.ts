@@ -313,9 +313,9 @@ test("topLayerCallSize is enforced here and only here", () => {
 
 test("cameraOnVisibility pauses a live camera and resumes only what it paused", () => {
   const hide = (cameraOn: boolean, paused: boolean): string =>
-    cameraOnVisibility({ hidden: true, cameraOn, paused });
+    cameraOnVisibility({ hidden: true, cameraOn, paused, platformPausesCapture: true });
   const show = (cameraOn: boolean, paused: boolean): string =>
-    cameraOnVisibility({ hidden: false, cameraOn, paused });
+    cameraOnVisibility({ hidden: false, cameraOn, paused, platformPausesCapture: true });
 
   assert.equal(hide(true, false), "pause");
   // Already paused, or never on: nothing to do.
@@ -326,6 +326,34 @@ test("cameraOnVisibility pauses a live camera and resumes only what it paused", 
   // Coming back must never start a camera nobody asked for.
   assert.equal(show(false, false), "nothing");
   assert.equal(show(true, false), "nothing");
+});
+
+test("cameraOnVisibility leaves a desktop camera running in the background", () => {
+  // The pause exists for a platform that stops capture on its own. Where
+  // nothing does, hiding the page must not take somebody's camera away
+  // mid-call -- switching tabs to watch a shared screen is the ordinary
+  // case, not an edge one (2026-09-08).
+  assert.equal(
+    cameraOnVisibility({
+      hidden: true,
+      cameraOn: true,
+      paused: false,
+      platformPausesCapture: false,
+    }),
+    "nothing",
+  );
+
+  // Only the pause is gated. A camera that somehow got paused still
+  // resumes anywhere -- that is the recovery half of the rule.
+  assert.equal(
+    cameraOnVisibility({
+      hidden: false,
+      cameraOn: true,
+      paused: true,
+      platformPausesCapture: false,
+    }),
+    "resume",
+  );
 });
 
 test("grantLine says what this call will carry, and says so when it will not", () => {

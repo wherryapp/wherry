@@ -520,6 +520,20 @@ export function subscriptionFor(input: {
  * this device was the one that turned the camera on: coming back to the
  * foreground must never start a camera nobody asked for.
  *
+ * **`platformPausesCapture` is why this is not unconditional** (2026-09-08).
+ * The paragraph above is a statement about phones, and applying it
+ * everywhere made a desktop camera go dark for everyone the moment its
+ * tab lost focus -- which is neither forced by the platform nor what any
+ * other video application does, and which makes looking at a shared
+ * screen while your own camera is on impossible. A desktop keeps
+ * capturing while hidden; a phone still pauses, because there the OS
+ * stops the capture whether or not this code asks it to, and an honest
+ * paused tile beats a frozen frame.
+ *
+ * Only the *pause* is gated. A resume still resumes whatever was paused,
+ * on any platform: it is the recovery half, and a device that has somehow
+ * got a paused camera must always be able to get out of it.
+ *
  * Screen share is not paused. It is desktop-only, a covered window still
  * has content worth sending, and the shell keeps its page scheduled
  * anyway (CLAUDE.md, "WebKit suspends the page process").
@@ -528,8 +542,15 @@ export function cameraOnVisibility(input: {
   hidden: boolean;
   cameraOn: boolean;
   paused: boolean;
+  /** Whether this device's platform stops camera capture in the background
+   *  regardless of what the app wants -- a phone. See session.ts's
+   *  `capturePausesInBackground` for how it is sensed. */
+  platformPausesCapture: boolean;
 }): "pause" | "resume" | "nothing" {
-  if (input.hidden) return input.cameraOn && !input.paused ? "pause" : "nothing";
+  if (input.hidden) {
+    if (!input.platformPausesCapture) return "nothing";
+    return input.cameraOn && !input.paused ? "pause" : "nothing";
+  }
   return input.paused ? "resume" : "nothing";
 }
 
