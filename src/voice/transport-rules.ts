@@ -106,3 +106,127 @@ export function knownDeviceId(
   if (id === null) return null;
   return devices.some((device) => device.deviceId === id) ? id : null;
 }
+
+// ---------------------------------------------------------------------------
+// Video (docs/prompts/video-execution-handoff.md §3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The publish codec, and the one line standing between this application
+ * and a camera that appears to work and sends nothing.
+ *
+ * Stage 0 measured it (`docs/prompts/video-plan.md` §9.1): livekit-client's
+ * E2EE worker throws for AV1 *before* the try that wraps the encryption,
+ * so the transform callback rejects, the whole TransformStream errors, and
+ * no frame is ever enqueued again -- while the encoder upstream carries on
+ * encoding. The publisher sees a healthy publication and a perfect local
+ * preview; `bytesSent` stays at 0 and nothing whatsoever leaves the
+ * machine. One error is logged and then the pipeline is simply dead.
+ *
+ * So this is a function with a test rather than a literal at the call
+ * site: the day the codec becomes configurable -- a setting, a per-account
+ * override, an experiment -- the refusal has to already be here, because
+ * the alternative is somebody discovering it as "my camera does not work
+ * for anyone". H.264 also happens to be the right answer on its own
+ * merits (hardware encode on every phone, no browser that cannot decode
+ * it), and VP8 and VP9 both survived the same measurement if it ever
+ * disappoints on a handset.
+ */
+export function videoCodecFor(e2ee: boolean): "h264" {
+  // Unconditional today, and the parameter is not decoration: it is where
+  // the AV1 branch would go the moment a readable hub wants it (the plan's
+  // §10.1 keeps that option open, and nothing encrypts frames there).
+  void e2ee;
+  return "h264";
+}
+
+/** A resolved grant, as `videoOptionsFor` needs to read it. */
+export type VideoGrantLimits = {
+  sources: readonly ("camera" | "screen")[];
+  camera: { maxHeight: number; maxFps: number } | null;
+  screen: { maxHeight: number; maxFps: number } | null;
+};
+
+/** The person's own camera tier (prefs.ts), in heights. */
+const TIER_HEIGHT: Readonly<Record<"auto" | "standard" | "hd", number>> = {
+  // Auto is deliberately not "whatever the grant allows": 1080p on a
+  // laptop battery is a heat decision nobody made, and 720 is where a
+  // camera stops looking better and starts costing more. Asking for HD is
+  // how somebody makes that decision on purpose.
+  auto: 720,
+  standard: 360,
+  hd: Number.POSITIVE_INFINITY,
+};
+
+/**
+ * The camera ceiling this device will actually ask for: the person's tier,
+ * never above the grant. The grant is the authority in both directions --
+ * a tier cannot raise it, and a tier below it is honoured, which is what
+ * makes "standard" mean something on a slow link.
+ */
+export function cameraCeilingFor(
+  granted: { maxHeight: number; maxFps: number } | null,
+  tier: "auto" | "standard" | "hd",
+): { maxHeight: number; maxFps: number } | null {
+  if (!granted) return null;
+  return { ...granted, maxHeight: Math.min(granted.maxHeight, TIER_HEIGHT[tier]) };
+}
+
+/**
+ * The grant as the transport wants it: a ceiling per source, present only
+ * where the source is actually granted. Two shapes rather than one because
+ * "may publish a camera" and "how big a camera" are different questions
+ * and the SDK asks them in different places -- `canPublishSources` in the
+ * token settles the first, and these numbers only ever narrow what the
+ * client asks for.
+ */
+export function videoOptionsFor(
+  grant: VideoGrantLimits | null,
+  e2ee: boolean,
+  tier: "auto" | "standard" | "hd" = "auto",
+): { codec: "h264"; camera: { maxHeight: number; maxFps: number } | null; screen: { maxHeight: number; maxFps: number } | null } {
+  const has = (source: "camera" | "screen"): boolean =>
+    grant !== null && grant.sources.includes(source);
+  return {
+    codec: videoCodecFor(e2ee),
+    camera: has("camera") ? cameraCeilingFor(grant?.camera ?? null, tier) : null,
+    screen: has("screen") ? (grant?.screen ?? null) : null,
+  };
+}
+
+/**
+ * Why a publish failed, in words the bar can show.
+ *
+ * The SFU refuses a source the token does not name by failing the
+ * **publish**, not the join -- the call is already up and audible by then
+ * -- so without this the camera button spins and stops with nothing said.
+ * The browser's own refusals come through as the same DOMException names
+ * getUserMedia raises, and `NotAllowedError` covers both a denied
+ * permission and a screen picker the person dismissed, which is why that
+ * wording has to fit both.
+ */
+export function publishErrorMessage(error: unknown, source: "camera" | "screen"): string {
+  const name = error instanceof Error ? error.name : "";
+  const message = error instanceof Error ? error.message : String(error);
+  const thing = source === "camera" ? "camera" : "screen";
+  if (/permission|not allowed|insufficient/i.test(message) && /publish|source|track/i.test(message)) {
+    return `This call does not allow ${thing} video.`;
+  }
+  switch (name) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return source === "camera"
+        ? "Camera access was refused."
+        : "Screen sharing was refused or cancelled.";
+    case "NotFoundError":
+      return source === "camera" ? "No camera was found." : "No screen was available to share.";
+    case "NotReadableError":
+      return `The ${thing} is in use by another application.`;
+    case "OverconstrainedError":
+      return `The ${thing} cannot produce what this call asked for.`;
+    default:
+      return source === "camera"
+        ? "The camera could not be started."
+        : "The screen could not be shared.";
+  }
+}

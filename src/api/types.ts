@@ -625,6 +625,29 @@ export type Call = {
 };
 
 /** What every join hands back: the SFU to connect to, and a token for it. */
+/**
+ * What this device may publish in this call, resolved by the server from
+ * the `video_policy` rows (migration 0031) and already inside the token's
+ * `canPublishSources` -- carried as data too so the client can size its
+ * encoder and hide controls it cannot use, rather than discovering a
+ * ceiling by having a track muted.
+ *
+ * Optional because a server predating video answers without it; absent
+ * reads exactly as "no video", which is also what the `video` flag being
+ * off produces.
+ */
+export type VideoLimits = {
+  sources: ("camera" | "screen")[];
+  camera: { maxHeight: number; maxFps: number } | null;
+  screen: { maxHeight: number; maxFps: number } | null;
+  /** Past this many participants nobody asks for the top simulcast layer,
+   *  which dynacast turns into the sender not encoding it. */
+  topLayerCallSize: number | null;
+  /** Carried and shown, deliberately not enforced in v1 -- no client can
+   *  count concurrent top-layer subscribers. */
+  topLayerViewers: number | null;
+};
+
 export type JoinResult = {
   call: Call;
   token: string;
@@ -632,6 +655,7 @@ export type JoinResult = {
   url: string;
   /** The server's join-mute verdict for a room; always false for a call. */
   joinMuted: boolean;
+  video?: VideoLimits;
 };
 
 export type RoomOccupancy = { conversationId: string; occupants: string[] };

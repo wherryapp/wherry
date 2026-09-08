@@ -57,6 +57,27 @@
 //                                    every peer's volume to the value -- the
 //                                    unattended check of the native gain.
 //
+//   ?devcamera=canvas                Substitutes a drawn canvas for the
+//                                    camera, so a session with no hands can
+//                                    be a video *publisher*: the browser pane
+//                                    refuses camera access exactly as it
+//                                    refuses the microphone, and a real camera
+//                                    is a row the maintainer runs. The pattern
+//                                    is a bright block sweeping a dark field,
+//                                    so the far end can tell a decode from a
+//                                    black frame by mean luminance rather than
+//                                    by opinion -- the stage-0 spike's own
+//                                    source, kept after the spike went.
+//                                    Driven by setInterval and NEVER
+//                                    requestAnimationFrame: a hidden page
+//                                    fires no animation frames, so the first
+//                                    version of this encoded exactly one frame
+//                                    and sat at bytesSent 0 forever, which
+//                                    reads convincingly like a broken codec
+//                                    (docs/prompts/video-plan.md §9.1).
+//   &devvideo=1                      With ?devcall: turn the camera on a few
+//                                    seconds after the call connects.
+//
 //   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
 //                                    environment rather than the URL, for a
 //                                    shell in `tauri ios dev` -- which loads
@@ -313,6 +334,80 @@ function maybeDevProcessing(params: URLSearchParams): void {
   window.history.replaceState(null, "", `${window.location.pathname}${query}`);
 }
 
+/** The canvas source's size and rate: 640x480 at 10 fps is enough to prove
+ *  a decode and cheap enough to run in a throttled tab. */
+const DEV_CAMERA = { width: 640, height: 480, fps: 10 };
+
+/**
+ * Replaces the camera with a drawn canvas for this page.
+ *
+ * A `captureStream` track goes through the same encoder, the same simulcast
+ * layers and the same frame cryptor as a real camera, so it answers every
+ * question about the *pipeline*; what it cannot answer is the camera
+ * permission prompt per platform, which is a device row either way.
+ *
+ * `enumerateDevices` is patched alongside `getUserMedia` because the SDK
+ * resolves a deviceId against the list before it asks for a track, and an
+ * empty list is a picker with nothing in it.
+ */
+function maybeDevCamera(params: URLSearchParams): void {
+  if (params.get("devcamera") !== "canvas") return;
+  params.delete("devcamera");
+  const query = params.size > 0 ? `?${params}` : "";
+  window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = DEV_CAMERA.width;
+  canvas.height = DEV_CAMERA.height;
+  const context = canvas.getContext("2d");
+  let x = 0;
+  setInterval(() => {
+    if (!context) return;
+    context.fillStyle = "#101018";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#f0f0ff";
+    context.fillRect(x, 40, 120, canvas.height - 80);
+    x = (x + 37) % (canvas.width - 120);
+  }, Math.round(1000 / DEV_CAMERA.fps));
+
+  const media = navigator.mediaDevices;
+  const realGetUserMedia = media.getUserMedia.bind(media);
+  const realEnumerate = media.enumerateDevices.bind(media);
+
+  media.getUserMedia = async (constraints?: MediaStreamConstraints): Promise<MediaStream> => {
+    if (!constraints?.video) return realGetUserMedia(constraints);
+    const stream = (canvas as HTMLCanvasElement & {
+      captureStream(fps?: number): MediaStream;
+    }).captureStream(DEV_CAMERA.fps);
+    if (!constraints.audio) return stream;
+    // A call asking for both: give it the canvas for video and whatever
+    // the browser will give for audio, rather than failing the whole ask.
+    try {
+      const audio = await realGetUserMedia({ audio: constraints.audio });
+      for (const track of audio.getAudioTracks()) stream.addTrack(track);
+    } catch {
+      // Listen-only, which is what the pane gives anyway.
+    }
+    return stream;
+  };
+
+  media.enumerateDevices = async (): Promise<MediaDeviceInfo[]> => {
+    const devices = await realEnumerate();
+    if (devices.some((device) => device.kind === "videoinput")) return devices;
+    return [
+      ...devices,
+      {
+        deviceId: "devcamera",
+        kind: "videoinput",
+        label: "Canvas camera (devtools)",
+        groupId: "devcamera",
+        toJSON: () => ({}),
+      } as MediaDeviceInfo,
+    ];
+  };
+  console.error("[devcamera] canvas source installed");
+}
+
 function maybeDevCall(params: URLSearchParams): void {
   const conversationId = params.get("devcall") ?? devEnv("VITE_DEVCALL");
   if (!conversationId) return;
@@ -320,10 +415,11 @@ function maybeDevCall(params: URLSearchParams): void {
   const cycles = Math.max(1, Number(params.get("devcycles") ?? "1"));
   const volume = params.has("devvolume") ? Number(params.get("devvolume")) : null;
   const volumeAfterMs = Number(params.get("devvolumeafter") ?? "20") * 1000;
+  const video = params.get("devvideo") === "1";
   if (params.has("devcall")) {
     // Out of the URL before anything can copy it: a reload must not place
     // a second call.
-    for (const key of ["devcall", "devhold", "devcycles", "devvolume", "devvolumeafter"]) params.delete(key);
+    for (const key of ["devcall", "devhold", "devcycles", "devvolume", "devvolumeafter", "devvideo"]) params.delete(key);
     const query = params.size > 0 ? `?${params}` : "";
     window.history.replaceState(null, "", `${window.location.pathname}${query}`);
   }
@@ -340,6 +436,16 @@ function maybeDevCall(params: URLSearchParams): void {
       // frame-encrypted, which is the path worth exercising. A public
       // room's plain relay is not what this instrument is for.
       void voice.startCall({ id: conversationId, hubVisibility: null });
+      if (video) {
+        // After the connect, not with it: the camera is an explicit act
+        // every time (the plan's "camera-on at join: never"), and this is
+        // that act with nobody at the keyboard.
+        setTimeout(() => {
+          void voice.setCameraEnabled(true).then(() => {
+            console.error("[devvideo] camera on");
+          });
+        }, DEV_VIDEO_DELAY_MS);
+      }
       if (volume !== null && Number.isFinite(volume)) {
         // The native gain check: turn every peer down after the baseline
         // window, and say so where the collector can see it.
@@ -387,6 +493,8 @@ function maybeDevCall(params: URLSearchParams): void {
 }
 
 const DEV_DIAG_INTERVAL_MS = 3_000;
+/** How long after the call is placed ?devvideo turns the camera on. */
+const DEV_VIDEO_DELAY_MS = 6_000;
 
 /**
  * Called from main.tsx, dev builds only, before the app renders. `restore`
@@ -411,6 +519,9 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   });
   maybeDevNative(params);
   maybeDevProcessing(params);
+  // Before the call: the substitution has to be in place when the SDK
+  // first asks for a track.
+  maybeDevCamera(params);
   maybeDevCall(params);
 }
 

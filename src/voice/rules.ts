@@ -6,6 +6,15 @@
 
 import type { Call, CallKind } from "../api/types";
 
+/** The two video sources a call can carry, spelled the way the server's
+ *  `VideoLimits` spells them. The SDK's own enum never leaves
+ *  transport-webview.ts. */
+export type VideoSource = "camera" | "screen";
+
+/** What a viewer wants of one remote video track. `off` unsubscribes
+ *  outright -- a tile nobody can see should cost nobody anything. */
+export type VideoQualityRequest = "off" | "low" | "high";
+
 /** Mirrors the server's ring window (services/voice-rules.ts). A ring the
  *  server forgot to end is dropped here at the same age, plus grace. */
 export const RING_TIMEOUT_MS = 45_000;
@@ -456,4 +465,123 @@ export function echoLine(report: EchoReport): string {
     case "idle":
       return `canceller idle -- headphones, or nobody else talking yet (${numbers})`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Video (docs/prompts/video-plan.md §5.3, execution handoff §3.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a viewer should ask for of one remote video track.
+ *
+ * This one function is the whole of the decoder-limit answer (the plan's
+ * §2) and most of the egress answer (§6), because a viewer that does not
+ * ask for a layer is a sender that does not encode it -- dynacast turns
+ * "nobody wants the top layer" into "stop producing it", at no cost to the
+ * publisher and with no republish.
+ *
+ * A tile not on screen is unsubscribed outright rather than merely
+ * downgraded: a tab with the stage closed should pull no video at all.
+ * A screen share is always `high` when visible -- text in a shared window
+ * is unreadable at the low layer, which is the entire point of sharing it.
+ *
+ * `topLayerCallSize` is enforced here and only here: past that many
+ * participants nobody asks for the top layer, so a large call degrades to
+ * medium tiles for everybody rather than dropping frames for whoever has
+ * the slowest link. `topLayerViewers` is deliberately NOT enforced --
+ * counting concurrent top-layer subscribers per track is something no
+ * client can see and the server only could through the SFU's stats API;
+ * it is carried, shown in Details, and left to the metering job the plan's
+ * §10 names.
+ */
+export function subscriptionFor(input: {
+  visible: boolean;
+  pinned: boolean;
+  source: VideoSource;
+  participants: number;
+  topLayerCallSize: number | null;
+}): VideoQualityRequest {
+  if (!input.visible) return "off";
+  if (input.source === "screen") return "high";
+  if (!input.pinned) return "low";
+  if (input.topLayerCallSize !== null && input.participants > input.topLayerCallSize) {
+    return "low";
+  }
+  return "high";
+}
+
+/**
+ * What a visibility change does to the camera.
+ *
+ * Both phones stop capture when the app leaves the foreground and iOS
+ * forbids it even natively, so a camera left published while hidden is a
+ * frozen frame on everybody else's screen -- worse than an honest "camera
+ * paused" tile. Unpublish on hidden, republish on visible, and only where
+ * this device was the one that turned the camera on: coming back to the
+ * foreground must never start a camera nobody asked for.
+ *
+ * Screen share is not paused. It is desktop-only, a covered window still
+ * has content worth sending, and the shell keeps its page scheduled
+ * anyway (CLAUDE.md, "WebKit suspends the page process").
+ */
+export function cameraOnVisibility(input: {
+  hidden: boolean;
+  cameraOn: boolean;
+  paused: boolean;
+}): "pause" | "resume" | "nothing" {
+  if (input.hidden) return input.cameraOn && !input.paused ? "pause" : "nothing";
+  return input.paused ? "resume" : "nothing";
+}
+
+/** The grant line in the details: what this call will let this device send. */
+export function grantLine(grant: {
+  sources: readonly VideoSource[];
+  camera: { maxHeight: number; maxFps: number } | null;
+  screen: { maxHeight: number; maxFps: number } | null;
+} | null): string {
+  if (!grant) return "no video on this call";
+  const parts: string[] = [];
+  if (grant.sources.includes("camera") && grant.camera) {
+    parts.push(`Camera up to ${grant.camera.maxHeight}p${fpsSuffix(grant.camera.maxFps)}`);
+  }
+  if (grant.sources.includes("screen") && grant.screen) {
+    parts.push(`Screen up to ${grant.screen.maxHeight}p${fpsSuffix(grant.screen.maxFps)}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "no video on this call";
+}
+
+function fpsSuffix(fps: number): string {
+  // 30 is the default everywhere and saying so on every line is noise;
+  // anything else is worth reading, because it is why a share looks
+  // choppy.
+  return fps === 30 ? "" : ` at ${fps} fps`;
+}
+
+/**
+ * One video track's row. Everything is optional because everything here is
+ * a browser's courtesy -- the stage-0 spike's Chromium reported null for
+ * both implementation strings -- so the line degrades to the parts it has
+ * rather than printing "unknown" four times.
+ */
+export function videoLine(stats: {
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  codec: string | null;
+  layer: string | null;
+  implementation: string | null;
+  limitedBy: string | null;
+}): string {
+  const parts: string[] = [];
+  if (stats.width !== null && stats.height !== null && stats.width > 0 && stats.height > 0) {
+    parts.push(`${stats.width}×${stats.height}`);
+  }
+  if (stats.fps !== null) parts.push(`${Math.round(stats.fps)} fps`);
+  if (stats.codec) parts.push(stats.codec);
+  if (stats.layer) parts.push(`layer ${stats.layer}`);
+  if (stats.implementation) parts.push(stats.implementation);
+  // "none" is the browser's word for "nothing is limiting this", which is
+  // the good case and does not deserve a clause.
+  if (stats.limitedBy && stats.limitedBy !== "none") parts.push(`limited by ${stats.limitedBy}`);
+  return parts.length > 0 ? parts.join(" · ") : "no reading yet";
 }

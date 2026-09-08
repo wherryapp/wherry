@@ -18,22 +18,35 @@ import {
   isScriptTransformSupported,
   Room,
   RoomEvent,
+  ScreenSharePresets,
   Track,
+  VideoPresets,
+  VideoQuality,
   type LocalAudioTrack,
+  type LocalVideoTrack,
   type Participant,
   type RemoteAudioTrack,
   type RemoteParticipant,
   type RemoteTrack,
+  type RemoteTrackPublication,
+  type RemoteVideoTrack,
+  type TrackPublication,
+  type VideoCodec,
+  type VideoEncoding,
+  type VideoPreset,
 } from "livekit-client";
-import { keyIndexFor, KEYRING_SIZE, type EchoReport } from "./rules";
-import { userIdFromMetadata } from "./transport-rules";
+import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
+import { publishErrorMessage, userIdFromMetadata } from "./transport-rules";
 import type {
   FrameTransformKind,
+  TransportCapabilities,
   TransportConnectOptions,
   TransportEvents,
   TransportParticipant,
   TransportPeerStats,
   TransportStats,
+  TransportVideoOptions,
+  TransportVideoStats,
   VoiceQuality,
   VoiceTransport,
 } from "./transport";
@@ -89,6 +102,74 @@ function userIdOf(participant: Participant): string {
   return userIdFromMetadata(participant.metadata, participant.identity);
 }
 
+function sourceOf(source: VideoSource): Track.Source {
+  return source === "camera" ? Track.Source.Camera : Track.Source.ScreenShare;
+}
+
+/**
+ * The camera resolution asked for at publish. The SDK's presets are named
+ * by height, so the ceiling picks the tallest one that fits rather than
+ * inventing a constraint -- an exact `height` the camera cannot produce is
+ * an OverconstrainedError, a preset is a request.
+ */
+function presetFor(ceiling: { maxHeight: number; maxFps: number }): VideoPreset {
+  const ladder: VideoPreset[] = [
+    VideoPresets.h180,
+    VideoPresets.h360,
+    VideoPresets.h540,
+    VideoPresets.h720,
+    VideoPresets.h1080,
+  ];
+  let chosen = ladder[0]!;
+  for (const preset of ladder) {
+    if (preset.height <= ceiling.maxHeight) chosen = preset;
+  }
+  return chosen;
+}
+
+/**
+ * The simulcast ladder under a camera ceiling. Under 720 the SDK's own
+ * default table would publish layers taller than the grant, so the two
+ * low rungs are named explicitly; at 720 and above its defaults are
+ * already right and are left alone (an empty array means "use them").
+ */
+function simulcastLayersFor(
+  ceiling: { maxHeight: number; maxFps: number } | null,
+): VideoPreset[] {
+  if (!ceiling || ceiling.maxHeight > 720) return [];
+  return [VideoPresets.h180, VideoPresets.h360].filter(
+    (preset) => preset.height <= ceiling.maxHeight,
+  );
+}
+
+function screenPresetFor(ceiling: { maxHeight: number; maxFps: number }): VideoPreset {
+  const ladder: VideoPreset[] = [
+    ScreenSharePresets.h360fps15,
+    ScreenSharePresets.h720fps15,
+    ScreenSharePresets.h1080fps15,
+  ];
+  let chosen = ladder[0]!;
+  for (const preset of ladder) {
+    if (preset.height <= ceiling.maxHeight) chosen = preset;
+  }
+  return chosen;
+}
+
+/**
+ * A screen's encoding: the preset's bitrate at the granted height, with
+ * the granted frame rate on top. The frame rate is the cap that matters --
+ * a still screen costs almost nothing at any rate and a video playing in a
+ * shared window costs all of it, so the cap is what bounds the worst case
+ * rather than what shapes the common one.
+ */
+function screenEncodingFor(
+  ceiling: { maxHeight: number; maxFps: number } | null,
+): VideoEncoding | undefined {
+  if (!ceiling) return undefined;
+  const preset = screenPresetFor(ceiling);
+  return { ...preset.encoding, maxFramerate: ceiling.maxFps };
+}
+
 function qualityOf(quality: ConnectionQuality): VoiceQuality {
   switch (quality) {
     case ConnectionQuality.Excellent:
@@ -115,6 +196,20 @@ export class WebviewTransport implements VoiceTransport {
   #events: TransportEvents = {};
   /** Whether this call asked the browser for echo cancellation. */
   #echoCancellation = true;
+  /** The publish ceilings this call was connected with. */
+  #video: TransportVideoOptions = { codec: "h264", camera: null, screen: null };
+  /**
+   * Every element a tile has handed over, keyed `identity/source`.
+   *
+   * Attaching is not a one-shot: a tile mounts as soon as it knows a
+   * publication *exists*, and the track itself arrives one subscribe
+   * later -- so an attach that only looked once would bind nothing and
+   * the tile would sit black with no error anywhere. It is also what
+   * makes a republish work: a camera turned off and on again, which is
+   * exactly what the background pause does, is a NEW track, and the
+   * element the tile handed over on mount is still the right element.
+   */
+  #elements = new Map<string, Set<HTMLVideoElement>>();
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
     this.#events = events;
@@ -124,9 +219,16 @@ export class WebviewTransport implements VoiceTransport {
     // this call used, even if constructing the Room throws.
     const keys = options.e2ee ? new CallKeyProvider() : null;
     const worker = keys ? makeWorker() : null;
+    this.#video = options.video;
     const room = new Room({
-      adaptiveStream: false,
-      dynacast: false,
+      // Both true since video (they were false while calls were audio and
+      // neither did anything): adaptiveStream is what makes a tile scrolled
+      // out of view stop costing anybody bandwidth, and dynacast is what
+      // turns "nobody asked for the top layer" into "the sender stops
+      // encoding it" -- which is the whole enforcement of
+      // topLayerCallSize, at no cost to the publisher.
+      adaptiveStream: true,
+      dynacast: true,
       audioCaptureDefaults: {
         echoCancellation: options.processing.echoCancellation,
         noiseSuppression: options.processing.noiseSuppression,
@@ -137,7 +239,20 @@ export class WebviewTransport implements VoiceTransport {
       // dtx and red stay on at every tier -- silence suppression and the
       // redundant frame are about loss, not fidelity. Fixed for the life
       // of the publication: the SDK sets encodings at publish time.
-      publishDefaults: { dtx: true, red: true, audioPreset: { maxBitrate: options.maxBitrate } },
+      publishDefaults: {
+        dtx: true,
+        red: true,
+        audioPreset: { maxBitrate: options.maxBitrate },
+        // H.264, always, and never a backupCodec. The backup exists for a
+        // VP9 or AV1 primary; H.264 has no shipped browser that cannot
+        // decode it, and a backup is inert under encryption anyway (the
+        // plan's §10.1). AV1 is not merely unsupported here, it is refused
+        // -- see transport-rules.ts's videoCodecFor.
+        videoCodec: options.video.codec satisfies "h264" as VideoCodec,
+        simulcast: true,
+        videoSimulcastLayers: simulcastLayersFor(options.video.camera),
+        screenShareEncoding: screenEncodingFor(options.video.screen),
+      },
       ...(keys && worker ? { e2ee: { keyProvider: keys, worker } } : {}),
     });
     this.#room = room;
@@ -172,6 +287,7 @@ export class WebviewTransport implements VoiceTransport {
     // still go through the transform.
     worker?.terminate();
     this.#audioHost?.replaceChildren();
+    this.#elements.clear();
   }
 
   async setMicrophoneEnabled(on: boolean): Promise<void> {
@@ -193,6 +309,103 @@ export class WebviewTransport implements VoiceTransport {
     const keys = this.#keys;
     if (!keys) throw new Error("frame encryption is off for this transport");
     await keys.setEpochKey(secret, epoch);
+  }
+
+  capabilities(): TransportCapabilities {
+    return {
+      camera:
+        typeof navigator !== "undefined" &&
+        typeof navigator.mediaDevices?.getUserMedia === "function",
+      // Feature detection, never a platform name: both phone webviews and
+      // the macOS shell's WebKit lack getDisplayMedia, and each for its own
+      // reason (docs/prompts/video-plan.md §8).
+      screen:
+        typeof navigator !== "undefined" &&
+        typeof navigator.mediaDevices?.getDisplayMedia === "function",
+      renderVideo: true,
+    };
+  }
+
+  async setCameraEnabled(on: boolean, deviceId: string | null): Promise<void> {
+    const room = this.#room;
+    if (!room) return;
+    const ceiling = this.#video.camera;
+    try {
+      await room.localParticipant.setCameraEnabled(on, {
+        ...(deviceId ? { deviceId } : {}),
+        ...(ceiling ? { resolution: presetFor(ceiling) } : {}),
+      });
+    } catch (error) {
+      throw new Error(publishErrorMessage(error, "camera"));
+    }
+    this.#reattach("self", "camera");
+  }
+
+  async setScreenShareEnabled(on: boolean): Promise<void> {
+    const room = this.#room;
+    if (!room) return;
+    const ceiling = this.#video.screen;
+    try {
+      await room.localParticipant.setScreenShareEnabled(on, {
+        // No tab or system audio in v1: the checkbox is a second audio
+        // track per participant and a disclosure question of its own (the
+        // plan's §10).
+        audio: false,
+        // "detail" is what tells the encoder this is text and not motion;
+        // it is the difference between a readable shared window and a
+        // smear.
+        contentHint: "detail",
+        ...(ceiling ? { resolution: screenPresetFor(ceiling) } : {}),
+      });
+    } catch (error) {
+      throw new Error(publishErrorMessage(error, "screen"));
+    }
+    this.#reattach("self", "screen");
+  }
+
+  attachVideo(
+    identity: string,
+    source: VideoSource,
+    element: HTMLVideoElement,
+  ): () => void {
+    const key = `${identity}/${source}`;
+    const set = this.#elements.get(key) ?? new Set();
+    set.add(element);
+    this.#elements.set(key, set);
+    // Now if there is a track, and again from #reattach whenever one
+    // appears -- see the field's comment for why once is not enough.
+    this.#videoTrack(identity, source)?.attach(element);
+    let detached = false;
+    return () => {
+      if (detached) return;
+      detached = true;
+      this.#elements.get(key)?.delete(element);
+      // Read the track again rather than closing over the one attached: a
+      // republish between mount and unmount would otherwise leave the new
+      // track attached to an element that is going away.
+      this.#videoTrack(identity, source)?.detach(element);
+    };
+  }
+
+  setVideoSubscription(
+    identity: string,
+    source: VideoSource,
+    quality: VideoQualityRequest,
+  ): void {
+    const room = this.#room;
+    if (!room) return;
+    const participant = room.remoteParticipants.get(identity);
+    const publication = participant?.getTrackPublication(sourceOf(source)) as
+      | RemoteTrackPublication
+      | undefined;
+    if (!publication) return;
+    publication.setSubscribed(quality !== "off");
+    if (quality === "off") return;
+    // MEDIUM is deliberately never asked for: two tiers keep the sender's
+    // three encodings meaningful (a request for a layer nobody publishes
+    // is silently rounded), and "the pinned one and everything else" is
+    // the only distinction the stage actually draws.
+    publication.setVideoQuality(quality === "high" ? VideoQuality.HIGH : VideoQuality.LOW);
   }
 
   setParticipantVolume(userId: string, volume: number): void {
@@ -232,6 +445,8 @@ export class WebviewTransport implements VoiceTransport {
         micMuted: audio.length === 0 || audio.every((pub) => pub.isMuted),
         encrypted: participant.isEncrypted,
         audioLevel: participant.audioLevel,
+        camera: participant.getTrackPublication(Track.Source.Camera) !== undefined,
+        screen: participant.getTrackPublication(Track.Source.ScreenShare) !== undefined,
       });
     }
     return list;
@@ -331,7 +546,94 @@ export class WebviewTransport implements VoiceTransport {
         playing: element ? !element.paused : null,
       });
     }
-    return { mic, packetsSent, roundTripMs, echo, peers };
+    return { mic, packetsSent, roundTripMs, echo, peers, video: await this.#videoStats(room) };
+  }
+
+  /**
+   * Per video track: what the encoder or decoder is doing with it. Read
+   * straight off the RTCPeerConnection reports rather than the SDK's
+   * per-track wrappers, which carry the audio fields only.
+   *
+   * Every number here is a courtesy and several came back null from the
+   * Chromium the stage-0 spike ran in -- both implementation strings, in
+   * particular -- so nothing may be required for the row to say something
+   * useful (rules.ts's `videoLine` degrades to what it has).
+   */
+  async #videoStats(room: Room): Promise<TransportVideoStats[]> {
+    const out: TransportVideoStats[] = [];
+    const read = async (
+      identity: string,
+      source: VideoSource,
+      direction: "sent" | "received",
+      report: RTCStatsReport | undefined,
+    ): Promise<void> => {
+      if (!report) return;
+      const codecs = new Map<string, string>();
+      report.forEach((entry: RTCStats & { mimeType?: string }) => {
+        if (entry.type === "codec" && typeof entry.mimeType === "string") {
+          codecs.set(entry.id, entry.mimeType.replace(/^video\//i, ""));
+        }
+      });
+      const wanted = direction === "sent" ? "outbound-rtp" : "inbound-rtp";
+      report.forEach(
+        (
+          entry: RTCStats & {
+            kind?: string;
+            frameWidth?: number;
+            frameHeight?: number;
+            framesPerSecond?: number;
+            codecId?: string;
+            rid?: string;
+            encoderImplementation?: string;
+            decoderImplementation?: string;
+            qualityLimitationReason?: string;
+          },
+        ) => {
+          if (entry.type !== wanted || entry.kind !== "video") return;
+          out.push({
+            identity,
+            source,
+            direction,
+            width: entry.frameWidth ?? null,
+            height: entry.frameHeight ?? null,
+            fps: entry.framesPerSecond ?? null,
+            codec: (entry.codecId ? codecs.get(entry.codecId) : undefined) ?? null,
+            layer: entry.rid ?? null,
+            implementation:
+              (direction === "sent" ? entry.encoderImplementation : entry.decoderImplementation) ??
+              null,
+            limitedBy: direction === "sent" ? (entry.qualityLimitationReason ?? null) : null,
+          });
+        },
+      );
+    };
+
+    for (const source of ["camera", "screen"] as const) {
+      const local = room.localParticipant.getTrackPublication(sourceOf(source))?.track as
+        | LocalVideoTrack
+        | undefined;
+      if (local?.sender) {
+        try {
+          await read("self", source, "sent", await local.sender.getStats());
+        } catch {
+          // A reading, never a requirement.
+        }
+      }
+    }
+    for (const participant of room.remoteParticipants.values()) {
+      for (const source of ["camera", "screen"] as const) {
+        const track = participant.getTrackPublication(sourceOf(source))?.track as
+          | RemoteVideoTrack
+          | undefined;
+        if (!track?.receiver) continue;
+        try {
+          await read(participant.identity, source, "received", await track.receiver.getStats());
+        } catch {
+          // As above.
+        }
+      }
+    }
+    return out;
   }
 
   // -- the room's events -----------------------------------------------------
@@ -342,12 +644,36 @@ export class WebviewTransport implements VoiceTransport {
       .on(RoomEvent.ParticipantConnected, () => ev().participantJoined?.())
       .on(RoomEvent.ParticipantDisconnected, () => ev().participantLeft?.())
       .on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, participant) => {
-        if (track.kind !== Track.Kind.Audio) return;
+        // Video is deliberately NOT attached here: the tile owns its own
+        // element, and adaptiveStream measures the element that is
+        // attached -- an element this transport created and never showed
+        // would read as 0x0 and ask for the lowest layer forever.
+        if (track.kind !== Track.Kind.Audio) {
+          // The track a tile has been waiting for since it mounted.
+          this.#reattachAll();
+          ev().videoChanged?.();
+          return;
+        }
         this.#attach(track as RemoteAudioTrack, participant);
         ev().rosterChanged?.();
       })
       .on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+        if (track.kind !== Track.Kind.Audio) {
+          ev().videoChanged?.();
+          return;
+        }
         for (const element of track.detach()) element.remove();
+        ev().rosterChanged?.();
+      })
+      .on(RoomEvent.TrackPublished, (publication: TrackPublication) => {
+        if (publication.kind !== Track.Kind.Audio) {
+          this.#reattachAll();
+          ev().videoChanged?.();
+        }
+        ev().rosterChanged?.();
+      })
+      .on(RoomEvent.TrackUnpublished, (publication: TrackPublication) => {
+        if (publication.kind !== Track.Kind.Audio) ev().videoChanged?.();
         ev().rosterChanged?.();
       })
       .on(RoomEvent.TrackMuted, () => ev().rosterChanged?.())
@@ -370,6 +696,39 @@ export class WebviewTransport implements VoiceTransport {
       .on(RoomEvent.EncryptionError, (error) => {
         ev().encryptionError?.(error instanceof Error ? error.message : String(error));
       });
+  }
+
+  /** The live track for one tile, local or remote; null when not (yet)
+   *  published or not subscribed. */
+  #videoTrack(identity: string, source: VideoSource): RemoteVideoTrack | LocalVideoTrack | null {
+    const room = this.#room;
+    if (!room) return null;
+    if (identity === "self") {
+      const publication = room.localParticipant.getTrackPublication(sourceOf(source));
+      return (publication?.track as LocalVideoTrack | undefined) ?? null;
+    }
+    const participant = room.remoteParticipants.get(identity);
+    const publication = participant?.getTrackPublication(sourceOf(source));
+    return (publication?.track as RemoteVideoTrack | undefined) ?? null;
+  }
+
+  /** Bind every element waiting on one track, if that track now exists. */
+  #reattach(identity: string, source: VideoSource): void {
+    const elements = this.#elements.get(`${identity}/${source}`);
+    if (!elements || elements.size === 0) return;
+    const track = this.#videoTrack(identity, source);
+    if (!track) return;
+    for (const element of elements) track.attach(element);
+  }
+
+  /** Every waiting element, after a subscribe or a publish. */
+  #reattachAll(): void {
+    for (const key of this.#elements.keys()) {
+      const slash = key.lastIndexOf("/");
+      const identity = key.slice(0, slash);
+      const source = key.slice(slash + 1) as VideoSource;
+      this.#reattach(identity, source);
+    }
   }
 
   #attach(track: RemoteAudioTrack, participant: RemoteParticipant): void {

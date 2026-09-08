@@ -8,5 +8,7 @@
 	     once. WKWebView's own permission prompt is auto-granted by wry. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Wherry uses the microphone for voice calls and voice rooms.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Wherry uses the camera for video calls.</string>
 </dict>
 </plist>

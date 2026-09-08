@@ -4,6 +4,8 @@ import type { Call } from "../api/types";
 import {
   audioPresetFor,
   callKeyContext,
+  cameraOnVisibility,
+  grantLine,
   echoLine,
   echoState,
   ERLE_CONVERGED_DB,
@@ -18,6 +20,8 @@ import {
   peerFlow,
   reduceRings,
   SILENT_ENERGY,
+  subscriptionFor,
+  videoLine,
   RING_TIMEOUT_MS,
   shouldJoinMuted,
   shouldRingAudibly,
@@ -253,4 +257,150 @@ test("echo: ERLE names the canceller's state; missing numbers are unreported, ne
     "canceller converging (ERL ? · ERLE 6 dB)",
   );
   assert.match(echoLine({ echoReturnLoss: 30, echoReturnLossEnhancement: 0.4 }), /^canceller idle -- headphones/);
+});
+
+// ---------------------------------------------------------------------------
+// Video
+// ---------------------------------------------------------------------------
+
+test("a tile nobody can see asks for nothing at all", () => {
+  const off = subscriptionFor({
+    visible: false,
+    pinned: true,
+    source: "camera",
+    participants: 2,
+    topLayerCallSize: 12,
+  });
+  // Not "low": unsubscribed. A tab with the stage closed should pull no
+  // video, which is also the whole of the old-client sympathy answer.
+  assert.equal(off, "off");
+});
+
+test("a screen is always high when visible -- text at the low layer is a smear", () => {
+  for (const pinned of [true, false]) {
+    assert.equal(
+      subscriptionFor({
+        visible: true,
+        pinned,
+        source: "screen",
+        participants: 40,
+        topLayerCallSize: 12,
+      }),
+      "high",
+    );
+  }
+});
+
+test("a visible camera is low unless it is the pinned one", () => {
+  const base = { visible: true, source: "camera" as const, participants: 4, topLayerCallSize: 12 };
+  assert.equal(subscriptionFor({ ...base, pinned: false }), "low");
+  assert.equal(subscriptionFor({ ...base, pinned: true }), "high");
+});
+
+test("topLayerCallSize is enforced here and only here", () => {
+  const base = { visible: true, pinned: true, source: "camera" as const, topLayerCallSize: 12 };
+  // At the limit the pinned tile still gets the top layer.
+  assert.equal(subscriptionFor({ ...base, participants: 12 }), "high");
+  // Past it nobody asks for it, which dynacast turns into the sender not
+  // encoding it -- no publisher-side republish anywhere.
+  assert.equal(subscriptionFor({ ...base, participants: 13 }), "low");
+  // Null is no cutoff.
+  assert.equal(
+    subscriptionFor({ ...base, participants: 500, topLayerCallSize: null }),
+    "high",
+  );
+});
+
+test("cameraOnVisibility pauses a live camera and resumes only what it paused", () => {
+  const hide = (cameraOn: boolean, paused: boolean): string =>
+    cameraOnVisibility({ hidden: true, cameraOn, paused });
+  const show = (cameraOn: boolean, paused: boolean): string =>
+    cameraOnVisibility({ hidden: false, cameraOn, paused });
+
+  assert.equal(hide(true, false), "pause");
+  // Already paused, or never on: nothing to do.
+  assert.equal(hide(true, true), "nothing");
+  assert.equal(hide(false, false), "nothing");
+
+  assert.equal(show(true, true), "resume");
+  // Coming back must never start a camera nobody asked for.
+  assert.equal(show(false, false), "nothing");
+  assert.equal(show(true, false), "nothing");
+});
+
+test("grantLine says what this call will carry, and says so when it will not", () => {
+  assert.equal(
+    grantLine({
+      sources: ["camera", "screen"],
+      camera: { maxHeight: 720, maxFps: 30 },
+      screen: { maxHeight: 1080, maxFps: 15 },
+    }),
+    "Camera up to 720p · Screen up to 1080p at 15 fps",
+  );
+  // A source the grant does not carry is not a line reading "0p".
+  assert.equal(
+    grantLine({
+      sources: ["camera"],
+      camera: { maxHeight: 360, maxFps: 30 },
+      screen: { maxHeight: 1080, maxFps: 15 },
+    }),
+    "Camera up to 360p",
+  );
+  assert.equal(grantLine(null), "no video on this call");
+  assert.equal(grantLine({ sources: [], camera: null, screen: null }), "no video on this call");
+});
+
+test("videoLine degrades to what the browser actually reported", () => {
+  assert.equal(
+    videoLine({
+      width: 1280,
+      height: 720,
+      fps: 29.7,
+      codec: "H264",
+      layer: "f",
+      implementation: "VideoToolbox",
+      limitedBy: "cpu",
+    }),
+    "1280×720 · 30 fps · H264 · layer f · VideoToolbox · limited by cpu",
+  );
+  // The stage-0 Chromium reported null for both implementation strings,
+  // so a row must still say something with almost nothing in it.
+  assert.equal(
+    videoLine({
+      width: 640,
+      height: 360,
+      fps: null,
+      codec: null,
+      layer: null,
+      implementation: null,
+      limitedBy: null,
+    }),
+    "640×360",
+  );
+  // "none" is the browser's word for "nothing is limiting this", which is
+  // the good case and deserves no clause.
+  assert.equal(
+    videoLine({
+      width: null,
+      height: null,
+      fps: null,
+      codec: "VP8",
+      layer: null,
+      implementation: null,
+      limitedBy: "none",
+    }),
+    "VP8",
+  );
+  assert.equal(
+    videoLine({
+      width: null,
+      height: null,
+      fps: null,
+      codec: null,
+      layer: null,
+      implementation: null,
+      limitedBy: null,
+    }),
+    "no reading yet",
+  );
 });

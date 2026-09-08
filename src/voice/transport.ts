@@ -23,7 +23,47 @@
 // Everything here is plain data or a method; no livekit type may appear
 // in this file.
 
-import type { EchoReport } from "./rules";
+import type { EchoReport, VideoQualityRequest, VideoSource } from "./rules";
+
+// `VideoSource` and `VideoQualityRequest` live in rules.ts, beside the
+// pure decision that produces one (`subscriptionFor`), and are re-exported
+// here so a caller that only knows the seam does not have to know that.
+// The direction of the dependency is the same as `EchoReport`'s and
+// `keyIndexFor`'s: rules.ts is the leaf and imports no transport.
+export type { VideoQualityRequest, VideoSource } from "./rules";
+
+/**
+ * What this transport can actually do with video, asked after connect and
+ * never inferred from a platform name. Video in v1 publishes and renders
+ * through the webview transport only: the Rust SDK the desktop shell links
+ * has no camera capture and no path from a received frame to the webview
+ * (docs/prompts/video-execution-handoff.md §0), so the native transport
+ * answers false to all three and the bar offers to switch engine for the
+ * call. Stage 3N fills the second implementation in and this answer flips
+ * on its own.
+ */
+export type TransportCapabilities = {
+  /** This transport can publish a camera. */
+  camera: boolean;
+  /** ... and a screen (getDisplayMedia present, or 3N). */
+  screen: boolean;
+  /** ... and can put a received video track on an element. */
+  renderVideo: boolean;
+};
+
+/**
+ * The publish ceilings for this call, already resolved by the server and
+ * narrowed by `transport-rules.ts`'s `videoOptionsFor`. `codec` is pinned
+ * to H.264 while frame encryption exists at all: AV1 is refused outright
+ * by livekit-client's E2EE worker, and the refusal is silent from the
+ * publisher's side (the plan's §9.1), which is why `videoCodecFor` is a
+ * tested function rather than a literal at the call site.
+ */
+export type TransportVideoOptions = {
+  codec: "h264";
+  camera: { maxHeight: number; maxFps: number } | null;
+  screen: { maxHeight: number; maxFps: number } | null;
+};
 
 /**
  * The microphone's processing switches. The webview implementation hands
@@ -55,6 +95,9 @@ export type TransportConnectOptions = {
    * when `e2ee` is true; later epochs arrive through `setEpochKey`.
    */
   key: { secret: Uint8Array; epoch: number } | null;
+  /** Publish ceilings, from the join result's grant. Sizing the encoder
+   *  at connect is the only moment simulcast layers can be chosen. */
+  video: TransportVideoOptions;
 };
 
 export type TransportConnectionState = "connected" | "reconnecting" | "disconnected";
@@ -71,6 +114,10 @@ export type TransportParticipant = {
   encrypted: boolean;
   /** 0..1, the SFU's reading of their signal. */
   audioLevel: number;
+  /** A camera publication exists for them, muted or not. The tile draws
+   *  from this; whether it is *subscribed* is the viewer's own choice. */
+  camera: boolean;
+  screen: boolean;
 };
 
 /** What the session wants to hear about. Every handler is optional. */
@@ -86,6 +133,10 @@ export type TransportEvents = {
   playbackChanged?: (blocked: boolean) => void;
   /** A frame this device could not open; `reason` is the SDK's word. */
   encryptionError?: (reason: string) => void;
+  /** A video publication appeared or went: re-read `participants()` and
+   *  re-attach. Separate from `rosterChanged` because a tile remounting
+   *  is expensive where a name changing is not. */
+  videoChanged?: () => void;
 };
 
 export type VoiceQuality = "excellent" | "good" | "poor" | "lost" | "unknown";
@@ -108,12 +159,40 @@ export type TransportPeerStats = {
   playing: boolean | null;
 };
 
+/**
+ * One video track's reading, sent or received. Every number is nullable
+ * because every one of them is a browser's courtesy: the implementation
+ * strings in particular came back null from the Chromium the stage-0
+ * spike ran in, which is why nothing here may be *required* to say
+ * something useful -- see rules.ts's `videoLine`.
+ */
+export type TransportVideoStats = {
+  /** `"self"` for what this device sends. */
+  identity: string;
+  source: VideoSource;
+  direction: "sent" | "received";
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  /** The codec's own name as the browser spells it ("H264", "VP8"). */
+  codec: string | null;
+  /** The simulcast layer, where the browser names one (`rid`). */
+  layer: string | null;
+  /** `encoderImplementation` or `decoderImplementation`: the string that
+   *  tells hardware from software on a device nobody can open. */
+  implementation: string | null;
+  /** `qualityLimitationReason` on a sent track: cpu, bandwidth, none. */
+  limitedBy: string | null;
+};
+
 export type TransportStats = {
   mic: TransportMicReport;
   packetsSent: number | null;
   roundTripMs: number | null;
   echo: EchoReport;
   peers: TransportPeerStats[];
+  /** Empty where no video is publishing or subscribed. */
+  video: TransportVideoStats[];
 };
 
 /** How the frame cipher is applied: the browser SDK's two mechanisms, none
@@ -122,6 +201,9 @@ export type FrameTransformKind = "encoded-streams" | "script-transform" | "none"
 
 export interface VoiceTransport {
   connect(options: TransportConnectOptions, events: TransportEvents): Promise<void>;
+  /** What this transport can do with video. Constant for its lifetime;
+   *  read after connect so the bar can disable rather than hide. */
+  capabilities(): TransportCapabilities;
   /** Idempotent; safe to call when never connected. */
   disconnect(): Promise<void>;
 
@@ -131,6 +213,32 @@ export interface VoiceTransport {
 
   /** The conversation's exporter secret for `epoch`, to be used from now. */
   setEpochKey(secret: Uint8Array, epoch: number): Promise<void>;
+
+  /** `deviceId` null is the platform default camera. */
+  setCameraEnabled(on: boolean, deviceId: string | null): Promise<void>;
+  setScreenShareEnabled(on: boolean): Promise<void>;
+
+  /**
+   * The one DOM crossing on this interface, and it is on purpose: audio
+   * needed no surface, video does, and adaptive streaming measures the
+   * *attached element* to decide which layer to ask for -- so the element
+   * cannot stay on the UI side of the seam. `identity` is `"self"` for the
+   * local preview, which is what keeps a second method off the interface.
+   * Returns the detach; calling it twice is safe.
+   */
+  attachVideo(
+    identity: string | "self",
+    source: VideoSource,
+    element: HTMLVideoElement,
+  ): () => void;
+
+  /** Subscribe, unsubscribe, and pick the simulcast layer, in one verb --
+   *  the three are one decision (`rules.ts`'s `subscriptionFor`). */
+  setVideoSubscription(
+    identity: string,
+    source: VideoSource,
+    quality: VideoQualityRequest,
+  ): void;
 
   /** This listener's own volume for one account's devices, 0..1: a gain on
    *  what this device plays, never sent anywhere. */

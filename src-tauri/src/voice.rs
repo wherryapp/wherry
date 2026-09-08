@@ -213,6 +213,14 @@ pub struct RosterEntry {
   audio_level: f32,
   /// Whether their audio track is enabled for playout here.
   playing: Option<bool>,
+  /// A camera publication exists for them, muted or not -- and likewise a
+  /// screen. This transport can neither publish nor render video until
+  /// stage 3N (docs/prompts/video-execution-handoff.md §0), so these two
+  /// booleans exist for exactly one purpose: so a participant on this
+  /// engine is told "Alice's camera is on -- switch engine to see it"
+  /// rather than shown nothing at all.
+  has_camera: bool,
+  has_screen: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -228,6 +236,13 @@ fn audio_publications(participant: &RemoteParticipant) -> Vec<RemoteTrackPublica
     .into_values()
     .filter(|publication| publication.kind() == TrackKind::Audio)
     .collect()
+}
+
+fn has_video_source(participant: &RemoteParticipant, source: TrackSource) -> bool {
+  participant
+    .track_publications()
+    .into_values()
+    .any(|publication| publication.kind() == TrackKind::Video && publication.source() == source)
 }
 
 fn roster(room: &Room) -> Roster {
@@ -249,6 +264,8 @@ fn roster(room: &Room) -> Roster {
         encrypted: participant.is_encrypted(),
         audio_level: participant.audio_level(),
         playing,
+        has_camera: has_video_source(&participant, TrackSource::Camera),
+        has_screen: has_video_source(&participant, TrackSource::Screenshare),
       }
     })
     .collect();

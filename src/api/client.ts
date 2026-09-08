@@ -52,6 +52,7 @@ import type {
   Call,
   JoinResult,
   VoiceActive,
+  VideoLimits,
 } from "./types";
 
 /**
@@ -980,12 +981,26 @@ export type AccountSettings = {
      */
     voiceQuality: boolean;
     /**
+     * The video flag (migration 0031). Raw, like `voice` and for the same
+     * reason: what actually decides is the per-call token's
+     * `canPublishSources`, and a client needs /health for the SFU URL
+     * anyway. Optional -- a server predating video answers without it.
+     */
+    video?: boolean;
+    /**
      * The composer's GIF widget. Already ANDed by the server with whether
      * this deploy has a GIPHY_API_KEY at all, so it is one answer rather
      * than the two `voice` needs -- true here means the widget will work.
      */
     gifs: boolean;
   };
+  /**
+   * The account's publish grant resolved outside any hub, so Settings can
+   * hide a camera picker nobody on this account could use. Advisory in
+   * exactly the way `features.video` is. Absent on a server predating
+   * video.
+   */
+  videoLimits?: VideoLimits;
 };
 
 export type AccountDevice = {

@@ -51,7 +51,25 @@ export type VoicePrefs = {
    * join, so it applies to the next call.
    */
   nativeMedia: boolean;
+  /** `deviceId` from enumerateDevices; null = the platform default. In the
+   *  browser's id space, so it is checked against the live camera list
+   *  before it is used, exactly as the microphone's is. */
+  cameraDeviceId: string | null;
+  /**
+   * How much camera this device would like to send, capped by the grant at
+   * publish time -- so a person on a fast machine can ask for HD and a
+   * person on a laptop battery can ask for less, and neither can exceed
+   * what the server allowed. `auto` is the grant's own ceiling.
+   */
+  videoQuality: VideoQualityTier;
 };
+
+/** Settings' three words for the camera tier; the numbers are in rules.ts. */
+export type VideoQualityTier = "auto" | "standard" | "hd";
+
+function isVideoQualityTier(value: unknown): value is VideoQualityTier {
+  return value === "auto" || value === "standard" || value === "hd";
+}
 
 const DEFAULTS: VoicePrefs = {
   joinMute: "auto",
@@ -63,6 +81,8 @@ const DEFAULTS: VoicePrefs = {
   noiseSuppression: true,
   autoGainControl: true,
   nativeMedia: true,
+  cameraDeviceId: null,
+  videoQuality: "auto",
 };
 
 export function loadVoicePrefs(): VoicePrefs {
@@ -86,6 +106,8 @@ export function loadVoicePrefs(): VoicePrefs {
       noiseSuppression: parsed.noiseSuppression !== false,
       autoGainControl: parsed.autoGainControl !== false,
       nativeMedia: parsed.nativeMedia !== false,
+      cameraDeviceId: typeof parsed.cameraDeviceId === "string" ? parsed.cameraDeviceId : null,
+      videoQuality: isVideoQualityTier(parsed.videoQuality) ? parsed.videoQuality : "auto",
     };
   } catch {
     return { ...DEFAULTS };

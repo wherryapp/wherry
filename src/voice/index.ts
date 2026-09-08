@@ -14,7 +14,16 @@ import type { VoiceTransport } from "./transport";
 import { NativeTransport } from "./transport-native";
 import { WebviewTransport } from "./transport-webview";
 
-export function createTransport(): VoiceTransport {
+/**
+ * `override` is the per-call engine switch (docs/prompts/video-execution-
+ * handoff.md §0): a desktop shell on the native engine cannot publish or
+ * render video in v1, so the call bar offers to rejoin this one call
+ * through the webview. It beats the preference for that call only and is
+ * cleared on teardown -- the `nativeMedia` preference itself is never
+ * touched, because the person did not change their mind about audio.
+ */
+export function createTransport(override?: "webview" | null): VoiceTransport {
+  if (override === "webview") return new WebviewTransport();
   return nativeMediaSelected() ? new NativeTransport() : new WebviewTransport();
 }
 

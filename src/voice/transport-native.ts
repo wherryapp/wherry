@@ -14,9 +14,10 @@
 // No DOM at all: playback is the audio device module's, so `startPlayback`
 // is a no-op and `playbackBlocked` never becomes true.
 
-import { keyIndexFor } from "./rules";
+import { keyIndexFor, type VideoSource } from "./rules";
 import type {
   FrameTransformKind,
+  TransportCapabilities,
   TransportConnectOptions,
   TransportEvents,
   TransportParticipant,
@@ -45,6 +46,10 @@ type NativeEntry = {
   encrypted: boolean;
   audioLevel: number;
   playing: boolean | null;
+  /** Video publications this engine can neither render nor publish; see
+   *  `capabilities` below for why they are reported anyway. */
+  hasCamera: boolean;
+  hasScreen: boolean;
 };
 
 type NativeRoster = { participants: NativeEntry[]; localLevel: number };
@@ -203,6 +208,47 @@ export class NativeTransport implements VoiceTransport {
     }
   }
 
+  /**
+   * No video, in either direction, until stage 3N.
+   *
+   * Not a placeholder and not a platform check -- a statement of what the
+   * `livekit` Rust crate this shell links can actually do, read from the
+   * checkout the build links (docs/prompts/video-execution-handoff.md §0).
+   * It has no camera capture at all (`NativeVideoSource` takes frames you
+   * push, and the crate's only camera example is a Jetson driver), and it
+   * delivers received video as decoded frames in Rust with nothing
+   * carrying them to a `<video>` element in the webview. `desktop_capturer`
+   * does exist, which is why screen share was once planned native-first --
+   * but a screen captured natively would be invisible in this engine's own
+   * stage, so that too waits for a transport that can render.
+   *
+   * The honest v1 is therefore: this transport reports none of it, the bar
+   * disables the buttons *with the reason*, and one action beside them
+   * rejoins the call through the webview transport for the price of one
+   * reconnect. Nothing built for the webview is thrown away -- 3N fills in
+   * this half of the interface and these three booleans flip.
+   */
+  capabilities(): TransportCapabilities {
+    return { camera: false, screen: false, renderVideo: false };
+  }
+
+  async setCameraEnabled(): Promise<void> {
+    throw new Error("unsupported");
+  }
+
+  async setScreenShareEnabled(): Promise<void> {
+    throw new Error("unsupported");
+  }
+
+  attachVideo(_identity: string, _source: VideoSource, _element: HTMLVideoElement): () => void {
+    return () => {};
+  }
+
+  setVideoSubscription(): void {
+    // Nothing to subscribe: `capabilities().renderVideo` is false, so the
+    // stage never asks for a layer here.
+  }
+
   async startPlayback(): Promise<void> {
     // Playback is the audio device module's; no autoplay policy applies.
   }
@@ -222,6 +268,8 @@ export class NativeTransport implements VoiceTransport {
         micMuted: entry.micMuted,
         encrypted: entry.encrypted,
         audioLevel: entry.audioLevel,
+        camera: entry.hasCamera,
+        screen: entry.hasScreen,
       };
     });
   }
@@ -242,11 +290,14 @@ export class NativeTransport implements VoiceTransport {
     const invoke = this.#invoke;
     if (!invoke || this.#session === null) return null;
     try {
-      const stats = await invoke<TransportStats>("voice_stats");
+      const stats = await invoke<Omit<TransportStats, "video">>("voice_stats");
       // With the canceller off the APM reports no echo metrics, and the
       // shell's stats read an absent number as 0 dB; say "off" instead.
-      if (!this.#echoCancellation) stats.echo = { ...stats.echo, disabled: true };
-      return stats;
+      const echo = this.#echoCancellation ? stats.echo : { ...stats.echo, disabled: true };
+      // No video rows: this engine carries none (see `capabilities`), and
+      // an empty list is what the details readout wants -- not a row of
+      // nulls implying a track that is not there.
+      return { ...stats, echo, video: [] };
     } catch {
       return null;
     }

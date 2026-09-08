@@ -61,6 +61,7 @@ targets:
         # screen locks; capture in the background is a WebKit limit the
         # plan records rather than works around.
         NSMicrophoneUsageDescription: Wherry uses the microphone for voice calls and voice rooms.
+        NSCameraUsageDescription: Wherry uses the camera for video calls.
         UIBackgroundModes: [audio]
     entitlements:
       path: wherry-desktop_iOS/wherry-desktop_iOS.entitlements

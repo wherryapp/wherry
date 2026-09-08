@@ -36,7 +36,7 @@ import {
   startCall,
 } from "../api/client";
 import { loadSession } from "../api/session";
-import type { Call, CallKind, HubVisibility, JoinResult } from "../api/types";
+import type { Call, CallKind, HubVisibility, JoinResult, VideoLimits } from "../api/types";
 import { isServerReadable } from "../api/hub-class";
 import { e2e } from "../crypto";
 import { sync, type SyncEvent } from "../sync/engine";
@@ -44,17 +44,29 @@ import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 import { mlsSync } from "../sync/mls";
 import { createTransport } from "./index";
 import { deriveCallKey } from "./keys";
-import { loadVoicePrefs } from "./prefs";
+import { listVideoDevices } from "./devices";
+import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
 import {
   audioPresetFor,
+  cameraOnVisibility,
+  grantLine,
   micStatus,
   shouldJoinMuted,
+  subscriptionFor,
+  videoLine,
   type EchoReport,
   type MicFailure,
   type MicStatus,
+  type VideoSource,
 } from "./rules";
+import { videoOptionsFor } from "./transport-rules";
 import { blip, startRingback } from "./sounds";
-import type { FrameTransformKind, VoiceQuality, VoiceTransport } from "./transport";
+import type {
+  FrameTransformKind,
+  TransportCapabilities,
+  VoiceQuality,
+  VoiceTransport,
+} from "./transport";
 
 export type { VoiceQuality } from "./transport";
 
@@ -84,6 +96,10 @@ export type VoiceParticipant = {
   encrypted: boolean;
   /** 0..1, this listener's own volume for them. */
   volume: number;
+  /** A camera publication exists for them, muted or not; likewise a
+   *  screen. What the stage draws a tile from. */
+  camera: boolean;
+  screen: boolean;
 };
 
 export type VoiceState = {
@@ -117,6 +133,30 @@ export type VoiceState = {
    */
   encryptionErrors: number;
   lastEncryptionError: string | null;
+  /** What the server allowed this device to publish in this call; null
+   *  outside a call, and on a server predating video. */
+  grant: VideoLimits | null;
+  /** What this transport can do with video. All false on the desktop
+   *  shell's native engine until stage 3N -- the bar disables its buttons
+   *  and offers `switchEngineForThisCall`. */
+  capabilities: TransportCapabilities;
+  /** `paused` is the background pause (rules.ts's `cameraOnVisibility`),
+   *  which is a *remembered* on rather than an off: coming back to the
+   *  foreground republishes, and nothing else does. */
+  camera: { on: boolean; paused: boolean };
+  screen: { on: boolean };
+  /** The identity whose tile is enlarged, or null for the grid. */
+  pinned: string | null;
+  /** This call is running on the webview engine because the person asked
+   *  for video on a shell that has none. Cleared on teardown; the
+   *  `nativeMedia` preference is never touched. */
+  engineOverride: "webview" | null;
+};
+
+const NO_CAPABILITIES: TransportCapabilities = {
+  camera: false,
+  screen: false,
+  renderVideo: false,
 };
 
 const IDLE: VoiceState = {
@@ -135,6 +175,12 @@ const IDLE: VoiceState = {
   ringing: false,
   encryptionErrors: 0,
   lastEncryptionError: null,
+  grant: null,
+  capabilities: NO_CAPABILITIES,
+  camera: { on: false, paused: false },
+  screen: { on: false },
+  pinned: null,
+  engineOverride: null,
 };
 
 /** One peer's row in the call details: the SFU's view of their signal,
@@ -180,6 +226,10 @@ export type VoiceDiagnostics = {
   transform: FrameTransformKind;
   playbackBlocked: boolean;
   quality: VoiceQuality;
+  /** What this call would allow this device to send, in one sentence. */
+  grant: string;
+  /** One row per video track, sent or received, already worded. */
+  video: { label: string; line: string }[];
 };
 
 const LOCK_NAME = "messenger.voice";
@@ -220,6 +270,13 @@ class VoiceSession {
   #lastEncryptionError: string | null = null;
   /** Set once at import: another tab's "I hold the session" claim. */
   #watchingTabs = false;
+  /** The join that is running, kept so the engine switch can re-run it. */
+  #plan: JoinPlan | null = null;
+  /** Which tiles are on screen, keyed `identity/source` -- the input to
+   *  `subscriptionFor`, held here rather than in state because it changes
+   *  on every scroll and must not re-render the roster. */
+  #visibleTiles = new Set<string>();
+  #onVisibility: (() => void) | null = null;
 
   getState = (): VoiceState => this.#state;
 
@@ -305,6 +362,120 @@ class VoiceSession {
     this.#refreshParticipants();
   }
 
+  // -- video ---------------------------------------------------------------
+
+  async setCameraEnabled(on: boolean): Promise<void> {
+    const transport = this.#transport;
+    if (!transport) return;
+    try {
+      await transport.setCameraEnabled(on, loadVoicePrefs().cameraDeviceId);
+      // `paused` is cleared either way: turning the camera off by hand is
+      // a decision the background resume must not undo.
+      this.#set({ camera: { on, paused: false }, error: null });
+    } catch (error) {
+      this.#set({ camera: { on: false, paused: false }, error: publishError(error) });
+    }
+  }
+
+  toggleCamera(): Promise<void> {
+    return this.setCameraEnabled(!this.#state.camera.on);
+  }
+
+  /** Switch camera without stopping: a republish on the new device. */
+  async setCameraDevice(deviceId: string): Promise<void> {
+    saveVoicePrefs({ cameraDeviceId: deviceId });
+    if (!this.#state.camera.on) return;
+    await this.setCameraEnabled(true);
+  }
+
+  /**
+   * Front to back on a phone. There is no `facingMode` switch on a
+   * publication, so this is the device picker under another name: the
+   * cameras are enumerated and the next one after the current is chosen,
+   * which is what a two-camera phone means by "flip" and degrades sanely
+   * on a laptop with one.
+   */
+  async flipCamera(): Promise<void> {
+    const devices = await listVideoDevices();
+    if (devices.length < 2) return;
+    const current = loadVoicePrefs().cameraDeviceId;
+    const index = devices.findIndex((device) => device.deviceId === current);
+    const next = devices[(index + 1) % devices.length];
+    if (next) await this.setCameraDevice(next.deviceId);
+  }
+
+  async setScreenShareEnabled(on: boolean): Promise<void> {
+    const transport = this.#transport;
+    if (!transport) return;
+    try {
+      await transport.setScreenShareEnabled(on);
+      this.#set({ screen: { on }, error: null });
+    } catch (error) {
+      // A cancelled picker is not a failure worth a red line, but it is
+      // the same DOMException a refusal raises, so the message covers
+      // both and the state goes back to off either way.
+      this.#set({ screen: { on: false }, error: on ? publishError(error) : null });
+    }
+  }
+
+  toggleScreenShare(): Promise<void> {
+    return this.setScreenShareEnabled(!this.#state.screen.on);
+  }
+
+  /**
+   * Hand a tile's `<video>` to the transport, and get the detach back.
+   *
+   * The session forwards rather than handing the transport out, so nothing
+   * outside `index.ts` ever learns which engine it got -- the same reason
+   * `startPlayback` survives as a concept the native side answers with a
+   * no-op. A transport that cannot render answers with a no-op detach and
+   * the tile draws its placeholder.
+   */
+  attachVideo(identity: string, source: VideoSource, element: HTMLVideoElement): () => void {
+    return this.#transport?.attachVideo(identity, source, element) ?? (() => {});
+  }
+
+  /** A tile came on or off screen. Drives subscribe/unsubscribe and layer. */
+  setTileVisible(identity: string, source: VideoSource, visible: boolean): void {
+    const key = `${identity}/${source}`;
+    if (visible) this.#visibleTiles.add(key);
+    else this.#visibleTiles.delete(key);
+    this.#applySubscription(identity, source);
+  }
+
+  pin(identity: string | null): void {
+    if (this.#state.pinned === identity) return;
+    const previous = this.#state.pinned;
+    this.#set({ pinned: identity });
+    // Only the two tiles whose answer can have changed.
+    for (const who of [previous, identity]) {
+      if (!who) continue;
+      for (const source of ["camera", "screen"] as const) this.#applySubscription(who, source);
+    }
+  }
+
+  /**
+   * Rejoin this one call through the webview engine.
+   *
+   * The desktop shell's native engine has no camera capture and no way to
+   * put a received frame on screen (docs/prompts/video-execution-handoff.md
+   * §0), so somebody who wants video on this device pays one reconnect --
+   * a second or two of silence -- and gets it. The `nativeMedia`
+   * preference is deliberately untouched: they did not change their mind
+   * about audio, and the next call starts on their engine again.
+   *
+   * `tellServer: false` on the way out: the participant row is about to be
+   * re-taken by the same device, and telling the server we left would end
+   * a one-person call underneath us.
+   */
+  async switchEngineForThisCall(): Promise<void> {
+    const plan = this.#plan;
+    if (!plan || this.#state.engineOverride === "webview") return;
+    await this.#teardown({ tellServer: false, error: null, keepPlan: true });
+    this.#set({ engineOverride: "webview" });
+    await this.#join(plan, "webview");
+  }
+
   /** From a tap: the browser's autoplay policy needs one. */
   async startAudio(): Promise<void> {
     const transport = this.#transport;
@@ -361,12 +532,22 @@ class VoiceSession {
       transform: transport.frameTransform(),
       playbackBlocked: state.playbackBlocked,
       quality: state.quality,
+      grant: grantLine(state.grant),
+      video: stats.video.map((track) => ({
+        label:
+          track.identity === "self"
+            ? `Your ${track.source === "camera" ? "camera" : "screen"}`
+            : `${roster.get(track.identity)?.name ?? track.identity}'s ${
+                track.source === "camera" ? "camera" : "screen"
+              }`,
+        line: videoLine(track),
+      })),
     };
   }
 
   // -- joining -------------------------------------------------------------
 
-  async #join(plan: JoinPlan): Promise<void> {
+  async #join(plan: JoinPlan, engineOverride: "webview" | null = null): Promise<void> {
     if (this.#state.phase !== "idle" && this.#state.phase !== "elsewhere") {
       if (this.#state.conversationId === plan.conversation.id) return;
       // Switching rooms: out of the old one first, then in.
@@ -377,6 +558,7 @@ class VoiceSession {
       return;
     }
     this.#leaving = false;
+    this.#plan = plan;
     // Sealed unless the conversation says the server may read it: a
     // public or invite-only hub channel relays media in the clear, the
     // media half of the readable-hub exception (CLAUDE.md rule 1).
@@ -387,6 +569,7 @@ class VoiceSession {
       conversationId: plan.conversation.id,
       kind: plan.kind,
       e2ee,
+      engineOverride,
     });
 
     let result: JoinResult;
@@ -411,7 +594,8 @@ class VoiceSession {
     }
 
     const prefs = loadVoicePrefs();
-    const transport = createTransport();
+    const grant = result.video ?? null;
+    const transport = createTransport(engineOverride);
     this.#transport = transport;
     try {
       await transport.connect(
@@ -428,6 +612,7 @@ class VoiceSession {
           micDeviceId: prefs.micDeviceId,
           speakerDeviceId: prefs.speakerDeviceId,
           key: derived,
+          video: videoOptionsFor(grant, e2ee, prefs.videoQuality),
         },
         this.#events(),
       );
@@ -443,6 +628,11 @@ class VoiceSession {
       keyEpoch: derived?.epoch ?? null,
       playbackBlocked: transport.playbackBlocked(),
       ringing: plan.kind === "call" && result.call.status === "ringing",
+      grant,
+      // Read after connect, never guessed from a platform: the same
+      // transport answers differently on a browser without
+      // getDisplayMedia.
+      capabilities: transport.capabilities(),
     });
     this.#refreshParticipants();
     this.#announce();
@@ -467,6 +657,7 @@ class VoiceSession {
 
     if (e2ee) this.#watchEpoch(plan.conversation.id, result.call.id);
     this.#watchSync(result.call.id);
+    this.#watchVisibility();
     blip("join");
   }
 
@@ -524,6 +715,13 @@ class VoiceSession {
       },
       rosterChanged: () => this.#refreshParticipants(),
       speakersChanged: () => this.#refreshParticipantsSoon(),
+      videoChanged: () => {
+        this.#refreshParticipants();
+        // A publication that appeared after its tile mounted has to be
+        // told what that tile wants; a tile that is already visible would
+        // otherwise sit unsubscribed until the next scroll.
+        this.#applyAllSubscriptions();
+      },
       connection: (state, quality) => {
         if (this.#leaving) return;
         if (state === "reconnecting") this.#set({ phase: "reconnecting", quality });
@@ -592,6 +790,8 @@ class VoiceSession {
       micMuted: p.micMuted,
       encrypted: p.encrypted,
       volume: this.#volumes.get(p.userId) ?? 1,
+      camera: p.camera,
+      screen: p.screen,
     }));
     participants.sort((a, b) => a.name.localeCompare(b.name));
     this.#set({
@@ -599,6 +799,78 @@ class VoiceSession {
       encryptionErrors: this.#encryptionErrors,
       lastEncryptionError: this.#lastEncryptionError,
     });
+  }
+
+  // -- video subscriptions ---------------------------------------------------
+
+  /**
+   * What this viewer asks the SFU for, for one remote track. The decision
+   * is `rules.ts`'s `subscriptionFor`; this is the plumbing around it.
+   *
+   * Skipped entirely where the transport cannot render video: the native
+   * engine has no tiles, so nothing is visible, so nothing is asked for --
+   * and asking would be a no-op anyway.
+   */
+  #applySubscription(identity: string, source: VideoSource): void {
+    const transport = this.#transport;
+    if (!transport || !this.#state.capabilities.renderVideo) return;
+    const quality = subscriptionFor({
+      visible: this.#visibleTiles.has(`${identity}/${source}`),
+      pinned: this.#state.pinned === identity,
+      source,
+      // Everybody in the room, this device included: the layer cutoff is
+      // about how many streams the SFU is fanning out, not how many other
+      // people there are.
+      participants: this.#state.participants.length + 1,
+      topLayerCallSize: this.#state.grant?.topLayerCallSize ?? null,
+    });
+    transport.setVideoSubscription(identity, source, quality);
+  }
+
+  #applyAllSubscriptions(): void {
+    for (const participant of this.#state.participants) {
+      for (const source of ["camera", "screen"] as const) {
+        this.#applySubscription(participant.identity, source);
+      }
+    }
+  }
+
+  /**
+   * The background pause (`docs/prompts/video-plan.md` §2). Both phones
+   * stop capture when the app leaves the foreground -- iOS forbids it even
+   * natively -- so a camera left published while hidden is a frozen frame
+   * on everybody else's screen, which is worse than an honest "camera
+   * paused" tile. Screen share is not paused: it is desktop-only, and a
+   * covered window still has content worth sending.
+   *
+   * Installed with the call and torn down with it, so nothing listens
+   * between calls.
+   */
+  #watchVisibility(): void {
+    if (this.#onVisibility || typeof document === "undefined") return;
+    const handler = (): void => {
+      const decision = cameraOnVisibility({
+        hidden: document.visibilityState === "hidden",
+        cameraOn: this.#state.camera.on,
+        paused: this.#state.camera.paused,
+      });
+      if (decision === "nothing") return;
+      const transport = this.#transport;
+      if (!transport) return;
+      if (decision === "pause") {
+        void transport
+          .setCameraEnabled(false, null)
+          .then(() => this.#set({ camera: { on: true, paused: true } }))
+          .catch(() => {});
+        return;
+      }
+      void transport
+        .setCameraEnabled(true, loadVoicePrefs().cameraDeviceId)
+        .then(() => this.#set({ camera: { on: true, paused: false } }))
+        .catch(() => this.#set({ camera: { on: false, paused: false } }));
+    };
+    document.addEventListener("visibilitychange", handler);
+    this.#onVisibility = () => document.removeEventListener("visibilitychange", handler);
   }
 
   // -- keys over time --------------------------------------------------------
@@ -679,7 +951,13 @@ class VoiceSession {
 
   // -- leaving ---------------------------------------------------------------
 
-  async #teardown(input: { tellServer: boolean; error: string | null }): Promise<void> {
+  async #teardown(input: {
+    tellServer: boolean;
+    error: string | null;
+    /** The engine switch: the same call is about to be rejoined, so the
+     *  plan and the override must survive this teardown. */
+    keepPlan?: boolean;
+  }): Promise<void> {
     this.#leaving = true;
     this.#micFailure = null;
     this.#encryptionErrors = 0;
@@ -693,6 +971,10 @@ class VoiceSession {
     this.#unsubscribeSync = null;
     this.#unsubscribeBroadcasts?.();
     this.#unsubscribeBroadcasts = null;
+    this.#onVisibility?.();
+    this.#onVisibility = null;
+    this.#visibleTiles.clear();
+    if (!input.keepPlan) this.#plan = null;
 
     const transport = this.#transport;
     this.#transport = null;
@@ -707,11 +989,15 @@ class VoiceSession {
       }
     }
 
-    this.#releaseLock?.();
-    this.#releaseLock = null;
+    if (!input.keepPlan) {
+      this.#releaseLock?.();
+      this.#releaseLock = null;
+    }
     this.#set({ ...IDLE, error: input.error });
-    this.#announce();
-    if (transport) blip("leave");
+    if (!input.keepPlan) {
+      this.#announce();
+      if (transport) blip("leave");
+    }
   }
 
   #stopRingback(): void {
@@ -741,6 +1027,11 @@ function micError(error: unknown): string {
     case "failed":
       return "The microphone could not be started.";
   }
+}
+
+/** transport-rules.ts already worded it; this only unwraps the Error. */
+function publishError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function joinError(error: unknown): string {

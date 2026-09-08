@@ -19,6 +19,9 @@ export type AudioDevice = { deviceId: string; label: string };
 
 export type AudioDevices = { inputs: AudioDevice[]; outputs: AudioDevice[] };
 
+/** A camera, in the same shape a microphone takes. */
+export type VideoDevice = AudioDevice;
+
 /** The shell's event when the device list changed (voice.rs polls the
  *  device module itself, since it raises no hot-plug event of its own). */
 const NATIVE_DEVICES_EVENT = "voice-devices";
@@ -74,6 +77,41 @@ export async function listAudioDevices(): Promise<AudioDevices> {
           .map((device) => named(device, `Speaker ${(outputs += 1)}`))
       : [],
   };
+}
+
+/**
+ * The cameras this browser will admit to.
+ *
+ * Always the browser's list, even where the native engine is on: video in
+ * v1 publishes through the webview transport only
+ * (docs/prompts/video-execution-handoff.md §0), so the shell's
+ * `voice_devices` carries no cameras and asking it for one would answer
+ * an empty picker on the very device most likely to have a camera. Stage
+ * 3N is what changes this, alongside the shell's own capture.
+ *
+ * Labels are empty until a camera permission has been granted once, the
+ * same as microphones, so the picker says "Camera 1" until then.
+ */
+export async function listVideoDevices(): Promise<VideoDevice[]> {
+  if (
+    typeof navigator === "undefined" ||
+    typeof navigator.mediaDevices?.enumerateDevices !== "function"
+  ) {
+    return [];
+  }
+  let devices: MediaDeviceInfo[];
+  try {
+    devices = await navigator.mediaDevices.enumerateDevices();
+  } catch {
+    return [];
+  }
+  let seen = 0;
+  return devices
+    .filter((device) => device.kind === "videoinput")
+    .map((device) => ({
+      deviceId: device.deviceId,
+      label: device.label || `Camera ${(seen += 1)}`,
+    }));
 }
 
 /** Fires when a device is plugged or unplugged. Returns the unsubscribe. */
