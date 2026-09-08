@@ -78,6 +78,29 @@
 //   &devvideo=1                      With ?devcall: turn the camera on a few
 //                                    seconds after the call connects.
 //
+//   ?devui=1                         Posts a snapshot of the call surface to
+//                                    the ?trace= collector every few seconds
+//                                    (kind __dev-ui): every button with its
+//                                    label, disabled state, title and pressed
+//                                    state, every <video> with its dimensions,
+//                                    the call bar's own text, and the
+//                                    native-engine preference. The desktop
+//                                    shell relays no console and cannot be
+//                                    inspected, so this is the only way a row
+//                                    that reads the *rendering* -- "the button
+//                                    is disabled, not hidden", "the tile shows
+//                                    a picture" -- can be run with nobody at
+//                                    the keyboard.
+//   ?devclick=<a>|<b>&devclickafter=<s>
+//                                    Clicks buttons by label, in order, the
+//                                    first <s> seconds (default 20) after the
+//                                    app renders and one every <s> after
+//                                    that. A label matches an aria-label or
+//                                    the button's own text, case-insensitively
+//                                    and by prefix, so "Switch engine" finds
+//                                    "Switch engine for this call". What it
+//                                    found (or did not) goes to the collector.
+//
 //   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
 //                                    environment rather than the URL, for a
 //                                    shell in `tauri ios dev` -- which loads
@@ -91,7 +114,7 @@
 import { login } from "./api/client";
 import { loadSession, saveSession } from "./api/session";
 import { unlockAccountKey } from "./crypto/account";
-import { saveVoicePrefs } from "./voice/prefs";
+import { loadVoicePrefs, saveVoicePrefs } from "./voice/prefs";
 
 type TraceEntry = {
   at: string;
@@ -425,6 +448,99 @@ function maybeDevCamera(params: URLSearchParams): void {
   console.error("[devcamera] canvas source installed");
 }
 
+/**
+ * The call surface as it is actually rendered, for the collector.
+ *
+ * Everything here is a *rendering* question that no state dump answers:
+ * whether a control is disabled rather than absent, what its title says,
+ * whether a tile is showing a picture or a placeholder. The desktop shell
+ * relays no console and takes no inspector, so without this a row like D-28
+ * ("disabled, not hidden, with the reason and a way out") can only be run
+ * with a hand on the window.
+ *
+ * Labels come from `aria-label` first because kit's IconButton puts the
+ * words there and an icon in the button; text is the fallback for the
+ * ordinary ones.
+ */
+function snapshotCallUi(): Record<string, unknown> {
+  const buttons = Array.from(document.querySelectorAll("button"))
+    .map((button) => ({
+      label: button.getAttribute("aria-label") ?? button.textContent?.trim().slice(0, 60) ?? "",
+      disabled: button.disabled,
+      title: button.getAttribute("title"),
+      pressed: button.getAttribute("aria-pressed"),
+    }))
+    .filter((entry) => entry.label !== "");
+  const videos = Array.from(document.querySelectorAll("video")).map((video) => ({
+    width: video.videoWidth,
+    height: video.videoHeight,
+    paused: video.paused,
+    source: video.srcObject === null ? null : "stream",
+  }));
+  // The bar is the one region whose sentences are the reading (the reason
+  // line beside the switch); its own element carries no test hook, so it is
+  // found by the class the call bar alone paints itself with.
+  const bar = document.querySelector("[class*='bg-accent-50']");
+  return {
+    buttons,
+    videos,
+    bar: bar?.textContent?.trim().slice(0, 400) ?? null,
+    nativeMedia: loadVoicePrefs().nativeMedia,
+  };
+}
+
+function maybeDevUi(params: URLSearchParams): void {
+  if (params.get("devui") !== "1") return;
+  setInterval(() => {
+    record("call", { method: "__dev-ui", args: [snapshotCallUi()] });
+  }, DEV_UI_INTERVAL_MS);
+}
+
+/**
+ * Press buttons by label, in order, on a timer.
+ *
+ * Prefix and case-insensitive on purpose: a row is written against the
+ * words a person would read ("Switch engine"), not against the exact string
+ * a component happens to render, and a label that has drifted should fail
+ * the row loudly rather than silently match nothing.
+ */
+function maybeDevClick(params: URLSearchParams): void {
+  const raw = params.get("devclick");
+  if (!raw) return;
+  const labels = raw.split("|").map((label) => label.trim()).filter((label) => label !== "");
+  if (labels.length === 0) return;
+  const everyMs = Math.max(1, Number(params.get("devclickafter") ?? "20")) * 1_000;
+
+  const press = (label: string, deadline: number): void => {
+    const wanted = label.toLowerCase();
+    const button = Array.from(document.querySelectorAll("button")).find((candidate) => {
+      const aria = candidate.getAttribute("aria-label")?.toLowerCase() ?? "";
+      const text = candidate.textContent?.trim().toLowerCase() ?? "";
+      return aria.startsWith(wanted) || text.startsWith(wanted);
+    });
+    if (!button) {
+      // Not there *yet* is the common case, not a drifted label: a control
+      // that appears once a reconnect finishes is exactly what the row after
+      // an engine switch waits on. Retry to the deadline, then say so.
+      if (Date.now() < deadline) {
+        setTimeout(() => press(label, deadline), DEV_CLICK_RETRY_MS);
+        return;
+      }
+      console.error(`[devclick] no button matching ${JSON.stringify(label)}`);
+      record("call", { method: "__dev-click", args: [{ label, found: false }] });
+      return;
+    }
+    const disabled = button.disabled;
+    button.click();
+    console.error(`[devclick] pressed ${JSON.stringify(label)}${disabled ? " (disabled)" : ""}`);
+    record("call", { method: "__dev-click", args: [{ label, found: true, disabled }] });
+  };
+
+  labels.forEach((label, index) => {
+    setTimeout(() => press(label, Date.now() + DEV_CLICK_WAIT_MS), everyMs * (index + 1));
+  });
+}
+
 function maybeDevCall(params: URLSearchParams): void {
   const conversationId = params.get("devcall") ?? devEnv("VITE_DEVCALL");
   if (!conversationId) return;
@@ -510,6 +626,11 @@ function maybeDevCall(params: URLSearchParams): void {
 }
 
 const DEV_DIAG_INTERVAL_MS = 3_000;
+/** How often ?devui posts the rendered call surface. */
+const DEV_UI_INTERVAL_MS = 3_000;
+/** ?devclick: how long to keep looking for a label, and how often. */
+const DEV_CLICK_WAIT_MS = 120_000;
+const DEV_CLICK_RETRY_MS = 1_000;
 /** How long after the call is placed ?devvideo turns the camera on. */
 const DEV_VIDEO_DELAY_MS = 6_000;
 
@@ -540,6 +661,8 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   // first asks for a track.
   maybeDevCamera(params);
   maybeDevCall(params);
+  maybeDevUi(params);
+  maybeDevClick(params);
 }
 
 /** One console argument as a line: errors by name, message and any code. */

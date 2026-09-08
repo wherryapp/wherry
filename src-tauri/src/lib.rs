@@ -39,8 +39,36 @@ fn vault_entry(key: &str) -> Result<keyring::Entry, String> {
   keyring::Entry::new("app.wherry", key).map_err(|e| e.to_string())
 }
 
+// `WHERRY_NO_VAULT=1`: the three commands below answer as they do on Linux
+// -- get returns nothing, set and delete are no-ops -- so the shell starts
+// from IndexedDB alone.
+//
+// This exists for the unattended dev pass, and the trap it removes is a
+// specific one (docs/prompts/video-next-stages-handoff.md §2.1, §10): the
+// keychain is *account*-scoped rather than origin-scoped, so a device id
+// vaulted by one Vite port is restored on every other one, and a device
+// revoked in the database comes back anyway. `?devlogin=` then sees a
+// session, skips signing in, and every request 401s in silence -- which
+// reads exactly like a broken server. With the vault off, a revoked device
+// is forgotten the way the web client forgets one.
+//
+// Debug builds only, so a release bundle cannot carry it; vault.ts needs no
+// change, because it already treats an empty answer as "nothing vaulted".
+#[cfg(debug_assertions)]
+fn vault_disabled() -> bool {
+  std::env::var("WHERRY_NO_VAULT").ok().as_deref() == Some("1")
+}
+
+#[cfg(not(debug_assertions))]
+fn vault_disabled() -> bool {
+  false
+}
+
 #[tauri::command]
 fn vault_get(key: String) -> Result<Option<String>, String> {
+  if vault_disabled() {
+    return Ok(None);
+  }
   #[cfg(any(target_vendor = "apple", target_os = "windows"))]
   {
     match vault_entry(&key)?.get_password() {
@@ -58,6 +86,9 @@ fn vault_get(key: String) -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn vault_set(key: String, value: String) -> Result<(), String> {
+  if vault_disabled() {
+    return Ok(());
+  }
   #[cfg(any(target_vendor = "apple", target_os = "windows"))]
   {
     vault_entry(&key)?.set_password(&value).map_err(|e| e.to_string())
@@ -71,6 +102,9 @@ fn vault_set(key: String, value: String) -> Result<(), String> {
 
 #[tauri::command]
 fn vault_delete(key: String) -> Result<(), String> {
+  if vault_disabled() {
+    return Ok(());
+  }
   #[cfg(any(target_vendor = "apple", target_os = "windows"))]
   {
     match vault_entry(&key)?.delete_credential() {
@@ -191,6 +225,13 @@ pub fn run() {
       // which is the one state that reproduces the dead boot on demand (a
       // view that has never been visible gets no grace). A second launch
       // shows it again, through the single-instance plugin above.
+      // `WHERRY_NO_VAULT=1` says so once at boot: a shell that has silently
+      // stopped restoring its session should say why in the log that is the
+      // only console it has.
+      #[cfg(debug_assertions)]
+      if vault_disabled() {
+        log::warn!("shell: keychain vault disabled (WHERRY_NO_VAULT=1)");
+      }
       #[cfg(all(desktop, debug_assertions))]
       if std::env::var("WHERRY_HIDE").ok().as_deref() == Some("1") {
         use tauri::Manager;
