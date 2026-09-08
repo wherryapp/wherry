@@ -100,12 +100,12 @@ pub struct VoiceError {
 }
 
 impl VoiceError {
-  fn new(code: &'static str, message: impl Into<String>) -> Self {
+  pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
     Self { code, message: message.into() }
   }
 }
 
-type VoiceResult<T> = Result<T, VoiceError>;
+pub(crate) type VoiceResult<T> = Result<T, VoiceError>;
 
 // -- the audio device module ------------------------------------------------
 

@@ -548,6 +548,14 @@ function maybeDevClick(params: URLSearchParams): void {
       // that appears once a reconnect finishes is exactly what the row after
       // an engine switch waits on. Retry to the deadline, then say so.
       if (Date.now() < deadline) {
+        // Say so every few seconds rather than going quiet for two
+        // minutes: a watcher reading the collector should be able to tell
+        // "still waiting for a control that has not appeared" from "the
+        // page is dead", and the two look identical in silence.
+        const waited = Math.round((Date.now() - (deadline - DEV_CLICK_WAIT_MS)) / 1_000);
+        if (waited > 0 && waited % 10 === 0) {
+          record("call", { method: "__dev-click", args: [{ label, waitingSeconds: waited }] });
+        }
         setTimeout(() => press(label, deadline), DEV_CLICK_RETRY_MS);
         return;
       }
@@ -607,6 +615,62 @@ function maybeDevScreen(params: URLSearchParams): void {
         });
       });
   }, DEV_SCREEN_DELAY_MS);
+}
+
+/**
+ * `?devnativeview=1`: path (b)'s z-order spike, driven from the page.
+ *
+ * A native view is above *everything* the page draws, so the question the
+ * handoff makes candidate (b)'s gate is what a Popover, a profile card or
+ * the photo viewer looks like over a face. This puts a native view where a
+ * video tile would be and then opens things over it on a timer, so the
+ * answer is a person looking at a window rather than a benchmark.
+ *
+ * **Deliberately not tied to a call.** The first version measured the call
+ * page's `<video>` and retried until one existed — which, when a call had
+ * ended, waited for ever, and on the way in it dragged a peer, a media
+ * path and the webview transport's known keychain stall into a question
+ * that is about a rectangle. A fixed rect in the middle of the window
+ * answers it exactly as well and starts in seconds.
+ *
+ * Deleted with the spike.
+ */
+function maybeDevNativeView(params: URLSearchParams): void {
+  if (params.get("devnativeview") !== "1") return;
+  void (async () => {
+    const core = await import("@tauri-apps/api/core");
+    // Where a featured tile sits: a 16:9 box inset from the top left, under
+    // whatever chrome the app is drawing.
+    const width = Math.min(560, Math.round(window.innerWidth * 0.6));
+    const height = Math.round((width * 9) / 16);
+    const rect = { x: 24, y: 140, width, height };
+    const said = await core
+      .invoke<string>("spike_view_show", rect)
+      .catch((error: unknown) => `failed: ${String(error)}`);
+    record("call", { method: "__spike-view", args: [{ rect, said }] });
+
+    // Then cover it, on a timer, so somebody watching sees each case.
+    const steps: [string, () => void][] = [
+      ["profile card", () => {
+        const avatar = Array.from(document.querySelectorAll("button")).find((b) =>
+          /^View .*profile/.test(b.getAttribute("aria-label") ?? ""),
+        );
+        avatar?.click();
+      }],
+      ["account menu", () => {
+        const account = Array.from(document.querySelectorAll("button")).find(
+          (b) => (b.getAttribute("aria-label") ?? "").startsWith("Account"),
+        );
+        account?.click();
+      }],
+    ];
+    steps.forEach(([what, act], index) => {
+      setTimeout(() => {
+        act();
+        record("call", { method: "__spike-view", args: [{ covering: what }] });
+      }, 8_000 * (index + 1));
+    });
+  })();
 }
 
 function maybeDevCall(params: URLSearchParams): void {
@@ -734,6 +798,7 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   maybeDevUi(params);
   maybeDevClick(params);
   maybeDevScreen(params);
+  maybeDevNativeView(params);
 }
 
 /** One console argument as a line: errors by name, message and any code. */
