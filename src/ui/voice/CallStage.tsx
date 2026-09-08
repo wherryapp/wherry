@@ -16,7 +16,7 @@ import { useEffect, useRef } from "react";
 import { useBackLayer } from "../back";
 import { useIsDesktop } from "../viewport";
 import { IconButton, XIcon } from "../kit";
-import { voice, type VoiceParticipant, type VoiceState } from "../../voice/session";
+import { voice, type VoiceState } from "../../voice/session";
 import { VideoTile } from "./VideoTile";
 
 /** One thing to draw: a person's camera, a person's screen, or our own. */
@@ -197,5 +197,3 @@ export function CallStage({
     </div>
   );
 }
-
-export type { VoiceParticipant };
