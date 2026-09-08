@@ -18,6 +18,8 @@ import {
   addHubMembers,
   createHubCategory,
   createHubChannel,
+  fetchHubVideoCap,
+  setHubVideoCap,
   createHubInvite,
   deleteHub,
   deleteHubCategory,
@@ -51,6 +53,7 @@ import type {
   HubRole,
   HubSearchResult,
   ChannelKind,
+  VideoLimits,
 } from "../api/types";
 import { webOrigin } from "../api/base";
 import { sync } from "../sync/engine";
@@ -949,6 +952,8 @@ export function HubDetails({
           {avatarError && <ErrorText className="mt-1">{avatarError}</ErrorText>}
         </PanelSection>
 
+        {manages(myRole) && <HubVideoSection hubId={detail.id} />}
+
         <PanelSection title={`Channels (${detail.channels.length})`}>
           {/* Grouped under the categories the way the sidebar draws them
               (sidebar/channels.ts), empties included so a category made a
@@ -1568,5 +1573,141 @@ export function HubDetails({
       {confirmDialog}
       {promptDialog}
     </Panel>
+  );
+}
+
+/**
+ * "Video in this hub": the one `video_policy` row anything other than the
+ * migration ever writes, and it can only ever **tighten** what the policy
+ * already allowed — a moderator can stop cameras in their hub and cannot
+ * hand anybody a resolution the policy withheld. That is guaranteed by the
+ * resolver on the server (`services/video-rules.ts`, `cap` rows are a
+ * field-wise minimum), not by this form, which is why the words here can
+ * say "at most" without qualifying it.
+ *
+ * Moderators only, and it loads its own row rather than riding the hub
+ * detail: it is one small read behind a section most people never open,
+ * and threading it through every hub response would put a policy row in
+ * front of everybody who lists a hub.
+ */
+function HubVideoSection({ hubId }: { hubId: string }) {
+  const [cap, setCap] = useState<Partial<VideoLimits> | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchHubVideoCap(hubId)
+      .then((answer) => {
+        if (!cancelled) setCap(answer.limits);
+      })
+      .catch(() => {
+        if (!cancelled) setCap(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hubId]);
+
+  const save = async (next: Partial<VideoLimits> | null): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const answer = await setHubVideoCap(hubId, next);
+      setCap(answer.limits);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That did not work");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (cap === undefined) {
+    return (
+      <PanelSection title="Video in this hub">
+        <LoadingLine className="text-xs" />
+      </PanelSection>
+    );
+  }
+
+  // Absent means "no restriction of ours"; the account's own policy still
+  // applies, which is what the description says rather than "allowed".
+  const sources = cap?.sources ?? ["camera", "screen"];
+  const cameraOn = sources.includes("camera");
+  const screenOn = sources.includes("screen");
+  const height = cap?.camera?.maxHeight ?? null;
+
+  const write = (patch: Partial<VideoLimits>): void => {
+    const next: Partial<VideoLimits> = { ...(cap ?? {}), ...patch };
+    void save(next);
+  };
+
+  return (
+    <PanelSection
+      title="Video in this hub"
+      description="A restriction, never a grant: this can only narrow what someone's account already allows."
+    >
+      <div className="grid gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={cameraOn}
+            disabled={busy}
+            onChange={(event) =>
+              write({
+                sources: [
+                  ...(event.target.checked ? (["camera"] as const) : []),
+                  ...(screenOn ? (["screen"] as const) : []),
+                ],
+              })
+            }
+            className="h-4 w-4"
+          />
+          Allow cameras
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={screenOn}
+            disabled={busy}
+            onChange={(event) =>
+              write({
+                sources: [
+                  ...(cameraOn ? (["camera"] as const) : []),
+                  ...(event.target.checked ? (["screen"] as const) : []),
+                ],
+              })
+            }
+            className="h-4 w-4"
+          />
+          Allow screen sharing
+        </label>
+        <label className="grid gap-1">
+          Cameras at most
+          <Select
+            value={height === null ? "" : String(height)}
+            disabled={busy || !cameraOn}
+            onChange={(event) => {
+              const value = event.target.value;
+              write({
+                camera: value === "" ? undefined : { maxHeight: Number(value), maxFps: 30 },
+              });
+            }}
+          >
+            <option value="">No limit of this hub&apos;s own</option>
+            <option value="360">360p</option>
+            <option value="720">720p</option>
+          </Select>
+        </label>
+        {cap !== null && (
+          <div>
+            <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void save(null)}>
+              Clear this hub&apos;s limits
+            </Button>
+          </div>
+        )}
+        {error && <ErrorText>{error}</ErrorText>}
+      </div>
+    </PanelSection>
   );
 }

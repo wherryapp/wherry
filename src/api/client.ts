@@ -1792,12 +1792,36 @@ export function moderateVoice(input: {
   hubId: string;
   conversationId: string;
   userId: string;
-  action: "mute" | "disconnect";
+  action: "mute" | "disconnect" | "stop_video";
 }): Promise<void> {
   const base = `${API}/hubs/${input.hubId}/voice/${input.conversationId}`;
-  return input.action === "mute"
-    ? request<void>(`${base}/mute/${input.userId}`, { method: "POST" })
-    : request<void>(`${base}/participants/${input.userId}`, { method: "DELETE" });
+  switch (input.action) {
+    case "mute":
+      return request<void>(`${base}/mute/${input.userId}`, { method: "POST" });
+    case "stop_video":
+      return request<void>(`${base}/stop-video/${input.userId}`, { method: "POST" });
+    case "disconnect":
+      return request<void>(`${base}/participants/${input.userId}`, { method: "DELETE" });
+  }
+}
+
+/**
+ * A hub's video cap: the one `video_policy` row anything but the migration
+ * writes, and it can only ever tighten what the policy already allowed.
+ * `limits: null` clears it.
+ */
+export function fetchHubVideoCap(hubId: string): Promise<{ limits: Partial<VideoLimits> | null }> {
+  return request<{ limits: Partial<VideoLimits> | null }>(`${API}/hubs/${hubId}/video-cap`);
+}
+
+export function setHubVideoCap(
+  hubId: string,
+  limits: Partial<VideoLimits> | null,
+): Promise<{ limits: Partial<VideoLimits> | null }> {
+  return request<{ limits: Partial<VideoLimits> | null }>(`${API}/hubs/${hubId}/video-cap`, {
+    method: "PUT",
+    body: JSON.stringify({ limits }),
+  });
 }
 
 // ---------------------------------------------------------------------------

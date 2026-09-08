@@ -50,7 +50,10 @@ export function VoiceRoom({
     conversation.members.map((m) => [m.userId, m.avatarKey ?? null] as const),
   );
 
-  const moderate = async (userId: string, action: "mute" | "disconnect"): Promise<void> => {
+  const moderate = async (
+    userId: string,
+    action: "mute" | "disconnect" | "stop_video",
+  ): Promise<void> => {
     if (!conversation.hubId) return;
     setBusyUser(userId);
     setError(null);
@@ -73,14 +76,18 @@ export function VoiceRoom({
                 label={classLabel(conversation.hubVisibility ?? "public")}
               />
               <span>
-                Voice in a {classLabel(conversation.hubVisibility ?? "public").toLowerCase()}{" "}
-                hub is relayed by the server and not end-to-end encrypted.
+                Voice and video in a{" "}
+                {classLabel(conversation.hubVisibility ?? "public").toLowerCase()}{" "}
+                hub are relayed by the server and not end-to-end encrypted.
               </span>
             </>
           ) : (
             <>
               <LockIcon className="h-4 w-4 text-accent-600 dark:text-accent-400" />
-              <span>End-to-end encrypted, keyed from this channel's group.</span>
+              <span>
+                End-to-end encrypted, voice and video alike, keyed from this
+                channel&apos;s group.
+              </span>
             </>
           )}
         </div>
@@ -129,6 +136,18 @@ export function VoiceRoom({
                     >
                       Mute
                     </button>
+                    {/* Only where there is video to stop: a control that is
+                        always there and usually does nothing reads as broken,
+                        and the roster already knows. */}
+                    {(live.get(userId)?.camera || live.get(userId)?.screen) && (
+                      <button
+                        onClick={() => void moderate(userId, "stop_video")}
+                        disabled={busyUser === userId}
+                        className="text-neutral-500 hover:underline disabled:opacity-50 dark:text-neutral-400"
+                      >
+                        Stop video
+                      </button>
+                    )}
                     <button
                       onClick={() => void moderate(userId, "disconnect")}
                       disabled={busyUser === userId}
