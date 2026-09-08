@@ -245,14 +245,16 @@ export function CallPage({
       ) : (
         <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
           {featured && featuredProps && (
-            <VideoTile
-              {...featuredProps}
-              large
-              pinned={state.pinned === featured.identity}
-              onPin={() =>
-                voice.pin(state.pinned === featured.identity ? null : featured.identity)
-              }
-            />
+            <div className="min-h-0 flex-1">
+              <VideoTile
+                {...featuredProps}
+                large
+                pinned={state.pinned === featured.identity}
+                onPin={() =>
+                  voice.pin(state.pinned === featured.identity ? null : featured.identity)
+                }
+              />
+            </div>
           )}
 
           {rest.length > 0 && (

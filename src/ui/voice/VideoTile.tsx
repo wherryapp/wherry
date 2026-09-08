@@ -94,8 +94,15 @@ export function VideoTile({
 
   return (
     <div
+      // `large` is the featured tile, and it *fills* the space the page
+      // gives it rather than taking a 16:9 slice of the width -- on a tall
+      // phone with one person in the call that left three quarters of the
+      // screen black. The `<video>` inside is `object-contain`, so filling
+      // crops nothing; it only stops wasting the room. (This ternary read
+      // `aspect-video : aspect-video` until 2026-09-08 -- `large` had no
+      // effect at all.)
       className={`group relative overflow-hidden rounded-lg bg-neutral-900 ${
-        large ? "aspect-video" : "aspect-video"
+        large ? "h-full w-full" : "aspect-video"
       } ${speaking ? "ring-2 ring-emerald-500" : ""}`}
     >
       <video
