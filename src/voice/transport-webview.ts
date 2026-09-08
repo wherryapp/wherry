@@ -113,10 +113,13 @@ export class WebviewTransport implements VoiceTransport {
   #speakerDeviceId: string | null = null;
   #quality: VoiceQuality = "unknown";
   #events: TransportEvents = {};
+  /** Whether this call asked the browser for echo cancellation. */
+  #echoCancellation = true;
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
     this.#events = events;
     this.#speakerDeviceId = options.speakerDeviceId;
+    this.#echoCancellation = options.processing.echoCancellation;
     // Built before the Room so disconnect can terminate exactly the one
     // this call used, even if constructing the Room throws.
     const keys = options.e2ee ? new CallKeyProvider() : null;
@@ -125,9 +128,9 @@ export class WebviewTransport implements VoiceTransport {
       adaptiveStream: false,
       dynacast: false,
       audioCaptureDefaults: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        echoCancellation: options.processing.echoCancellation,
+        noiseSuppression: options.processing.noiseSuppression,
+        autoGainControl: options.processing.autoGainControl,
         ...(options.micDeviceId ? { deviceId: options.micDeviceId } : {}),
       },
       ...(options.speakerDeviceId ? { audioOutput: { deviceId: options.speakerDeviceId } } : {}),
@@ -271,7 +274,11 @@ export class WebviewTransport implements VoiceTransport {
     };
     let packetsSent: number | null = null;
     let roundTripMs: number | null = null;
-    const echo: EchoReport = { echoReturnLoss: null, echoReturnLossEnhancement: null };
+    const echo: EchoReport = {
+      echoReturnLoss: null,
+      echoReturnLossEnhancement: null,
+      ...(this.#echoCancellation ? {} : { disabled: true }),
+    };
     if (local) {
       try {
         const stats = await local.getSenderStats();

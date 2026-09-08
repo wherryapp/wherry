@@ -223,6 +223,12 @@ test("peerFlow tells nothing-arriving, unreadable, silent, not-playing and flowi
   assert.equal(peerFlow({ ...ok, energyDelta: null }), "flowing");
 });
 
+test("echo: a call joined with the canceller off says so, whatever the numbers read", () => {
+  assert.equal(echoState({ echoReturnLoss: 0, echoReturnLossEnhancement: 0, disabled: true }), "off");
+  assert.equal(echoState({ echoReturnLoss: -30, echoReturnLossEnhancement: 20, disabled: true }), "off");
+  assert.match(echoLine({ echoReturnLoss: 0, echoReturnLossEnhancement: 0, disabled: true }), /off for this call/);
+});
+
 test("echo: ERLE names the canceller's state; missing numbers are unreported, never a fault", () => {
   assert.equal(echoState({ echoReturnLoss: null, echoReturnLossEnhancement: null }), "unreported");
   assert.equal(echoState({ echoReturnLoss: 20, echoReturnLossEnhancement: null }), "unreported");

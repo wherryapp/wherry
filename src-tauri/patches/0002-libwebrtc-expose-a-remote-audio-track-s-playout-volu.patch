@@ -1,0 +1,104 @@
+From 9566238baccf6b0b559be05d70d3106e941cb761 Mon Sep 17 00:00:00 2001
+From: Connor Tarabocchia <318465412+ctarabocchia@users.noreply.github.com>
+Date: Mon, 7 Sep 2026 20:28:15 -0400
+Subject: [PATCH 2/2] libwebrtc: expose a remote audio track's playout volume
+
+`RtcAudioTrack::set_volume(f64)` forwards to
+`AudioTrackInterface::SetVolume`, which for a remote track reaches
+RemoteAudioSource and, through AudioRtpReceiver, the receive stream's
+gain -- the same per-track volume a browser applies with
+`HTMLMediaElement.volume`. Until now a consumer playing through the
+platform ADM could only enable or disable a remote track, so anything
+between silence and full volume was not expressible.
+
+AudioRtpReceiver expects the signaling thread, so the bridge hops
+there with a BlockingCall. The range is WebRTC's, 0.0 to 10.0 with 1.0
+as unity; a local track's source ignores the call.
+---
+ libwebrtc/src/audio_track.rs             | 7 +++++++
+ libwebrtc/src/native/audio_track.rs      | 4 ++++
+ webrtc-sys/include/livekit/audio_track.h | 1 +
+ webrtc-sys/src/audio_track.cpp           | 9 +++++++++
+ webrtc-sys/src/audio_track.rs            | 3 +++
+ 5 files changed, 24 insertions(+)
+
+diff --git a/libwebrtc/src/audio_track.rs b/libwebrtc/src/audio_track.rs
+index 911085aa..4b342acd 100644
+--- a/libwebrtc/src/audio_track.rs
++++ b/libwebrtc/src/audio_track.rs
+@@ -26,6 +26,13 @@ pub struct RtcAudioTrack {
+ 
+ impl RtcAudioTrack {
+     media_stream_track!();
++
++    /// Playout gain for a remote track: 0.0 is silent, 1.0 unity, up to
++    /// 10.0. Applied at the receive stream, so it affects only what this
++    /// peer hears. A no-op for a local track.
++    pub fn set_volume(&self, volume: f64) {
++        self.handle.set_volume(volume)
++    }
+ }
+ 
+ impl Debug for RtcAudioTrack {
+diff --git a/libwebrtc/src/native/audio_track.rs b/libwebrtc/src/native/audio_track.rs
+index 41d9ed49..7fc3b27b 100644
+--- a/libwebrtc/src/native/audio_track.rs
++++ b/libwebrtc/src/native/audio_track.rs
+@@ -30,4 +30,8 @@ impl RtcAudioTrack {
+     pub fn sys_handle(&self) -> SharedPtr<sys_at::ffi::MediaStreamTrack> {
+         audio_to_media(self.sys_handle.clone())
+     }
++
++    pub fn set_volume(&self, volume: f64) {
++        self.sys_handle.set_volume(volume)
++    }
+ }
+diff --git a/webrtc-sys/include/livekit/audio_track.h b/webrtc-sys/include/livekit/audio_track.h
+index a21fc589..39dd48fe 100644
+--- a/webrtc-sys/include/livekit/audio_track.h
++++ b/webrtc-sys/include/livekit/audio_track.h
+@@ -56,6 +56,7 @@ class AudioTrack : public MediaStreamTrack {
+ 
+   void add_sink(const std::shared_ptr<NativeAudioSink>& sink) const;
+   void remove_sink(const std::shared_ptr<NativeAudioSink>& sink) const;
++  void set_volume(double volume) const;
+ 
+  private:
+   webrtc::AudioTrackInterface* track() const {
+diff --git a/webrtc-sys/src/audio_track.cpp b/webrtc-sys/src/audio_track.cpp
+index 1738515f..45796c1d 100644
+--- a/webrtc-sys/src/audio_track.cpp
++++ b/webrtc-sys/src/audio_track.cpp
+@@ -79,6 +79,15 @@ void AudioTrack::remove_sink(
+   sinks_.erase(std::remove(sinks_.begin(), sinks_.end(), sink), sinks_.end());
+ }
+ 
++void AudioTrack::set_volume(double volume) const {
++  // AudioTrackInterface::SetVolume forwards to the source; for a remote
++  // track that is RemoteAudioSource, whose observer (AudioRtpReceiver)
++  // expects the signaling thread and applies the gain to the receive
++  // stream from there.
++  rtc_runtime_->signaling_thread()->BlockingCall(
++      [&] { track()->SetVolume(volume); });
++}
++
+ NativeAudioSink::NativeAudioSink(rust::Box<AudioSinkWrapper> observer,
+                                  int sample_rate,
+                                  int num_channels)
+diff --git a/webrtc-sys/src/audio_track.rs b/webrtc-sys/src/audio_track.rs
+index 67ed2701..8f7eb16b 100644
+--- a/webrtc-sys/src/audio_track.rs
++++ b/webrtc-sys/src/audio_track.rs
+@@ -44,6 +44,9 @@ pub mod ffi {
+ 
+         fn add_sink(self: &AudioTrack, sink: &SharedPtr<NativeAudioSink>);
+         fn remove_sink(self: &AudioTrack, sink: &SharedPtr<NativeAudioSink>);
++        /// Playout gain for a remote track, 0.0 (silent) to 10.0; 1.0 is
++        /// unity. A no-op for a local track, whose source ignores it.
++        fn set_volume(self: &AudioTrack, volume: f64);
+         fn new_native_audio_sink(
+             observer: Box<AudioSinkWrapper>,
+             sample_rate: i32,
+-- 
+2.55.0
+

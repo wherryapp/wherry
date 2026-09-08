@@ -420,6 +420,11 @@ class VoiceSession {
           token: result.token,
           e2ee,
           maxBitrate: audioPresetFor(prefs.audioQuality).maxBitrate,
+          processing: {
+            echoCancellation: prefs.echoCancellation,
+            noiseSuppression: prefs.noiseSuppression,
+            autoGainControl: prefs.autoGainControl,
+          },
           micDeviceId: prefs.micDeviceId,
           speakerDeviceId: prefs.speakerDeviceId,
           key: derived,

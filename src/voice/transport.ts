@@ -25,6 +25,19 @@
 
 import type { EchoReport } from "./rules";
 
+/**
+ * The microphone's processing switches. The webview implementation hands
+ * them to the browser (getUserMedia constraints, so the browser's own
+ * canceller, suppressor and gain control); the native one to WebRTC's
+ * software audio processing module in the shell. Fixed for the call at
+ * connect time on both.
+ */
+export type AudioProcessing = {
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+};
+
 export type TransportConnectOptions = {
   url: string;
   token: string;
@@ -32,6 +45,7 @@ export type TransportConnectOptions = {
   e2ee: boolean;
   /** Opus ceiling for what this device sends, in bits per second. */
   maxBitrate: number;
+  processing: AudioProcessing;
   /** `deviceId`s from enumerateDevices; null = the platform default. */
   micDeviceId: string | null;
   speakerDeviceId: string | null;
@@ -118,7 +132,8 @@ export interface VoiceTransport {
   /** The conversation's exporter secret for `epoch`, to be used from now. */
   setEpochKey(secret: Uint8Array, epoch: number): Promise<void>;
 
-  /** This listener's own volume for one account's devices, 0..1. */
+  /** This listener's own volume for one account's devices, 0..1: a gain on
+   *  what this device plays, never sent anywhere. */
   setParticipantVolume(userId: string, volume: number): void;
 
   /** The browser's autoplay tap; a no-op where playback needs none. */

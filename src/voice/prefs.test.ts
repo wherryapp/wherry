@@ -7,3 +7,10 @@ import { loadVoicePrefs } from "./prefs.js";
 test("a fresh device runs calls through the shell's own engine where one exists", () => {
   assert.equal(loadVoicePrefs().nativeMedia, true);
 });
+
+test("a fresh device has all three microphone processing switches on", () => {
+  const prefs = loadVoicePrefs();
+  assert.equal(prefs.echoCancellation, true);
+  assert.equal(prefs.noiseSuppression, true);
+  assert.equal(prefs.autoGainControl, true);
+});

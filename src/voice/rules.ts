@@ -410,6 +410,13 @@ export function audioPresetFor(quality: AudioQuality): { maxBitrate: number } {
 export type EchoReport = {
   echoReturnLoss: number | null;
   echoReturnLossEnhancement: number | null;
+  /**
+   * This call was joined with echo cancellation switched off (prefs.ts), so
+   * there is no canceller to report on: the numbers above are meaningless
+   * whatever they say -- the APM reports no echo metrics with the canceller
+   * off, and the native stats deserialise an absent number as 0 dB.
+   */
+  disabled?: boolean;
 };
 
 /** ERLE at or above this is a converged canceller. */
@@ -417,9 +424,10 @@ export const ERLE_CONVERGED_DB = 12;
 /** ERLE below this is a canceller that has not (yet) found the echo path. */
 export const ERLE_IDLE_DB = 3;
 
-export type EchoState = "unreported" | "idle" | "converging" | "converged";
+export type EchoState = "off" | "unreported" | "idle" | "converging" | "converged";
 
 export function echoState(report: EchoReport): EchoState {
+  if (report.disabled) return "off";
   const erle = report.echoReturnLossEnhancement;
   if (erle === null || !Number.isFinite(erle)) return "unreported";
   if (erle >= ERLE_CONVERGED_DB) return "converged";
@@ -437,6 +445,8 @@ export function echoLine(report: EchoReport): string {
     value === null || !Number.isFinite(value) ? "?" : `${Math.round(value)} dB`;
   const numbers = `ERL ${db(report.echoReturnLoss)} · ERLE ${db(report.echoReturnLossEnhancement)}`;
   switch (echoState(report)) {
+    case "off":
+      return "echo cancellation is off for this call (Settings → Voice)";
     case "unreported":
       return "canceller not reported by this browser";
     case "converged":

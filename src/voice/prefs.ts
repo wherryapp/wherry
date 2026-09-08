@@ -27,6 +27,19 @@ export type VoicePrefs = {
    */
   audioQuality: AudioQuality;
   /**
+   * The microphone's three processing switches (docs/prompts/native-media-
+   * plan.md §6). One setting, two implementations behind the transport seam:
+   * the webview hands them to the browser as getUserMedia constraints, the
+   * desktop engine to WebRTC's software audio processing module. Read at
+   * join, so a change applies to the next call. All on by default -- what
+   * both paths always did; the switches exist for the two honest reasons to
+   * turn one off (headphones leave the echo canceller nothing to remove and
+   * it can only degrade the signal; noise suppression eats music).
+   */
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+  /**
    * Run calls through the shell's own media engine rather than the
    * webview (docs/prompts/native-media-plan.md §5). **On by default since
    * 2026-09-07 (evening)**, the maintainer's decision once both of the
@@ -46,6 +59,9 @@ const DEFAULTS: VoicePrefs = {
   micDeviceId: null,
   speakerDeviceId: null,
   audioQuality: DEFAULT_AUDIO_QUALITY,
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
   nativeMedia: true,
 };
 
@@ -66,6 +82,9 @@ export function loadVoicePrefs(): VoicePrefs {
       audioQuality: isAudioQuality(parsed.audioQuality)
         ? parsed.audioQuality
         : DEFAULT_AUDIO_QUALITY,
+      echoCancellation: parsed.echoCancellation !== false,
+      noiseSuppression: parsed.noiseSuppression !== false,
+      autoGainControl: parsed.autoGainControl !== false,
       nativeMedia: parsed.nativeMedia !== false,
     };
   } catch {

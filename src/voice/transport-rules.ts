@@ -39,13 +39,23 @@ export function micErrorName(code: string): "NotFoundError" | "NotAllowedError" 
 }
 
 /**
- * What a listener's volume for somebody means natively. The Rust SDK has
- * no per-track gain (the plan's §3.1), only enabled-or-not at the WebRTC
- * track level, so anything above silence plays at full volume until an
- * upstream gain exists. Zero is the one value that must mean what it says.
+ * What a listener's volume for somebody means natively -- two things, sent
+ * together. The track is *enabled* only above silence: a disabled track
+ * costs no decoding, and zero is the one value that must mean what it says
+ * whatever the gain does. The *gain* is the volume itself, in WebRTC's
+ * receive-stream range, where 1.0 is unity: the slider is never allowed to
+ * make anybody louder than they sent themselves, so it is clamped to unity
+ * even though WebRTC would take up to 10. (Before the fork's set_volume
+ * existed, the enable flag was the whole story and anything above silence
+ * played at full volume; the plan's §3.1.)
  */
 export function playbackEnabledFor(volume: number): boolean {
   return volume > 0;
+}
+
+export function nativeGainFor(volume: number): number {
+  if (!Number.isFinite(volume)) return 1;
+  return Math.max(0, Math.min(1, volume));
 }
 
 /** The SDK's frame-cryption states that mean a frame did not open. */

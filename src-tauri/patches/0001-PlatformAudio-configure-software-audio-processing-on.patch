@@ -1,0 +1,543 @@
+From 338db9dc6168e7afa146a9d8ba1bfd7d424efca3 Mon Sep 17 00:00:00 2001
+From: Connor Tarabocchia <318465412+ctarabocchia@users.noreply.github.com>
+Date: Mon, 7 Sep 2026 20:28:15 -0400
+Subject: [PATCH 1/2] PlatformAudio: configure software audio processing on
+ desktop
+
+`configure_audio_processing` only ever touched the hardware effects
+(`enable_builtin_aec` and friends), which desktop has none of, so on
+macOS, Windows and Linux the three switches were accepted and ignored:
+WebRTC's software APM kept whatever the voice engine last applied, and
+nothing in the public API could change it.
+
+Two things set the APM's config in this build, both measured from
+libwebrtc's own log, and the fix has to cover both:
+
+- WebRtcVoiceEngine::Init applies its own defaults (AEC, NS, AGC all on)
+  once, lazily, when the first PeerConnection is created. The bridge's
+  PeerConnectionFactory therefore builds the APM itself
+  (`BuiltinAudioProcessingBuilder().Build(env)` handed back through
+  `CustomAudioProcessing`), keeps the handle, and `set_audio_processing`
+  edits the three `enabled` flags on its live config -- so the high-pass
+  filter and the analog gain controller's tuning survive -- remembering
+  the switches and re-applying them after every PeerConnection is
+  initialised.
+- AudioRtpSender::SetSend hands the audio *source's* AudioOptions to the
+  engine every time a track is sent (publish, unmute), and
+  `create_device_audio_track` hard-coded those to all-on. The device
+  track now takes its `AudioSourceOptions`, and `LocalAudioTrack` passes
+  the switches PlatformAudio was last configured with.
+
+`LkRuntime` remembers the switches, `configure_audio_processing` and the
+three `set_*` conveniences apply them (to the APM at once, and to every
+device track created from then on), and `active_*_type()` answers `None`
+for a stage that is off rather than `Software` unconditionally.
+---
+ libwebrtc/src/audio_source.rs                 |  2 +-
+ .../src/native/peer_connection_factory.rs     | 26 +++++++--
+ libwebrtc/src/peer_connection_factory.rs      | 32 ++++++++---
+ livekit/src/platform_audio/mod.rs             | 36 +++++++++++--
+ livekit/src/room/track/local_audio_track.rs   | 12 +++--
+ livekit/src/rtc_engine/lk_runtime.rs          | 28 +++++++++-
+ .../include/livekit/peer_connection_factory.h | 36 ++++++++++++-
+ webrtc-sys/src/peer_connection_factory.cpp    | 54 ++++++++++++++++---
+ webrtc-sys/src/peer_connection_factory.rs     | 16 +++++-
+ 9 files changed, 215 insertions(+), 27 deletions(-)
+
+diff --git a/libwebrtc/src/audio_source.rs b/libwebrtc/src/audio_source.rs
+index aadf7e63..e28d0471 100644
+--- a/libwebrtc/src/audio_source.rs
++++ b/libwebrtc/src/audio_source.rs
+@@ -18,7 +18,7 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 48000;
+ /// Default number of audio channels (mono).
+ pub const DEFAULT_NUM_CHANNELS: u32 = 1;
+ 
+-#[derive(Default, Debug)]
++#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct AudioSourceOptions {
+     pub echo_cancellation: bool,
+     pub noise_suppression: bool,
+diff --git a/libwebrtc/src/native/peer_connection_factory.rs b/libwebrtc/src/native/peer_connection_factory.rs
+index 8f1cd499..0262a381 100644
+--- a/libwebrtc/src/native/peer_connection_factory.rs
++++ b/libwebrtc/src/native/peer_connection_factory.rs
+@@ -20,7 +20,7 @@ use parking_lot::Mutex;
+ use webrtc_sys::{peer_connection_factory as sys_pcf, rtc_error as sys_err, webrtc as sys_rtc};
+ 
+ use crate::{
+-    audio_source::native::NativeAudioSource,
++    audio_source::{native::NativeAudioSource, AudioSourceOptions},
+     audio_track::RtcAudioTrack,
+     imp::{audio_track as imp_at, peer_connection as imp_pc, video_track as imp_vt},
+     peer_connection::PeerConnection,
+@@ -125,14 +125,34 @@ impl PeerConnectionFactory {
+     ///
+     /// This requires that `enable_platform_adm()` was called first.
+     /// The track will capture audio from the selected recording device.
+-    pub fn create_device_audio_track(&self, label: &str) -> RtcAudioTrack {
++    /// `options` are the source's processing switches; the send path applies
++    /// them to the APM whenever the track is sent, so pass the same values
++    /// `set_audio_processing` was given.
++    pub fn create_device_audio_track(
++        &self,
++        label: &str,
++        options: AudioSourceOptions,
++    ) -> RtcAudioTrack {
+         RtcAudioTrack {
+             handle: imp_at::RtcAudioTrack {
+-                sys_handle: self.sys_handle.create_device_audio_track(label.to_string()),
++                sys_handle: self
++                    .sys_handle
++                    .create_device_audio_track(label.to_string(), options.into()),
+             },
+         }
+     }
+ 
++    /// Configure WebRTC's software audio processing module -- echo
++    /// cancellation, noise suppression and automatic gain control -- for every
++    /// audio send stream of this factory, taking effect immediately.
++    pub fn set_audio_processing(&self, options: AudioSourceOptions) {
++        self.sys_handle.set_audio_processing(
++            options.echo_cancellation,
++            options.noise_suppression,
++            options.auto_gain_control,
++        );
++    }
++
+     pub fn get_rtp_sender_capabilities(&self, media_type: MediaType) -> RtpCapabilities {
+         self.sys_handle.rtp_sender_capabilities(media_type.into()).into()
+     }
+diff --git a/libwebrtc/src/peer_connection_factory.rs b/libwebrtc/src/peer_connection_factory.rs
+index 1eb0392e..f7c3ea9a 100644
+--- a/libwebrtc/src/peer_connection_factory.rs
++++ b/libwebrtc/src/peer_connection_factory.rs
+@@ -134,8 +134,10 @@ mod tests {
+ pub mod native {
+     use super::PeerConnectionFactory;
+     use crate::{
+-        audio_source::native::NativeAudioSource, audio_track::RtcAudioTrack,
+-        video_source::native::NativeVideoSource, video_track::RtcVideoTrack,
++        audio_source::{native::NativeAudioSource, AudioSourceOptions},
++        audio_track::RtcAudioTrack,
++        video_source::native::NativeVideoSource,
++        video_track::RtcVideoTrack,
+     };
+ 
+     pub trait PeerConnectionFactoryExt {
+@@ -143,8 +145,18 @@ pub mod native {
+         fn create_audio_track(&self, label: &str, source: NativeAudioSource) -> RtcAudioTrack;
+ 
+         /// Create an audio track that uses the Platform ADM for capture.
+-        /// The track will capture audio from the selected recording device.
+-        fn create_device_audio_track(&self, label: &str) -> RtcAudioTrack;
++        /// The track will capture audio from the selected recording device,
++        /// with `options` as the source's processing switches (the send
++        /// path applies them to the APM whenever the track is sent).
++        fn create_device_audio_track(
++            &self,
++            label: &str,
++            options: AudioSourceOptions,
++        ) -> RtcAudioTrack;
++
++        /// Configure the software audio processing module (echo cancellation,
++        /// noise suppression, gain control) for every audio send stream, live.
++        fn set_audio_processing(&self, options: AudioSourceOptions);
+ 
+         // Device enumeration
+         fn playout_devices(&self) -> i16;
+@@ -214,8 +226,16 @@ pub mod native {
+             self.handle.create_audio_track(label, source)
+         }
+ 
+-        fn create_device_audio_track(&self, label: &str) -> RtcAudioTrack {
+-            self.handle.create_device_audio_track(label)
++        fn create_device_audio_track(
++            &self,
++            label: &str,
++            options: AudioSourceOptions,
++        ) -> RtcAudioTrack {
++            self.handle.create_device_audio_track(label, options)
++        }
++
++        fn set_audio_processing(&self, options: AudioSourceOptions) {
++            self.handle.set_audio_processing(options)
+         }
+ 
+         fn playout_devices(&self) -> i16 {
+diff --git a/livekit/src/platform_audio/mod.rs b/livekit/src/platform_audio/mod.rs
+index 7af17dfc..9766d0da 100644
+--- a/livekit/src/platform_audio/mod.rs
++++ b/livekit/src/platform_audio/mod.rs
+@@ -1046,8 +1046,10 @@ impl PlatformAudio {
+     pub fn active_aec_type(&self) -> AudioProcessingType {
+         if self.is_hardware_aec_available() {
+             AudioProcessingType::Hardware
+-        } else {
++        } else if self.handle.runtime.audio_processing_options().echo_cancellation {
+             AudioProcessingType::Software
++        } else {
++            AudioProcessingType::None
+         }
+     }
+ 
+@@ -1055,8 +1057,10 @@ impl PlatformAudio {
+     pub fn active_agc_type(&self) -> AudioProcessingType {
+         if self.is_hardware_agc_available() {
+             AudioProcessingType::Hardware
+-        } else {
++        } else if self.handle.runtime.audio_processing_options().auto_gain_control {
+             AudioProcessingType::Software
++        } else {
++            AudioProcessingType::None
+         }
+     }
+ 
+@@ -1064,8 +1068,10 @@ impl PlatformAudio {
+     pub fn active_ns_type(&self) -> AudioProcessingType {
+         if self.is_hardware_ns_available() {
+             AudioProcessingType::Hardware
+-        } else {
++        } else if self.handle.runtime.audio_processing_options().noise_suppression {
+             AudioProcessingType::Software
++        } else {
++            AudioProcessingType::None
+         }
+     }
+ 
+@@ -1079,7 +1085,9 @@ impl PlatformAudio {
+     /// - **iOS**: `prefer_hardware_processing` is ignored (always uses VPIO)
+     /// - **Android**: When `prefer_hardware_processing` is `false`, hardware
+     ///   effects are disabled and WebRTC's software APM is used instead
+-    /// - **Desktop**: `prefer_hardware_processing` is ignored (hardware not available)
++    /// - **Desktop**: `prefer_hardware_processing` is ignored (hardware not available).
++    ///   The three switches configure WebRTC's software APM directly and take
++    ///   effect immediately, for a microphone that is already published too.
+     ///
+     /// # Example
+     ///
+@@ -1100,6 +1108,14 @@ impl PlatformAudio {
+     pub fn configure_audio_processing(&self, options: AudioProcessingOptions) -> AudioResult<()> {
+         let runtime = &self.handle.runtime;
+ 
++        // The software side: WebRTC's APM, reconfigured live for every send
++        // stream. On desktop this is the only side there is.
++        runtime.set_audio_processing_options(libwebrtc::audio_source::AudioSourceOptions {
++            echo_cancellation: options.echo_cancellation,
++            noise_suppression: options.noise_suppression,
++            auto_gain_control: options.auto_gain_control,
++        });
++
+         // Configure hardware vs software processing preference
+         // When prefer_hardware_processing is false, we disable hardware effects
+         // to force WebRTC to use its software APM instead
+@@ -1151,6 +1167,10 @@ impl PlatformAudio {
+     /// * `enable` - `true` to enable AEC, `false` to disable
+     /// * `prefer_hardware` - `true` to prefer hardware AEC on supported devices
+     pub fn set_echo_cancellation(&self, enable: bool, prefer_hardware: bool) -> AudioResult<()> {
++        let runtime = &self.handle.runtime;
++        let mut options = runtime.audio_processing_options();
++        options.echo_cancellation = enable;
++        runtime.set_audio_processing_options(options);
+         if self.is_hardware_aec_available() {
+             let enable_hw = enable && prefer_hardware;
+             if !self.handle.runtime.enable_builtin_aec(enable_hw) {
+@@ -1167,6 +1187,10 @@ impl PlatformAudio {
+     /// * `enable` - `true` to enable AGC, `false` to disable
+     /// * `prefer_hardware` - `true` to prefer hardware AGC on supported devices
+     pub fn set_auto_gain_control(&self, enable: bool, prefer_hardware: bool) -> AudioResult<()> {
++        let runtime = &self.handle.runtime;
++        let mut options = runtime.audio_processing_options();
++        options.auto_gain_control = enable;
++        runtime.set_audio_processing_options(options);
+         if self.is_hardware_agc_available() {
+             let enable_hw = enable && prefer_hardware;
+             if !self.handle.runtime.enable_builtin_agc(enable_hw) {
+@@ -1183,6 +1207,10 @@ impl PlatformAudio {
+     /// * `enable` - `true` to enable NS, `false` to disable
+     /// * `prefer_hardware` - `true` to prefer hardware NS on supported devices
+     pub fn set_noise_suppression(&self, enable: bool, prefer_hardware: bool) -> AudioResult<()> {
++        let runtime = &self.handle.runtime;
++        let mut options = runtime.audio_processing_options();
++        options.noise_suppression = enable;
++        runtime.set_audio_processing_options(options);
+         if self.is_hardware_ns_available() {
+             let enable_hw = enable && prefer_hardware;
+             if !self.handle.runtime.enable_builtin_ns(enable_hw) {
+diff --git a/livekit/src/room/track/local_audio_track.rs b/livekit/src/room/track/local_audio_track.rs
+index 1fecdca7..64a29825 100644
+--- a/livekit/src/room/track/local_audio_track.rs
++++ b/livekit/src/room/track/local_audio_track.rs
+@@ -64,9 +64,15 @@ impl LocalAudioTrack {
+                 // Create an audio track that uses the Platform ADM for capture.
+                 // Use PlatformAudio::new() to enable platform audio before creating this track.
+                 use libwebrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
+-                LkRuntime::instance()
+-                    .pc_factory()
+-                    .create_device_audio_track(&libwebrtc::native::create_random_uuid())
++                // The source carries the switches PlatformAudio was last
++                // configured with: the send path re-applies a source's
++                // options to the APM on every publish and unmute, so a track
++                // created with the engine's defaults would undo them.
++                let runtime = LkRuntime::instance();
++                runtime.pc_factory().create_device_audio_track(
++                    &libwebrtc::native::create_random_uuid(),
++                    runtime.audio_processing_options(),
++                )
+             }
+             #[allow(unreachable_patterns)]
+             _ => panic!("unsupported audio source"),
+diff --git a/livekit/src/rtc_engine/lk_runtime.rs b/livekit/src/rtc_engine/lk_runtime.rs
+index 403fc4d2..afbec9b1 100644
+--- a/livekit/src/rtc_engine/lk_runtime.rs
++++ b/livekit/src/rtc_engine/lk_runtime.rs
+@@ -18,6 +18,7 @@ use std::{
+ };
+ 
+ use lazy_static::lazy_static;
++use libwebrtc::audio_source::AudioSourceOptions;
+ use libwebrtc::prelude::*;
+ use parking_lot::Mutex;
+ use thiserror::Error;
+@@ -57,6 +58,10 @@ pub struct WebRtcRuntimeInitializedError;
+ pub struct LkRuntime {
+     pc_factory: PeerConnectionFactory,
+     zero_playout_delay: bool,
++    /// The software audio processing switches as last applied to the
++    /// factory's APM (`PlatformAudio::configure_audio_processing`). All on
++    /// by default, which is what the voice engine sets at init.
++    audio_processing_options: Mutex<AudioSourceOptions>,
+ }
+ 
+ impl Debug for LkRuntime {
+@@ -89,7 +94,15 @@ impl LkRuntime {
+             let pc_factory = PeerConnectionFactory::with_options(zero_playout_delay, true);
+             #[cfg(target_arch = "wasm32")]
+             let pc_factory = PeerConnectionFactory::default();
+-            let new_runtime = Arc::new(Self { pc_factory, zero_playout_delay });
++            let new_runtime = Arc::new(Self {
++                pc_factory,
++                zero_playout_delay,
++                audio_processing_options: Mutex::new(AudioSourceOptions {
++                    echo_cancellation: true,
++                    noise_suppression: true,
++                    auto_gain_control: true,
++                }),
++            });
+             state.runtime = Arc::downgrade(&new_runtime);
+             new_runtime
+         }
+@@ -99,6 +112,19 @@ impl LkRuntime {
+         &self.pc_factory
+     }
+ 
++    /// The software processing switches as last applied.
++    pub(crate) fn audio_processing_options(&self) -> AudioSourceOptions {
++        *self.audio_processing_options.lock()
++    }
++
++    /// Apply the software processing switches to the factory's APM, for every
++    /// audio send stream, now -- a published microphone follows immediately.
++    pub(crate) fn set_audio_processing_options(&self, options: AudioSourceOptions) {
++        *self.audio_processing_options.lock() = options;
++        #[cfg(not(target_arch = "wasm32"))]
++        self.pc_factory.set_audio_processing(options);
++    }
++
+     // ===== Device Management Methods =====
+     // These methods are internal - used by PlatformAudio. Use PlatformAudio for the public API.
+ 
+diff --git a/webrtc-sys/include/livekit/peer_connection_factory.h b/webrtc-sys/include/livekit/peer_connection_factory.h
+index 4f2e4abd..c6f9187b 100644
+--- a/webrtc-sys/include/livekit/peer_connection_factory.h
++++ b/webrtc-sys/include/livekit/peer_connection_factory.h
+@@ -16,11 +16,14 @@
+ 
+ #pragma once
+ 
++#include <optional>
++
+ #include "api/environment/environment_factory.h"
+ #include "api/peer_connection_interface.h"
+ #include "api/scoped_refptr.h"
+ #include "api/task_queue/task_queue_factory.h"
+ #include "livekit/adm_proxy.h"
++#include "livekit/audio_track.h"
+ #include "livekit/audio_device_controller.h"
+ #include "media_stream.h"
+ #include "rtp_parameters.h"
+@@ -65,14 +68,30 @@ class PeerConnectionFactory {
+       std::shared_ptr<AudioTrackSource> source) const;
+ 
+   // Create an audio track that uses the ADM for capture (microphone)
+-  // This creates a track that captures from the selected recording device
++  // This creates a track that captures from the selected recording device.
++  // `options` become the source's AudioOptions: AudioRtpSender::SetSend
++  // hands them to the voice engine, which applies them to the APM every
++  // time the track is sent (publish, unmute), so they have to say the same
++  // thing as set_audio_processing or the send path undoes it.
+   std::shared_ptr<AudioTrack> create_device_audio_track(
+-      rust::String label) const;
++      rust::String label,
++      AudioSourceOptions options) const;
+ 
+   RtpCapabilities rtp_sender_capabilities(MediaType type) const;
+ 
+   RtpCapabilities rtp_receiver_capabilities(MediaType type) const;
+ 
++  // Configure the software audio processing module (echo cancellation,
++  // noise suppression, gain control) for every audio send stream, now and
++  // for the rest of the factory's life. Applied to the APM directly, and
++  // remembered: WebRtcVoiceEngine::Init applies its own defaults (all on)
++  // once, lazily, when the first PeerConnection is created, so the switches
++  // are re-applied after every PeerConnection is initialised. Later option
++  // passes start from the APM's current config and leave them alone.
++  void set_audio_processing(bool echo_cancellation,
++                            bool noise_suppression,
++                            bool auto_gain_control) const;
++
+   std::shared_ptr<RtcRuntime> rtc_runtime() const { return rtc_runtime_; }
+   std::shared_ptr<AudioDeviceController> audio_device() const;
+   bool zero_playout_delay_enabled() const;
+@@ -86,6 +105,19 @@ class PeerConnectionFactory {
+   webrtc::scoped_refptr<AdmProxy> adm_proxy_;
+   std::shared_ptr<AudioDeviceController> audio_device_;
+   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> peer_factory_;
++  struct AudioProcessingSwitches {
++    bool echo_cancellation;
++    bool noise_suppression;
++    bool auto_gain_control;
++  };
++  void apply_audio_processing_switches(
++      const AudioProcessingSwitches& switches) const;
++
++  // The factory's own APM, built here rather than by the media engine so
++  // set_audio_processing has a handle to it, and the last switches asked
++  // for (re-applied after each PeerConnection is initialised, see above).
++  webrtc::scoped_refptr<webrtc::AudioProcessing> audio_processing_;
++  mutable std::optional<AudioProcessingSwitches> audio_processing_switches_;
+   webrtc::Environment env_;
+ };
+ 
+diff --git a/webrtc-sys/src/peer_connection_factory.cpp b/webrtc-sys/src/peer_connection_factory.cpp
+index 2595f27a..821c39ad 100644
+--- a/webrtc-sys/src/peer_connection_factory.cpp
++++ b/webrtc-sys/src/peer_connection_factory.cpp
+@@ -192,7 +192,11 @@ PeerConnectionFactory::PeerConnectionFactory(
+       std::move(std::make_unique<livekit_ffi::VideoDecoderFactory>());
+   dependencies.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
+   dependencies.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
+-  dependencies.audio_processing_builder = std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
++  // Build the APM ourselves and hand the factory a builder that returns it,
++  // so set_audio_processing can reconfigure it later.
++  audio_processing_ = webrtc::BuiltinAudioProcessingBuilder().Build(env_);
++  dependencies.audio_processing_builder =
++      webrtc::CustomAudioProcessing(audio_processing_);
+ 
+   webrtc::EnableMedia(dependencies);
+   peer_factory_ =
+@@ -224,6 +228,12 @@ std::shared_ptr<PeerConnection> PeerConnectionFactory::create_peer_connection(
+         webrtc::RTCErrorType::INTERNAL_ERROR, "failed to initialize pc"))));
+   }
+ 
++  // The voice engine's lazy Init (first PeerConnection) has just applied
++  // its own defaults over the APM; put the requested switches back.
++  if (audio_processing_switches_) {
++    apply_audio_processing_switches(*audio_processing_switches_);
++  }
++
+   return pc;
+ }
+ 
+@@ -243,13 +253,45 @@ std::shared_ptr<AudioTrack> PeerConnectionFactory::create_audio_track(
+           peer_factory_->CreateAudioTrack(label.c_str(), source->get().get())));
+ }
+ 
++void PeerConnectionFactory::set_audio_processing(bool echo_cancellation,
++                                                 bool noise_suppression,
++                                                 bool auto_gain_control) const {
++  audio_processing_switches_ = AudioProcessingSwitches{
++      echo_cancellation, noise_suppression, auto_gain_control};
++  apply_audio_processing_switches(*audio_processing_switches_);
++}
++
++void PeerConnectionFactory::apply_audio_processing_switches(
++    const AudioProcessingSwitches& switches) const {
++  if (!audio_processing_) {
++    RTC_LOG(LS_WARNING) << "set_audio_processing: no audio processing module";
++    return;
++  }
++  // Start from the live config so everything the voice engine set at init
++  // (the high-pass filter, the analog gain controller's tuning) survives;
++  // only the three switches move. gain_controller1 is the one the engine
++  // enables on desktop; gain_controller2 stays as the engine left it.
++  webrtc::AudioProcessing::Config config = audio_processing_->GetConfig();
++  config.echo_canceller.enabled = switches.echo_cancellation;
++  config.noise_suppression.enabled = switches.noise_suppression;
++  config.gain_controller1.enabled = switches.auto_gain_control;
++  audio_processing_->ApplyConfig(config);
++  RTC_LOG(LS_INFO) << "set_audio_processing: aec=" << switches.echo_cancellation
++                   << " ns=" << switches.noise_suppression
++                   << " agc=" << switches.auto_gain_control;
++}
++
+ std::shared_ptr<AudioTrack> PeerConnectionFactory::create_device_audio_track(
+-    rust::String label) const {
+-  // Create an audio source that uses the ADM for capture
++    rust::String label,
++    AudioSourceOptions options) const {
++  // Create an audio source that uses the ADM for capture. Its AudioOptions
++  // are re-applied to the APM by the send path on every publish and unmute
++  // (measured from the engine's log), so they carry the same switches
++  // set_audio_processing applies directly.
+   webrtc::AudioOptions audio_options;
+-  audio_options.echo_cancellation = true;
+-  audio_options.auto_gain_control = true;
+-  audio_options.noise_suppression = true;
++  audio_options.echo_cancellation = options.echo_cancellation;
++  audio_options.auto_gain_control = options.auto_gain_control;
++  audio_options.noise_suppression = options.noise_suppression;
+ 
+   webrtc::scoped_refptr<webrtc::AudioSourceInterface> audio_source =
+       peer_factory_->CreateAudioSource(audio_options);
+diff --git a/webrtc-sys/src/peer_connection_factory.rs b/webrtc-sys/src/peer_connection_factory.rs
+index 552a3958..004e95bf 100644
+--- a/webrtc-sys/src/peer_connection_factory.rs
++++ b/webrtc-sys/src/peer_connection_factory.rs
+@@ -57,6 +57,7 @@ pub mod ffi {
+         type IceConnectionState = crate::peer_connection::ffi::IceConnectionState;
+         type IceGatheringState = crate::peer_connection::ffi::IceGatheringState;
+         type AudioTrackSource = crate::audio_track::ffi::AudioTrackSource;
++        type AudioSourceOptions = crate::audio_track::ffi::AudioSourceOptions;
+         type VideoTrackSource = crate::video_track::ffi::VideoTrackSource;
+         type RtpCapabilities = crate::rtp_parameters::ffi::RtpCapabilities;
+         type AudioTrack = crate::audio_track::ffi::AudioTrack;
+@@ -115,12 +116,25 @@ pub mod ffi {
+             source: SharedPtr<AudioTrackSource>,
+         ) -> SharedPtr<AudioTrack>;
+ 
+-        // Create an audio track that uses the ADM for capture (Platform ADM mode)
++        // Create an audio track that uses the ADM for capture (Platform ADM mode).
++        // `options` become the source's AudioOptions, which the send path
++        // applies to the APM every time the track is (re)sent -- publish,
++        // unmute -- so they must agree with set_audio_processing below.
+         fn create_device_audio_track(
+             self: &PeerConnectionFactory,
+             label: String,
++            options: AudioSourceOptions,
+         ) -> SharedPtr<AudioTrack>;
+ 
++        // Configure the software audio processing module (AEC, NS, AGC) for
++        // every audio send stream, live.
++        fn set_audio_processing(
++            self: &PeerConnectionFactory,
++            echo_cancellation: bool,
++            noise_suppression: bool,
++            auto_gain_control: bool,
++        );
++
+         fn rtp_sender_capabilities(
+             self: &PeerConnectionFactory,
+             kind: MediaType,
+-- 
+2.55.0
+

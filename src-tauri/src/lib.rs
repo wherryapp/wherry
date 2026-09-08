@@ -151,6 +151,7 @@ pub fn run() {
     voice::voice_set_output_device,
     voice::voice_set_epoch_key,
     voice::voice_set_playback,
+    voice::voice_set_volume,
     voice::voice_roster,
     voice::voice_stats,
     voice::voice_pong,
@@ -161,11 +162,16 @@ pub fn run() {
   builder
     .setup(|app| {
       if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
+        let mut logger = tauri_plugin_log::Builder::default().level(log::LevelFilter::Info);
+        // `WHERRY_WEBRTC_LOG=1`: libwebrtc's own log, which the SDK forwards at
+        // debug level under the `libwebrtc` target -- `ApplyOptions`,
+        // `AudioProcessing::ApplyConfig`, the ADM's device lines. Thousands
+        // of lines per call, so off unless asked; it is how the processing
+        // switches were shown to reach the APM (native-media-plan.md §6).
+        if std::env::var("WHERRY_WEBRTC_LOG").ok().as_deref() == Some("1") {
+          logger = logger.level_for("libwebrtc", log::LevelFilter::Debug);
+        }
+        app.handle().plugin(logger.build())?;
       }
       // The boot-time page probe (voice.rs, "the page probe"): debug builds
       // only, desktop only, and the instrument gate 2 of the native media

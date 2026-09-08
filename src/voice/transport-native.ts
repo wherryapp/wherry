@@ -29,6 +29,7 @@ import {
   isEncryptionFailure,
   knownDeviceId,
   micErrorName,
+  nativeGainFor,
   playbackEnabledFor,
   qualityFromWord,
   userIdFromMetadata,
@@ -93,9 +94,13 @@ export class NativeTransport implements VoiceTransport {
   #volumes = new Map<string, number>();
   /** Identities whose playback flag has been sent to the shell. */
   #playbackSent = new Set<string>();
+  /** Whether this call was joined with the echo canceller on (rules.ts's
+   *  EchoReport.disabled is the readout's honest word when it was not). */
+  #echoCancellation = true;
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
     this.#events = events;
+    this.#echoCancellation = options.processing.echoCancellation;
     const [core, event] = await Promise.all([
       import("@tauri-apps/api/core"),
       import("@tauri-apps/api/event"),
@@ -121,6 +126,7 @@ export class NativeTransport implements VoiceTransport {
           token: options.token,
           e2ee: options.e2ee,
           maxBitrate: options.maxBitrate,
+          processing: options.processing,
           micDeviceId: knownDeviceId(options.micDeviceId, devices.inputs),
           speakerDeviceId: knownDeviceId(options.speakerDeviceId, devices.outputs),
           key: options.key
@@ -236,7 +242,11 @@ export class NativeTransport implements VoiceTransport {
     const invoke = this.#invoke;
     if (!invoke || this.#session === null) return null;
     try {
-      return await invoke<TransportStats>("voice_stats");
+      const stats = await invoke<TransportStats>("voice_stats");
+      // With the canceller off the APM reports no echo metrics, and the
+      // shell's stats read an absent number as 0 dB; say "off" instead.
+      if (!this.#echoCancellation) stats.echo = { ...stats.echo, disabled: true };
+      return stats;
     } catch {
       return null;
     }
@@ -288,15 +298,17 @@ export class NativeTransport implements VoiceTransport {
     }
   }
 
+  /** The enable flag and the gain, both decided here (transport-rules.ts). */
   #sendPlayback(identity: string, volume: number): void {
     const invoke = this.#invoke;
     if (!invoke || this.#session === null) return;
     this.#playbackSent.add(identity);
-    void invoke("voice_set_playback", { identity, enabled: playbackEnabledFor(volume) }).catch(
-      () => {
-        // The next roster event tries again.
-        this.#playbackSent.delete(identity);
-      },
-    );
+    void Promise.all([
+      invoke("voice_set_playback", { identity, enabled: playbackEnabledFor(volume) }),
+      invoke("voice_set_volume", { identity, volume: nativeGainFor(volume) }),
+    ]).catch(() => {
+      // The next roster event tries again.
+      this.#playbackSent.delete(identity);
+    });
   }
 }

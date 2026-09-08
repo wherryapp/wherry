@@ -48,6 +48,14 @@
 //                                    Stored like the toggle stores it
 //                                    (voice/prefs.ts), so it outlives the
 //                                    URL; pass 0 to put the device back.
+//   ?devprocessing=aec,ns,agc        Sets the three microphone processing
+//                                    switches for this device as 0/1 in that
+//                                    order (e.g. 0,1,1 turns echo cancellation
+//                                    off). Settings → Voice, without a tap.
+//   ?devvolume=<0..1>&devvolumeafter=<s>  With ?devcall: once connected,
+//                                    waits <s> seconds (default 20) and sets
+//                                    every peer's volume to the value -- the
+//                                    unattended check of the native gain.
 //
 //   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
 //                                    environment rather than the URL, for a
@@ -291,15 +299,31 @@ function maybeDevNative(params: URLSearchParams): void {
   window.history.replaceState(null, "", `${window.location.pathname}${query}`);
 }
 
+function maybeDevProcessing(params: URLSearchParams): void {
+  const value = params.get("devprocessing");
+  if (value === null) return;
+  const [aec, ns, agc] = value.split(",");
+  saveVoicePrefs({
+    echoCancellation: aec !== "0",
+    noiseSuppression: ns !== "0",
+    autoGainControl: agc !== "0",
+  });
+  params.delete("devprocessing");
+  const query = params.size > 0 ? `?${params}` : "";
+  window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+}
+
 function maybeDevCall(params: URLSearchParams): void {
   const conversationId = params.get("devcall") ?? devEnv("VITE_DEVCALL");
   if (!conversationId) return;
   const holdMs = Number(params.get("devhold") ?? "0") * 1000;
   const cycles = Math.max(1, Number(params.get("devcycles") ?? "1"));
+  const volume = params.has("devvolume") ? Number(params.get("devvolume")) : null;
+  const volumeAfterMs = Number(params.get("devvolumeafter") ?? "20") * 1000;
   if (params.has("devcall")) {
     // Out of the URL before anything can copy it: a reload must not place
     // a second call.
-    for (const key of ["devcall", "devhold", "devcycles"]) params.delete(key);
+    for (const key of ["devcall", "devhold", "devcycles", "devvolume", "devvolumeafter"]) params.delete(key);
     const query = params.size > 0 ? `?${params}` : "";
     window.history.replaceState(null, "", `${window.location.pathname}${query}`);
   }
@@ -316,6 +340,15 @@ function maybeDevCall(params: URLSearchParams): void {
       // frame-encrypted, which is the path worth exercising. A public
       // room's plain relay is not what this instrument is for.
       void voice.startCall({ id: conversationId, hubVisibility: null });
+      if (volume !== null && Number.isFinite(volume)) {
+        // The native gain check: turn every peer down after the baseline
+        // window, and say so where the collector can see it.
+        setTimeout(() => {
+          for (const p of voice.getState().participants) voice.setVolume(p.userId, volume);
+          console.error(`[voice-volume] set ${volume} for ${voice.getState().participants.length} peer(s)`);
+          record("call", { method: "__voice-volume", args: [volume] });
+        }, volumeAfterMs);
+      }
       if (holdMs > 0) {
         let placed = 1;
         const cycle = (): void => {
@@ -377,6 +410,7 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
     window.__voice = voice;
   });
   maybeDevNative(params);
+  maybeDevProcessing(params);
   maybeDevCall(params);
 }
 

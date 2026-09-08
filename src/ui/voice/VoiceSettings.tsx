@@ -1,6 +1,7 @@
-// Settings → Voice: the join-mute preference, the ringtone switch, default
-// devices, and a microphone meter that proves the device works before a
-// call depends on it. All device-local (voice/prefs.ts).
+// Settings → Voice: the join-mute preference, the ringtone switch, the
+// microphone's processing switches, default devices, and a microphone meter
+// that proves the device works before a call depends on it. All device-local
+// (voice/prefs.ts).
 
 import { useEffect, useRef, useState } from "react";
 import { Button, Select } from "../kit";
@@ -12,13 +13,43 @@ import {
   type AudioDevices,
 } from "../../voice/devices";
 import { useNativeMediaAvailable, useVoicePrefs } from "../../voice/hooks";
-import { saveVoicePrefs } from "../../voice/prefs";
+import { nativeMediaProbe } from "../../voice/native-media";
+import { saveVoicePrefs, type VoicePrefs } from "../../voice/prefs";
 import {
   AUDIO_QUALITY_KBPS,
   isAudioQuality,
   type AudioQuality,
   type JoinMutePreference,
 } from "../../voice/rules";
+
+/**
+ * The three processing switches (docs/prompts/native-media-plan.md §6),
+ * with the words the checkboxes show. One setting each; which engine
+ * applies it is the transport's business and is named beneath them.
+ */
+const PROCESSING: readonly {
+  key: keyof Pick<VoicePrefs, "echoCancellation" | "noiseSuppression" | "autoGainControl">;
+  label: string;
+}[] = [
+  { key: "echoCancellation", label: "Echo cancellation" },
+  { key: "noiseSuppression", label: "Noise suppression" },
+  { key: "autoGainControl", label: "Automatic gain control" },
+];
+
+/**
+ * Who applies the switches -- the honest half of "one echo canceller on
+ * every desktop". The shell's probe names its implementation (WebRTC's
+ * software module, on every desktop); a browser names nothing and each one
+ * has its own.
+ */
+function processingEngine(native: boolean): string {
+  if (!native) return "Applied by the browser, with its own canceller, suppressor and gain control.";
+  const probe = nativeMediaProbe();
+  const software = probe?.aec === "Software" || probe?.aec === undefined;
+  return software
+    ? "Applied by the app's own audio engine: WebRTC's software processing, the same on every desktop."
+    : `Applied by the app's own audio engine (${probe?.aec ?? "unknown"} echo canceller).`;
+}
 
 /** The tiers in ascending order, with the words the picker shows. */
 const QUALITY_LABELS: Readonly<Record<AudioQuality, string>> = {
@@ -132,15 +163,33 @@ export function VoiceSettings({
           <span className="grid gap-1">
             <span>Use the app's own audio engine</span>
             <span className="text-xs text-neutral-500 dark:text-neutral-400">
-              Experimental. Captures and plays call audio in the app itself rather
-              than in the web view: one echo canceller on every desktop, devices by
-              name, and a microphone the app owns. Applies to the next call you
-              join. While it is on, turning somebody down mutes them rather than
-              lowering them.
+              Captures and plays call audio in the app itself rather than in the
+              web view: one echo canceller on every desktop, devices by name, and
+              a microphone the app owns. Applies to the next call you join.
             </span>
           </span>
         </label>
       )}
+
+      <fieldset className="grid gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+        <legend className="mb-1">Microphone processing</legend>
+        {PROCESSING.map(({ key, label }) => (
+          <label key={key} className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={prefs[key]}
+              onChange={(e) => saveVoicePrefs({ [key]: e.target.checked })}
+              className="h-4 w-4"
+            />
+            {label}
+          </label>
+        ))}
+        <span className="text-xs text-neutral-500 dark:text-neutral-400">
+          {processingEngine(native)} Applies to the next call you join. With
+          headphones there is no echo to cancel and cancellation can only colour
+          your voice, so turn it off; turn noise suppression off for music.
+        </span>
+      </fieldset>
 
       <label className="grid gap-1 text-sm text-neutral-700 dark:text-neutral-200">
         Microphone
@@ -176,9 +225,9 @@ export function VoiceSettings({
 
       {native ? (
         <p className="text-xs text-neutral-500 dark:text-neutral-400">
-          The microphone test below belongs to the web view. With the app's audio
-          engine on, the call bar's Details panel is where the microphone's level
-          reads during a call.
+          The microphone test belongs to the web view. With the app's audio engine
+          on, the microphone is only captured for a call, so the call bar's
+          Details panel is where its level reads.
         </p>
       ) : (
         <MicMeter deviceId={prefs.micDeviceId} onDevicesNamed={() => void listAudioDevices().then(setDevices)} />

@@ -33,13 +33,24 @@
 //   wrong key (only `MissingKey`), so the encryption-error count in the
 //   call details is weaker here than in the webview; the state names are
 //   forwarded as-is and TypeScript decides which count.
-// - The crate has no per-remote-track gain. `voice_set_playback` enables
-//   or disables a participant's audio track at the WebRTC level, which is
-//   silence or full volume; the TypeScript side decides what a volume maps
-//   to.
+// - Per-remote-track gain exists since stage 3 (`RtcAudioTrack::set_volume`,
+//   carried on the fork -- see Cargo.toml): `voice_set_volume` applies a
+//   playout gain at the receive stream, and `voice_set_playback` still
+//   enables or disables the track outright. TypeScript decides what a
+//   listener's 0..1 means in terms of the two.
+// - The microphone's processing switches (echo cancellation, noise
+//   suppression, gain control) are the audio *source's* options, fixed when
+//   the track is created -- so they are configured in `voice_connect`,
+//   before the microphone is published, and apply to that call. Upstream's
+//   `configure_audio_processing` was a no-op on desktop until the fork's
+//   commit made it store them (docs/prompts/native-media-plan.md §6).
+// - The audio device module raises no hot-plug event. `voice_probe` starts
+//   one poller for the life of the process that re-reads the device list
+//   every two seconds and emits `voice-devices` when it changed, so the
+//   page needs no timer of its own for it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -58,10 +69,14 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Which SDK revision this shell carries; shown by the probe so a call
 /// details readout can name it. Bump with the `rev` in Cargo.toml.
-pub const LIVEKIT_REV: &str = "rust-sdks dee418bb (2026-09-03)";
+pub const LIVEKIT_REV: &str = "rust-sdks dee418bb + wherryapp/rust-sdks wherry/stage-3 9566238b (2026-09-08)";
 
-/// The name every event from this module is emitted under.
+/// The name every per-call event from this module is emitted under.
 const EVENT: &str = "voice";
+/// The device list changed (not per call; carries the new `AudioDevices`).
+const DEVICES_EVENT: &str = "voice-devices";
+/// How often the device list is re-read for `voice-devices`.
+const DEVICE_POLL_MS: u64 = 2_000;
 
 /// Mirrors `KEYRING_SIZE` in client/src/voice/rules.ts and the
 /// `keyringSize` the webview transport passes to livekit-client. The
@@ -127,6 +142,9 @@ struct Shared {
   /// track is subscribed as well as on demand, so a participant who joins
   /// after the listener turned them down stays turned down.
   playback: Mutex<HashMap<String, bool>>,
+  /// Per remote identity, the playout gain (WebRTC's range, 1.0 is unity;
+  /// TypeScript never sends above it). Applied the same way.
+  volume: Mutex<HashMap<String, f64>>,
   /// The key index every cryptor should sit on; walked onto new cryptors
   /// as they appear.
   key_index: Mutex<i32>,
@@ -273,11 +291,20 @@ fn emit(app: &AppHandle, session: u64, event: Event) {
 }
 
 fn apply_playback(shared: &Shared, participant: &RemoteParticipant) {
-  let wanted = shared.playback.lock().unwrap().get(participant.identity().as_str()).copied();
-  let Some(enabled) = wanted else { return };
+  let identity = participant.identity();
+  let enabled = shared.playback.lock().unwrap().get(identity.as_str()).copied();
+  let volume = shared.volume.lock().unwrap().get(identity.as_str()).copied();
+  if enabled.is_none() && volume.is_none() {
+    return;
+  }
   for publication in audio_publications(participant) {
     if let Some(RemoteTrack::Audio(track)) = publication.track() {
-      track.rtc_track().set_enabled(enabled);
+      if let Some(enabled) = enabled {
+        track.rtc_track().set_enabled(enabled);
+      }
+      if let Some(volume) = volume {
+        track.rtc_track().set_volume(volume);
+      }
     }
   }
 }
@@ -392,8 +419,9 @@ pub struct Probe {
 }
 
 #[tauri::command]
-pub fn voice_probe() -> VoiceResult<Probe> {
+pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   let audio = platform_audio()?;
+  start_device_poller(app);
   Ok(Probe {
     livekit_rev: LIVEKIT_REV,
     recording_devices: audio.recording_devices().count(),
@@ -421,10 +449,8 @@ pub struct AudioDevices {
   outputs: Vec<AudioDevice>,
 }
 
-#[tauri::command]
-pub fn voice_devices() -> VoiceResult<AudioDevices> {
-  let audio = platform_audio()?;
-  Ok(AudioDevices {
+fn list_devices(audio: &PlatformAudio) -> AudioDevices {
+  AudioDevices {
     inputs: audio
       .recording_devices()
       .map(|d| AudioDevice { device_id: d.id.as_str().to_string(), label: d.name })
@@ -433,7 +459,53 @@ pub fn voice_devices() -> VoiceResult<AudioDevices> {
       .playout_devices()
       .map(|d| AudioDevice { device_id: d.id.as_str().to_string(), label: d.name })
       .collect(),
-  })
+  }
+}
+
+#[tauri::command]
+pub fn voice_devices() -> VoiceResult<AudioDevices> {
+  Ok(list_devices(&platform_audio()?))
+}
+
+static DEVICE_POLLER: AtomicBool = AtomicBool::new(false);
+
+/// Re-read the device list every `DEVICE_POLL_MS` for the life of the
+/// process and emit `voice-devices` when it differs from the last reading.
+/// The device module raises no hot-plug event of its own (the plan's §5.1),
+/// and a poll here costs a few Core Audio property reads rather than an IPC
+/// round trip from a page timer that may be throttled. Started once, by the
+/// first probe.
+fn start_device_poller(app: AppHandle) {
+  if DEVICE_POLLER.swap(true, Ordering::SeqCst) {
+    return;
+  }
+  tauri::async_runtime::spawn(async move {
+    let mut ticks = tokio::time::interval(std::time::Duration::from_millis(DEVICE_POLL_MS));
+    let mut last: Option<Vec<(String, String)>> = None;
+    loop {
+      ticks.tick().await;
+      let Ok(audio) = platform_audio() else { continue };
+      let devices = list_devices(&audio);
+      let key: Vec<(String, String)> = devices
+        .inputs
+        .iter()
+        .map(|d| (format!("in:{}", d.device_id), d.label.clone()))
+        .chain(devices.outputs.iter().map(|d| (format!("out:{}", d.device_id), d.label.clone())))
+        .collect();
+      let changed = last.as_ref().is_some_and(|previous| previous != &key);
+      last = Some(key);
+      if changed {
+        log::info!(
+          "voice: devices changed ({} input(s), {} output(s))",
+          devices.inputs.len(),
+          devices.outputs.len()
+        );
+        if let Err(error) = app.emit(DEVICES_EVENT, &devices) {
+          log::warn!("voice: emit devices failed: {error}");
+        }
+      }
+    }
+  });
 }
 
 #[derive(Deserialize)]
@@ -445,6 +517,17 @@ pub struct KeyArgs {
   key_index: i32,
 }
 
+/// The microphone's processing switches, already decided (prefs.ts). They
+/// are the audio source's options, so they apply to the track this call
+/// publishes; the engine is WebRTC's software APM on every desktop.
+#[derive(Deserialize, Clone, Copy, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessingArgs {
+  echo_cancellation: bool,
+  noise_suppression: bool,
+  auto_gain_control: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectArgs {
@@ -452,6 +535,7 @@ pub struct ConnectArgs {
   token: String,
   e2ee: bool,
   max_bitrate: u64,
+  processing: ProcessingArgs,
   /// Ids from `voice_devices`, already checked against the current list by
   /// the TypeScript side; `None` means the platform default.
   mic_device_id: Option<String>,
@@ -485,6 +569,24 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
       .set_playout_device(&PlayoutDeviceId::from_unchecked_guid(id))
       .map_err(|e| VoiceError::new("device", format!("set_playout_device: {e:?}")))?;
   }
+  // Before the microphone track exists: these are its source's options.
+  let processing = args.processing;
+  if let Err(error) = audio.configure_audio_processing(AudioProcessingOptions {
+    echo_cancellation: processing.echo_cancellation,
+    noise_suppression: processing.noise_suppression,
+    auto_gain_control: processing.auto_gain_control,
+    prefer_hardware_processing: false,
+  }) {
+    // Only the hardware path can fail, and desktop has none; a call is
+    // still worth having with the defaults.
+    log::warn!("voice: configure_audio_processing: {error:?}");
+  }
+  log::info!(
+    "voice: audio processing aec={:?} ns={:?} agc={:?}",
+    audio.active_aec_type(),
+    audio.active_ns_type(),
+    audio.active_agc_type()
+  );
 
   let shared = Arc::new(Shared::default());
   *shared.quality.lock().unwrap() = "unknown".into();
@@ -741,6 +843,20 @@ pub fn voice_set_epoch_key(key: KeyArgs) -> VoiceResult<KeyResult> {
 pub fn voice_set_playback(identity: String, enabled: bool) -> VoiceResult<()> {
   let (_, room, shared) = current()?;
   shared.playback.lock().unwrap().insert(identity.clone(), enabled);
+  if let Some(participant) = room.remote_participants().get(&ParticipantIdentity::from(identity)) {
+    apply_playback(&shared, participant);
+  }
+  Ok(())
+}
+
+/// Playout gain for one participant's audio, in WebRTC's range (1.0 is
+/// unity; TypeScript clamps to it). Applied at the receive stream, so only
+/// this listener hears the difference. Remembered for tracks that arrive
+/// later, like the enable flag.
+#[tauri::command]
+pub fn voice_set_volume(identity: String, volume: f64) -> VoiceResult<()> {
+  let (_, room, shared) = current()?;
+  shared.volume.lock().unwrap().insert(identity.clone(), volume);
   if let Some(participant) = room.remote_participants().get(&ParticipantIdentity::from(identity)) {
     apply_playback(&shared, participant);
   }

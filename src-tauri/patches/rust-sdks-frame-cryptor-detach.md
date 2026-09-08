@@ -14,8 +14,11 @@ patch, twice, with the audio still sealed both ways.
 
 **In the build since 2026-09-07 (evening)** through the fork:
 `wherryapp/rust-sdks`, branch `wherry/frame-cryptor-detach`, commit
-`73ff28ce949cd1122c0e13d8376acfd8368fa2f4` — the `[patch]` section in
-`client/src-tauri/Cargo.toml`. **The upstream pull request is open:
+`73ff28ce949cd1122c0e13d8376acfd8368fa2f4` — first through a `[patch]`
+section in `client/src-tauri/Cargo.toml`, and since 2026-09-08 because the
+`livekit` dependency itself points at the fork (`wherry/stage-3` at
+`9566238b`, this commit plus stage 3's two — `rust-sdks-stage-3.md`).
+**The upstream pull request is open:
 [livekit/rust-sdks#1408](https://github.com/livekit/rust-sdks/pull/1408)**
 (opened by the maintainer on 2026-09-07 with the command below; a session
 cannot open one itself):
@@ -28,7 +31,8 @@ gh pr create --repo livekit/rust-sdks --base main \
 ```
 
 (the body below the rule is written to be that PR's description). When it
-merges, delete the `[patch]` section and bump `rev` with `LIVEKIT_REV`.
+merges — with the two beside it — point `livekit` back at
+`livekit/rust-sdks` and bump `rev` with `LIVEKIT_REV`.
 
 Cargo cannot apply a patch file to a git dependency, so the choices were:
 

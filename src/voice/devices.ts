@@ -19,9 +19,9 @@ export type AudioDevice = { deviceId: string; label: string };
 
 export type AudioDevices = { inputs: AudioDevice[]; outputs: AudioDevice[] };
 
-/** How often the native list is re-read while somebody is watching it;
- *  the device module raises no hot-plug event of its own. */
-const NATIVE_POLL_MS = 5_000;
+/** The shell's event when the device list changed (voice.rs polls the
+ *  device module itself, since it raises no hot-plug event of its own). */
+const NATIVE_DEVICES_EVENT = "voice-devices";
 
 export function mediaSupported(): boolean {
   if (nativeMediaSelected()) return true;
@@ -79,15 +79,20 @@ export async function listAudioDevices(): Promise<AudioDevices> {
 /** Fires when a device is plugged or unplugged. Returns the unsubscribe. */
 export function onDeviceChange(listener: () => void): () => void {
   if (nativeMediaSelected()) {
-    let last: string | null = null;
-    const timer = setInterval(() => {
-      void listNativeDevices().then((devices) => {
-        const key = JSON.stringify(devices);
-        if (last !== null && key !== last) listener();
-        last = key;
-      });
-    }, NATIVE_POLL_MS);
-    return () => clearInterval(timer);
+    // The shell watches the device module and says when the list moved;
+    // no page timer, so this works while a hidden page's timers are
+    // throttled too.
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void import("@tauri-apps/api/event").then(async (event) => {
+      const off = await event.listen(NATIVE_DEVICES_EVENT, () => listener());
+      if (cancelled) off();
+      else unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }
   if (!mediaSupported()) return () => {};
   navigator.mediaDevices.addEventListener("devicechange", listener);

@@ -5,6 +5,7 @@ import {
   isEncryptionFailure,
   knownDeviceId,
   micErrorName,
+  nativeGainFor,
   playbackEnabledFor,
   qualityFromWord,
   userIdFromMetadata,
@@ -32,10 +33,23 @@ describe("micErrorName", () => {
 });
 
 describe("playbackEnabledFor", () => {
-  it("silences only at zero, since the native side has no gain", () => {
+  it("enables the track only above silence, whatever the gain says", () => {
     assert.equal(playbackEnabledFor(0), false);
     assert.equal(playbackEnabledFor(0.01), true);
     assert.equal(playbackEnabledFor(1), true);
+  });
+});
+
+describe("nativeGainFor", () => {
+  it("is the volume itself inside 0..1", () => {
+    assert.equal(nativeGainFor(0), 0);
+    assert.equal(nativeGainFor(0.4), 0.4);
+    assert.equal(nativeGainFor(1), 1);
+  });
+  it("never makes anybody louder than they sent themselves, and never NaN", () => {
+    assert.equal(nativeGainFor(3), 1);
+    assert.equal(nativeGainFor(-1), 0);
+    assert.equal(nativeGainFor(Number.NaN), 1);
   });
 });
 
