@@ -10,6 +10,7 @@
     "build:ios": "tsc -b && vite build --mode ios",
     "build:android": "tsc -b && vite build --mode android",
     "tauri": "tauri",
+    "tauri:mac": "../scripts/build-mac-signed.sh",
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "tsx --test \"src/**/*.test.ts\"",
