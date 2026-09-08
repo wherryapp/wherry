@@ -566,6 +566,49 @@ function maybeDevClick(params: URLSearchParams): void {
   });
 }
 
+/**
+ * `?devscreen=1` (or `VITE_DEVSCREEN=1`): what this engine actually does
+ * with `getDisplayMedia`, reported to the collector.
+ *
+ * Written for the wry display-capture spike, where two different stories
+ * were on record and only one can be true: that WebKit *rejects* the
+ * promise because wry's UI delegate does not answer the screen selector,
+ * or that `getDisplayMedia` is not exposed in a WKWebView at all. The
+ * first is fixable with one delegate method; the second is not fixable
+ * from wry, and shipping a fork on the strength of the wrong one is
+ * exactly what the patch file refused to do. `typeof` settles it before
+ * anything is called.
+ *
+ * Note this deliberately does NOT go through `?devcamera=canvas`, which
+ * substitutes `getDisplayMedia` -- running both would measure the stand-in.
+ */
+function maybeDevScreen(params: URLSearchParams): void {
+  if (params.get("devscreen") !== "1" && devEnv("VITE_DEVSCREEN") !== "1") return;
+  setTimeout(() => {
+    const media = navigator.mediaDevices as MediaDevices | undefined;
+    const kind = typeof media?.getDisplayMedia;
+    record("call", { method: "__dev-screen", args: [{ stage: "typeof", getDisplayMedia: kind }] });
+    if (kind !== "function") return;
+    void media!
+      .getDisplayMedia({ video: true })
+      .then((stream) => {
+        const track = stream.getVideoTracks()[0];
+        record("call", {
+          method: "__dev-screen",
+          args: [{ stage: "resolved", label: track?.label ?? null, settings: track?.getSettings() ?? null }],
+        });
+        for (const t of stream.getTracks()) t.stop();
+      })
+      .catch((error: unknown) => {
+        const e = error as { name?: string; message?: string };
+        record("call", {
+          method: "__dev-screen",
+          args: [{ stage: "rejected", name: e?.name ?? null, message: e?.message ?? String(error) }],
+        });
+      });
+  }, DEV_SCREEN_DELAY_MS);
+}
+
 function maybeDevCall(params: URLSearchParams): void {
   const conversationId = params.get("devcall") ?? devEnv("VITE_DEVCALL");
   if (!conversationId) return;
@@ -653,6 +696,8 @@ function maybeDevCall(params: URLSearchParams): void {
 const DEV_DIAG_INTERVAL_MS = 3_000;
 /** How often ?devui posts the rendered call surface. */
 const DEV_UI_INTERVAL_MS = 3_000;
+/** ?devscreen: long enough for the app to have rendered and settled. */
+const DEV_SCREEN_DELAY_MS = 12_000;
 /** ?devclick: how long to keep looking for a label, and how often. */
 const DEV_CLICK_WAIT_MS = 120_000;
 const DEV_CLICK_RETRY_MS = 1_000;
@@ -688,6 +733,7 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   maybeDevCall(params);
   maybeDevUi(params);
   maybeDevClick(params);
+  maybeDevScreen(params);
 }
 
 /** One console argument as a line: errors by name, message and any code. */

@@ -1,0 +1,48 @@
+diff --git a/src/wkwebview/class/wry_web_view_ui_delegate.rs b/src/wkwebview/class/wry_web_view_ui_delegate.rs
+index 9b21cc0..62d2ea8 100644
+--- a/src/wkwebview/class/wry_web_view_ui_delegate.rs
++++ b/src/wkwebview/class/wry_web_view_ui_delegate.rs
+@@ -259,6 +259,44 @@ define_class!(
+       }
+     }
+   }
++
++  // Not inside the `unsafe impl WKUIDelegate` block above, and that is not
++  // a style choice: objc2 checks a protocol method against the protocol it
++  // knows at class-registration time, and objc2-web-kit binds the public
++  // headers only. Declaring this there aborts the process at startup with
++  // "failed overriding protocol method ... method not found" before a
++  // window ever appears. A selector that belongs to no protocol objc2 knows
++  // goes in a plain impl block on the class.
++
++  impl WryWebViewUIDelegate {
++      // WebKit asks for a SCREEN through a different selector from the one it
++    // uses for a camera. Answering it with ScreenPrompt is what makes
++    // getDisplayMedia reach the system picker at all; Deny -- which is the
++    // behaviour of a delegate that does not implement this -- rejects the
++    // promise with nothing shown, which reads to a person as "screen
++    // sharing is broken in this app".
++    //
++    // This grants the *prompt*, never the capture: macOS still shows its
++    // own picker and still enforces the Screen Recording TCC grant against
++    // the bundle. There is nothing here that could share a screen without
++    // the person choosing one.
++    #[unsafe(method(_webView:requestDisplayCapturePermissionForOrigin:initiatedByFrame:withSystemAudio:decisionHandler:))]
++    fn request_display_capture_permission(
++      &self,
++      _webview: &WryWebView,
++      _origin: &WKSecurityOrigin,
++      _frame: &WKFrameInfo,
++      _with_system_audio: bool,
++      decision_handler: &Block<dyn Fn(isize)>,
++    ) {
++      // _WKDisplayCapturePermissionDecision, from WKUIDelegatePrivate.h:
++      // 0 Deny, 1 ScreenPrompt, 2 WindowPrompt. Not in objc2-web-kit, which
++      // binds the public headers only -- hence the raw isize.
++      const SCREEN_PROMPT: isize = 1;
++      (*decision_handler).call((SCREEN_PROMPT,));
++    }
++  }
+ );
+ 
+ impl WryWebViewUIDelegate {

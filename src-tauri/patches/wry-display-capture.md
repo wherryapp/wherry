@@ -1,9 +1,40 @@
 # wry — the display-capture permission delegate (written 2026-09-08)
 
-**Status: written, not applied and not verified — and its fate now hangs
-on stage 3N's render path** (2026-09-08). The `[patch]` section in
-`Cargo.toml` still points wry at crates.io. Read the "Why this is not
-applied yet" section before wiring it; it is the honest half of this file.
+**Status: spiked 2026-09-08, not applied, and the spike found two things
+this file had wrong.** The `[patch]` section in `Cargo.toml` still points
+wry at crates.io — nothing is shipped. Read this block and the "Why this
+is not applied yet" section before wiring it.
+
+1. **The code below, as this file first wrote it, aborts the app at
+   startup.** Put inside the `unsafe impl WKUIDelegate` block beside the
+   camera method, objc2 checks it against the protocol it knows —
+   objc2-web-kit binds the *public* headers only — and kills the process
+   before a window appears:
+   `failed overriding protocol method -[WKUIDelegate _webView:request
+   DisplayCapturePermissionForOrigin:initiatedByFrame:withSystemAudio:
+   decisionHandler:]: method not found`. A selector belonging to no
+   protocol objc2 knows has to go in a **plain `impl WryWebViewUIDelegate`
+   block inside `define_class!`**. The working version is
+   `wry-display-capture.patch` beside this file; the snippet below is kept
+   as the *shape* and is corrected in place.
+2. **This file's premise about the symptom was wrong, and so is a comment
+   in the client.** `navigator.mediaDevices.getDisplayMedia` **exists** in
+   the macOS shell's WKWebView — measured with and without the patch, both
+   `typeof … === "function"`. So `transport-webview.ts`'s
+   `capabilities.screen`, which is that feature check, answers **true**
+   there, `showsVideoButton` shows the screen button, and pressing it
+   cannot work. The button is not hidden on macOS today; it is offered and
+   dead. What that should become depends on whether this patch ships, so
+   it is recorded rather than changed — see *"What is still unmeasured"*.
+
+**What is still unmeasured, and why a session cannot measure it.** Both
+spike runs were rejected *before* the delegate was ever consulted:
+`InvalidStateError: getDisplayMedia must be called from a user gesture
+handler.` A programmatic `.click()` does not confer transient activation
+in WebKit, so nothing a session can drive reaches the selector at all.
+This needs **a real click by a person**, and then the Screen Recording
+grant on top — which is what this file predicted, for one reason, and is
+now true for two.
 
 The argument for leaving it alone was that native screen share on the
 desktop shell's own engine would make it a nicety for a minority. That
