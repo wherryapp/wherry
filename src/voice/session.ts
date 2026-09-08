@@ -705,6 +705,16 @@ class VoiceSession {
   }
 
   async #acquireLock(): Promise<boolean> {
+    // Already held by this session, so do not ask again.
+    //
+    // The engine switch (`switchEngineForThisCall`) tears the transport
+    // down with `keepPlan` and rejoins, and that teardown deliberately does
+    // *not* let the lock go -- the call never left this window. Asking a
+    // second time from the context that already holds it is answered "not
+    // available" like any other conflict, so the rejoin reported the call as
+    // happening in another window and the switch failed every time. Found by
+    // D-28 on 2026-09-08, the first run of that row.
+    if (this.#releaseLock) return true;
     if (typeof navigator === "undefined" || !("locks" in navigator)) return true;
     return await new Promise<boolean>((resolve) => {
       void navigator.locks
