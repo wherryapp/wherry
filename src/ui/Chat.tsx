@@ -12,7 +12,7 @@ import { PinsPanel } from "./PinsPanel";
 import { CallBar } from "./voice/CallBar";
 import { CallButton } from "./voice/CallButton";
 import { IncomingCall } from "./voice/IncomingCall";
-import { CallStage } from "./voice/CallStage";
+import { CallPage } from "./voice/CallPage";
 import { VoiceRoom } from "./voice/VoiceRoom";
 import { useVoice, useVoiceSignals } from "../voice/hooks";
 import { voice } from "../voice/session";
@@ -341,14 +341,14 @@ export function Chat({
   // stage left open would otherwise cover the next conversation opened. It
   // shows in the thread area for the call's OWN conversation only, so
   // reading another thread during a call still shows that thread.
-  const [stageOpen, setStageOpen] = useState(false);
+  // The call page's own open/closed, and nothing else's: it is deliberately
+  // NOT gated on which conversation is selected any more. That gate is what
+  // made a peer's camera unwatchable from anywhere but the call's own
+  // thread (2026-09-08).
+  const [callPageOpen, setCallPageOpen] = useState(false);
   useEffect(() => {
-    if (voiceState.phase === "idle") setStageOpen(false);
+    if (voiceState.phase === "idle") setCallPageOpen(false);
   }, [voiceState.phase]);
-  const showStage =
-    stageOpen &&
-    voiceState.conversationId !== null &&
-    voiceState.conversationId === selected;
   // Only the count; the list itself renders in Settings. Zero whenever the
   // announcements flag is off, so the dot is dark exactly when the feature is.
   const { unread: unreadAnnouncements } = useAnnouncements();
@@ -647,14 +647,70 @@ export function Chat({
       )}
     </>
   );
-  const withOverlays = (screen: ReactNode) => (
+  /**
+   * Every screen, with the call around it.
+   *
+   * The call bar and the call page live here rather than inside the main
+   * return because a call is not a property of the screen you happen to be
+   * on. Until 2026-09-08 they were: the bar sat after the early returns
+   * below, so opening Settings mid-call hid the call completely -- no
+   * hang-up, no mute, no indication it was still running -- and the video
+   * stage additionally required the call's own conversation to be
+   * selected, so walking back to the list made somebody's camera vanish.
+   * Both were reported as "the peer cannot start viewing the video".
+   *
+   * The page is rendered after the overlays and paints over them, which is
+   * the right order: a profile card opened from a call belongs *under* the
+   * call, and dismissing the page should not dismiss the card.
+   */
+  // The call's own conversation, which is not necessarily the selected one.
+  const callConversation = conversations.find((c) => c.id === voiceState.conversationId);
+  const callTitle = callConversation
+    ? conversationTitle(callConversation, session.user.id)
+    : "Call";
+
+  const withChrome = (screen: ReactNode) => (
     <>
-      {screen}
+      <div className="flex h-full flex-col">
+        {features.voice && (
+          <CallBar
+            conversations={conversations}
+            selfUserId={session.user.id}
+            onOpenCall={() => setCallPageOpen(true)}
+          />
+        )}
+        <div className="min-h-0 flex-1">{screen}</div>
+      </div>
+      {/*
+        An incoming call rings over every screen too, and for the same
+        reason the bar does: it used to render only in the main return, so
+        a call arriving while somebody was in Settings or a hub panel was
+        invisible and simply went unanswered.
+      */}
+      {rings[0] && (
+        <IncomingCall
+          ring={rings[0]}
+          conversation={conversations.find((c) => c.id === rings[0]!.conversationId)}
+          selfUserId={session.user.id}
+          onDismiss={dismissRing}
+        />
+      )}
       {overlays}
+      {features.voice && voiceState.phase === "connected" && callPageOpen && (
+        <CallPage
+          state={voiceState}
+          title={callTitle}
+          selfName={session.user.displayName}
+          selfUserId={session.user.id}
+          onClose={() => setCallPageOpen(false)}
+        />
+      )}
     </>
   );
 
   if (inviteToken) {
+    // The one screen without the call chrome: an invite landing page is
+    // reached before there is an app around it.
     return (
       <JoinInvite
         token={inviteToken}
@@ -667,7 +723,7 @@ export function Chat({
   }
 
   if (pinsFor !== null && current?.hubId) {
-    return withOverlays(
+    return withChrome(
       <PinsPanel
         hubId={current.hubId}
         conversationId={pinsFor}
@@ -689,7 +745,7 @@ export function Chat({
   }
 
   if (composeOpen) {
-    return withOverlays(
+    return withChrome(
       <Compose
         session={session}
         canCreateHubs={features.hubs}
@@ -703,7 +759,7 @@ export function Chat({
   }
 
   if (friendsOpen) {
-    return withOverlays(
+    return withChrome(
       <Friends
         onClose={() => setFriendsOpen(false)}
         onOpenConversation={(id) => {
@@ -715,7 +771,7 @@ export function Chat({
   }
 
   if (settingsOpen) {
-    return withOverlays(
+    return withChrome(
       <Settings
         session={session}
         onClose={() => setSettingsOpen(false)}
@@ -727,7 +783,7 @@ export function Chat({
   }
 
   if (groupDetailsOpen && current) {
-    return withOverlays(
+    return withChrome(
       <GroupDetails
         conversation={current}
         selfUserId={session.user.id}
@@ -737,7 +793,7 @@ export function Chat({
   }
 
   if (hubDetailsFor !== null) {
-    return withOverlays(
+    return withChrome(
       <HubDetails
         hubId={hubDetailsFor}
         selfUserId={session.user.id}
@@ -761,7 +817,7 @@ export function Chat({
     );
   }
 
-  return (
+  return withChrome(
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
       {/* The app header is the LIST's header: a title and two controls, the
           shape a phone expects, instead of the row of webpage links this
@@ -823,14 +879,6 @@ export function Chat({
 
       <StatusLine />
       <UpdateBanner />
-      {features.voice && (
-        <CallBar
-          conversations={conversations}
-          selfUserId={session.user.id}
-          stageOpen={stageOpen}
-          onToggleStage={() => setStageOpen((open) => !open)}
-        />
-      )}
 
       <div className="flex min-h-0 flex-1">
         {showList && (
@@ -973,14 +1021,7 @@ export function Chat({
                     </Button>
                   )}
                 </div>
-                {showStage ? (
-                  <CallStage
-                    state={voiceState}
-                    selfName={session.user.displayName}
-                    selfUserId={session.user.id}
-                    onClose={() => setStageOpen(false)}
-                  />
-                ) : current?.channelKind === "voice" ? (
+                {current?.channelKind === "voice" ? (
                   <VoiceRoom
                     conversation={current}
                     occupants={occupancy.get(current.id) ?? []}
@@ -1057,15 +1098,6 @@ export function Chat({
         )}
       </div>
 
-      {rings[0] && (
-        <IncomingCall
-          ring={rings[0]}
-          conversation={conversations.find((c) => c.id === rings[0]!.conversationId)}
-          selfUserId={session.user.id}
-          onDismiss={dismissRing}
-        />
-      )}
-
       {switcherOpen && (
         <QuickSwitcher
           conversations={conversations}
@@ -1075,7 +1107,6 @@ export function Chat({
           onClose={() => setSwitcherOpen(false)}
         />
       )}
-      {overlays}
-    </div>
+    </div>,
   );
 }

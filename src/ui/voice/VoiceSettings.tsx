@@ -16,7 +16,12 @@ import {
 } from "../../voice/devices";
 import { useNativeMediaAvailable, useVoicePrefs } from "../../voice/hooks";
 import { nativeMediaProbe } from "../../voice/native-media";
-import { saveVoicePrefs, type VideoQualityTier, type VoicePrefs } from "../../voice/prefs";
+import {
+  saveVoicePrefs,
+  type VideoPreviewMode,
+  type VideoQualityTier,
+  type VoicePrefs,
+} from "../../voice/prefs";
 import {
   AUDIO_QUALITY_KBPS,
   isAudioQuality,
@@ -241,7 +246,14 @@ export function VoiceSettings({
         </label>
       )}
 
-      {cameraLimit && <CameraSection tier={prefs.videoQuality} deviceId={prefs.cameraDeviceId} limit={cameraLimit} />}
+      {cameraLimit && (
+        <CameraSection
+          tier={prefs.videoQuality}
+          deviceId={prefs.cameraDeviceId}
+          limit={cameraLimit}
+          preview_={prefs.videoPreview}
+        />
+      )}
 
       {native ? (
         <p className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -270,10 +282,13 @@ function CameraSection({
   tier,
   deviceId,
   limit,
+  preview_,
 }: {
   tier: VideoQualityTier;
   deviceId: string | null;
   limit: { maxHeight: number; maxFps: number };
+  /** `videoPreview`: what the call bar shows while the call is minimised. */
+  preview_: VideoPreviewMode;
 }) {
   const [cameras, setCameras] = useState<VideoDevice[]>([]);
   const [previewing, setPreviewing] = useState(false);
@@ -356,6 +371,25 @@ function CameraSection({
         <span className="text-xs text-neutral-500 dark:text-neutral-400">
           Calls on this account allow up to {limit.maxHeight}p, and this setting
           can only ask for less. Applies to the next call you join.
+        </span>
+      </label>
+
+      <label className="grid gap-1 text-sm text-neutral-700 dark:text-neutral-200">
+        While a call is minimised
+        <Select
+          value={preview_}
+          onChange={(e) =>
+            saveVoicePrefs({ videoPreview: e.target.value as VideoPreviewMode })
+          }
+        >
+          <option value="thumbnail">Show a small live preview</option>
+          <option value="badge">Show a badge only</option>
+        </Select>
+        <span className="text-xs text-neutral-500 dark:text-neutral-400">
+          The preview is how you can tell somebody's camera is really working
+          without opening the call, and it holds one low-quality video stream
+          while it is on screen. On a metered connection, the badge costs
+          nothing.
         </span>
       </label>
 

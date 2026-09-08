@@ -20,7 +20,12 @@ import {
   peerFlow,
   reduceRings,
   SILENT_ENERGY,
+  liveVideoKeys,
+  previewTileOf,
+  showsVideoButton,
+  videoDisabledReason,
   subscriptionFor,
+  videoJustStarted,
   videoLine,
   RING_TIMEOUT_MS,
   shouldJoinMuted,
@@ -431,4 +436,145 @@ test("videoLine degrades to what the browser actually reported", () => {
     }),
     "no reading yet",
   );
+});
+
+// -- the call bar's preview, and the chime ----------------------------------
+
+const peer = (over: Partial<{
+  identity: string;
+  name: string;
+  camera: boolean;
+  cameraMuted: boolean;
+  screen: boolean;
+}> = {}) => ({
+  identity: "a",
+  name: "Ada",
+  camera: false,
+  cameraMuted: false,
+  screen: false,
+  ...over,
+});
+
+test("a preview never asks for the top layer, screen or not", () => {
+  // The point of the flag: without it a screen is always `high`, which at
+  // 96 pixels wide would pull a shared desktop's full resolution into a
+  // thumbnail nobody can read.
+  assert.equal(
+    subscriptionFor({
+      visible: true,
+      pinned: true,
+      source: "screen",
+      participants: 2,
+      topLayerCallSize: 12,
+      preview: true,
+    }),
+    "low",
+  );
+  assert.equal(
+    subscriptionFor({
+      visible: true,
+      pinned: true,
+      source: "screen",
+      participants: 2,
+      topLayerCallSize: 12,
+    }),
+    "high",
+  );
+});
+
+test("a preview that is not visible is still off", () => {
+  assert.equal(
+    subscriptionFor({
+      visible: false,
+      pinned: false,
+      source: "camera",
+      participants: 2,
+      topLayerCallSize: 12,
+      preview: true,
+    }),
+    "off",
+  );
+});
+
+test("previewTileOf prefers a screen, then a live camera", () => {
+  assert.equal(previewTileOf([]), null);
+  assert.deepEqual(previewTileOf([peer({ camera: true })]), {
+    identity: "a",
+    name: "Ada",
+    source: "camera",
+  });
+  assert.deepEqual(
+    previewTileOf([peer({ camera: true }), peer({ identity: "b", name: "Bo", screen: true })]),
+    { identity: "b", name: "Bo", source: "screen" },
+  );
+});
+
+test("previewTileOf ignores a paused camera — there is nothing to see", () => {
+  assert.equal(previewTileOf([peer({ camera: true, cameraMuted: true })]), null);
+});
+
+test("liveVideoKeys counts a camera and a screen separately", () => {
+  assert.deepEqual(liveVideoKeys([peer({ camera: true, screen: true })]), [
+    "a/camera",
+    "a/screen",
+  ]);
+  assert.deepEqual(liveVideoKeys([peer({ camera: true, cameraMuted: true })]), []);
+});
+
+test("the chime is a transition, not a state", () => {
+  assert.deepEqual(videoJustStarted([], ["a/camera"]), ["a/camera"]);
+  // The same state read again is silent -- and the roster is read every
+  // few seconds, so this is the property that stops it chiming forever.
+  assert.deepEqual(videoJustStarted(["a/camera"], ["a/camera"]), []);
+  // Turning off is not an event either.
+  assert.deepEqual(videoJustStarted(["a/camera"], []), []);
+  // A second person starting while the first is already on still sounds.
+  assert.deepEqual(videoJustStarted(["a/camera"], ["a/camera", "b/camera"]), ["b/camera"]);
+});
+
+test("a camera returning from the background pause chimes again", () => {
+  // Deliberate: from the listener's side there is something to look at
+  // where a moment ago there was not, which is the whole message.
+  assert.deepEqual(videoJustStarted([], ["a/camera"]), ["a/camera"]);
+});
+
+// -- which video buttons exist, and why ------------------------------------
+
+const caps = (over: Partial<{ camera: boolean; screen: boolean; renderVideo: boolean }> = {}) => ({
+  camera: true,
+  screen: true,
+  renderVideo: true,
+  ...over,
+});
+
+test("a source the grant does not carry has no button at all", () => {
+  // Nothing to explain: this call was never going to allow it.
+  assert.equal(
+    showsVideoButton({ capabilities: caps(), grant: { sources: ["camera"] } }, "screen"),
+    false,
+  );
+  assert.equal(showsVideoButton({ capabilities: caps(), grant: null }, "camera"), false);
+});
+
+test("a phone's screen button is hidden, because nothing here can fix it", () => {
+  const phone = { capabilities: caps({ screen: false }), grant: { sources: ["camera", "screen"] as const } };
+  assert.equal(showsVideoButton(phone, "screen"), false);
+});
+
+test("the native engine's buttons are shown disabled, because the switch is the fix", () => {
+  const shell = {
+    capabilities: caps({ camera: false, screen: false, renderVideo: false }),
+    grant: { sources: ["camera", "screen"] as const },
+  };
+  assert.equal(showsVideoButton(shell, "camera"), true);
+  assert.equal(
+    videoDisabledReason(shell, "camera"),
+    "Video runs through the browser engine on this device",
+  );
+});
+
+test("a browser that simply cannot is told so, and differently", () => {
+  const browser = { capabilities: caps({ screen: false }), grant: { sources: ["screen"] as const } };
+  assert.equal(videoDisabledReason(browser, "screen"), "This browser cannot share a screen");
+  assert.equal(videoDisabledReason({ capabilities: caps(), grant: null }, "camera"), null);
 });

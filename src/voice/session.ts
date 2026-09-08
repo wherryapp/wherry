@@ -53,7 +53,9 @@ import {
   grantLine,
   micStatus,
   shouldJoinMuted,
+  liveVideoKeys,
   subscriptionFor,
+  videoJustStarted,
   videoLine,
   type EchoReport,
   type MicFailure,
@@ -158,6 +160,10 @@ export type VoiceState = {
    *  `nativeMedia` preference is never touched. */
   engineOverride: "webview" | null;
 };
+
+/** Who is asking for a video track: a tile on the call page, or the call
+ *  bar's thumbnail. See `setTileVisible`. */
+export type TileKind = "full" | "preview";
 
 const NO_CAPABILITIES: TransportCapabilities = {
   camera: false,
@@ -317,7 +323,9 @@ class VoiceSession {
   /** Which tiles are on screen, keyed `identity/source` -- the input to
    *  `subscriptionFor`, held here rather than in state because it changes
    *  on every scroll and must not re-render the roster. */
-  #visibleTiles = new Set<string>();
+  #visibleTiles = new Map<string, Set<TileKind>>();
+  /** The live remote sources at the last roster read, for the chime. */
+  #liveVideo: string[] = [];
   #onVisibility: (() => void) | null = null;
 
   getState = (): VoiceState => this.#state;
@@ -477,11 +485,28 @@ class VoiceSession {
     return this.#transport?.attachVideo(identity, source, element) ?? (() => {});
   }
 
-  /** A tile came on or off screen. Drives subscribe/unsubscribe and layer. */
-  setTileVisible(identity: string, source: VideoSource, visible: boolean): void {
+  /**
+   * A tile came on or off screen. Drives subscribe/unsubscribe and layer.
+   *
+   * `kind` says what is asking. A `preview` is the call bar's thumbnail,
+   * which never wants more than the low layer however big the sender's
+   * picture is; a `full` tile is one somebody is actually looking at. The
+   * strongest asker wins, so a face that is both previewed in the bar and
+   * pinned on the call page is subscribed as pinned -- `full` last-write
+   * would otherwise let a preview quietly downgrade a tile.
+   */
+  setTileVisible(
+    identity: string,
+    source: VideoSource,
+    visible: boolean,
+    kind: TileKind = "full",
+  ): void {
     const key = `${identity}/${source}`;
-    if (visible) this.#visibleTiles.add(key);
-    else this.#visibleTiles.delete(key);
+    const asking = this.#visibleTiles.get(key) ?? new Set<TileKind>();
+    if (visible) asking.add(kind);
+    else asking.delete(kind);
+    if (asking.size === 0) this.#visibleTiles.delete(key);
+    else this.#visibleTiles.set(key, asking);
     this.#applySubscription(identity, source);
   }
 
@@ -698,6 +723,11 @@ class VoiceSession {
       this.#set({ micMuted: true, error: micError(error) });
     }
 
+    // Seed the chime's baseline before the first roster read that could
+    // fire it: joining a call somebody is already on camera in is not an
+    // event, it is the state you arrived in.
+    this.#liveVideo = liveVideoKeys(this.#transport?.participants() ?? []);
+
     if (e2ee) this.#watchEpoch(plan.conversation.id, result.call.id);
     this.#watchSync(result.call.id);
     this.#watchVisibility();
@@ -853,6 +883,26 @@ class VoiceSession {
       encryptionErrors: this.#encryptionErrors,
       lastEncryptionError: this.#lastEncryptionError,
     });
+    this.#chimeForNewVideo(participants);
+  }
+
+  /**
+   * A short sound when somebody else's video comes on.
+   *
+   * Here rather than on a transport event because this is the one place
+   * every path -- a publish, a subscribe, a mute, a roster refresh --
+   * converges, and the decision is a transition rather than a state
+   * (`rules.ts`'s `videoJustStarted`). Silent while this device is still
+   * joining, or the first read of a call joined in progress would announce
+   * everybody who was already on camera.
+   */
+  #chimeForNewVideo(participants: readonly VoiceParticipant[]): void {
+    const live = liveVideoKeys(participants);
+    const previous = this.#liveVideo;
+    this.#liveVideo = live;
+    if (this.#state.phase !== "connected") return;
+    if (videoJustStarted(previous, live).length === 0) return;
+    blip("video");
   }
 
   // -- video subscriptions ---------------------------------------------------
@@ -868,8 +918,12 @@ class VoiceSession {
   #applySubscription(identity: string, source: VideoSource): void {
     const transport = this.#transport;
     if (!transport || !this.#state.capabilities.renderVideo) return;
+    const asking = this.#visibleTiles.get(`${identity}/${source}`);
     const quality = subscriptionFor({
-      visible: this.#visibleTiles.has(`${identity}/${source}`),
+      visible: asking !== undefined && asking.size > 0,
+      // Only a preview is asking: the bar's thumbnail, which is 96 pixels
+      // wide and must not pull a screen share's full resolution.
+      preview: asking !== undefined && asking.size > 0 && !asking.has("full"),
       pinned: this.#state.pinned === identity,
       source,
       // Everybody in the room, this device included: the layer cutoff is

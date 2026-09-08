@@ -1,26 +1,25 @@
-// The in-call bar: who is here, whether they are speaking, mute, devices,
-// leave. Rendered above the list/thread split so it is visible whichever
-// conversation is open -- a call does not end because you read another
-// thread. Docked, not floating, on purpose: the phone layout has no
-// corner to float in.
+// The in-call bar: who is here, whether somebody is showing something,
+// the controls, and the way in to the call page.
+//
+// **Rendered around every screen** (Chat.tsx's `withChrome`, 2026-09-08),
+// not just the list/thread split. It used to sit inside the main return,
+// after the early returns for Settings, Friends, hub and group panels --
+// so opening Settings mid-call made the whole call vanish: no hang-up, no
+// mute, no sign there was a call at all. Docked, not floating, on purpose:
+// the phone layout has no corner to float in.
+//
+// **One camera icon, and it means your camera.** There used to be a second
+// button with the same glyph that opened the video stage, and nothing told
+// the two apart. The way to the video is the bar's own title row and its
+// live preview now, both of which say "open the call".
 
 import { useEffect, useState } from "react";
 import type { StoredConversation } from "../../store/types";
 import { conversationTitle } from "../format";
-import {
-  Avatar,
-  Button,
-  IconButton,
-  LockIcon,
-  MicIcon,
-  MicOffIcon,
-  PhoneOffIcon,
-  ScreenShareIcon,
-  Select,
-  SpeakerIcon,
-  VideoIcon,
-  VideoOffIcon,
-} from "../kit";
+import { Avatar, Button, LockIcon, MicOffIcon, Select, VideoIcon } from "../kit";
+import { CallControls } from "./CallControls";
+import { CallPreview } from "./CallPreview";
+import { previewTileOf } from "../../voice/rules";
 import { listAudioDevices, onDeviceChange, supportsSpeakerSelection, type AudioDevices } from "../../voice/devices";
 import { useVoice, useVoicePrefs } from "../../voice/hooks";
 import { saveVoicePrefs } from "../../voice/prefs";
@@ -35,59 +34,19 @@ function elapsed(since: number | null, now: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/**
- * The reason a video button is disabled, or null when it is not.
- *
- * Three different answers, and telling them apart is the whole point of
- * disabling rather than hiding: the grant does not carry the source (the
- * button is hidden -- nothing to explain), this engine cannot do video
- * (the switch below is the fix), or this browser cannot (nothing is).
- */
-function videoDisabledReason(
-  state: ReturnType<typeof useVoice>,
-  source: "camera" | "screen",
-): string | null {
-  if (state.capabilities[source]) return null;
-  if (!state.capabilities.renderVideo) {
-    return "Video runs through the browser engine on this device";
-  }
-  return source === "camera"
-    ? "This browser cannot open a camera"
-    : "This browser cannot share a screen";
-}
-
-/**
- * Whether to show a video button at all.
- *
- * Hidden when the grant does not carry the source -- nothing to explain --
- * and hidden again when the transport cannot do it and *nothing here can
- * fix that*: neither phone webview can share a screen and no web-side
- * switch changes it (the plan's §8), so offering a permanently dead
- * control is worse than offering none. It stays visible-but-disabled in
- * the one case that has a way out: a desktop shell on its own audio
- * engine, where the switch beside it is the fix.
- */
-function showsVideoButton(
-  state: ReturnType<typeof useVoice>,
-  source: "camera" | "screen",
-): boolean {
-  if (!state.grant?.sources.includes(source)) return false;
-  if (state.capabilities[source]) return true;
-  return !state.capabilities.renderVideo;
-}
-
 export function CallBar({
   conversations,
   selfUserId,
-  stageOpen,
-  onToggleStage,
+  onOpenCall,
 }: {
   conversations: readonly StoredConversation[];
   selfUserId: string;
-  stageOpen: boolean;
-  onToggleStage: () => void;
+  /** Open the call page. The bar never renders video itself beyond the
+   *  thumbnail; everything to look at is on that page. */
+  onOpenCall: () => void;
 }) {
   const state = useVoice();
+  const prefs = useVoicePrefs();
   const [now, setNow] = useState(() => Date.now());
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -123,13 +82,14 @@ export function CallBar({
     );
   }
 
-  const cameraReason = videoDisabledReason(state, "camera");
-  const screenReason = videoDisabledReason(state, "screen");
-  // Anything to look at: our own camera or screen, or anyone else's.
-  const anyVideo =
-    state.camera.on ||
-    state.screen.on ||
-    state.participants.some((participant) => participant.camera || participant.screen);
+  // Somebody else's live source, if there is one: the thumbnail's subject
+  // and, when the preference says `badge`, the thing being counted.
+  const preview = previewTileOf(state.participants);
+  const liveCount = state.participants.filter(
+    (participant) => participant.screen || (participant.camera && !participant.cameraMuted),
+  ).length;
+  const showThumbnail =
+    prefs.videoPreview === "thumbnail" && preview !== null && state.capabilities.renderVideo;
 
   const conversation = conversations.find((c) => c.id === state.conversationId);
   const title = conversation ? conversationTitle(conversation, selfUserId) : "Call";
@@ -145,7 +105,18 @@ export function CallBar({
   return (
     <div className="border-b border-accent-200 bg-accent-50 px-3 py-2 dark:border-accent-900 dark:bg-accent-950">
       <div className="flex items-center gap-3">
-        <span className="min-w-0 flex-1">
+        {/*
+          The whole title block is the door to the call page. A row of text
+          that opens something has to be a real button or a keyboard never
+          reaches it -- and this one carries the call's own name, which is
+          the honest label for where it goes.
+        */}
+        <button
+          type="button"
+          onClick={onOpenCall}
+          aria-label={`Open the call — ${title}`}
+          className="min-w-0 flex-1 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-500"
+        >
           <span className="flex items-center gap-1.5 text-sm font-medium text-neutral-900 dark:text-neutral-100">
             <span className="min-w-0 truncate">{title}</span>
             {state.e2ee ? (
@@ -163,7 +134,7 @@ export function CallBar({
             {state.quality === "poor" && " · poor connection"}
             {state.quality === "lost" && " · connection lost"}
           </span>
-        </span>
+        </button>
 
         <div className="flex min-w-0 items-center -space-x-1.5">
           {state.participants.map((participant) => (
@@ -186,74 +157,27 @@ export function CallBar({
           ))}
         </div>
 
-        <IconButton
-          label={state.micMuted ? "Unmute microphone" : "Mute microphone"}
-          onClick={() => void voice.toggleMic()}
-          aria-pressed={state.micMuted}
-          className={state.micMuted ? "text-red-600 dark:text-red-400" : ""}
-        >
-          {state.micMuted ? <MicOffIcon /> : <MicIcon />}
-        </IconButton>
-        {showsVideoButton(state, "camera") && (
-          <IconButton
-            label={state.camera.on ? "Turn camera off" : "Turn camera on"}
-            title={cameraReason ?? undefined}
-            disabled={cameraReason !== null}
-            onClick={() => void voice.toggleCamera()}
-            aria-pressed={state.camera.on}
-            className={
-              cameraReason
-                ? "cursor-not-allowed opacity-40"
-                : state.camera.on
-                  ? "text-accent-600 dark:text-accent-400"
-                  : ""
-            }
-          >
-            {state.camera.on ? <VideoIcon /> : <VideoOffIcon />}
-          </IconButton>
+        {showThumbnail && preview && (
+          <CallPreview
+            identity={preview.identity}
+            name={preview.name}
+            source={preview.source}
+            onOpen={onOpenCall}
+          />
         )}
-        {showsVideoButton(state, "screen") && (
-          <IconButton
-            label={state.screen.on ? "Stop sharing screen" : "Share screen"}
-            title={screenReason ?? undefined}
-            disabled={screenReason !== null}
-            onClick={() => void voice.toggleScreenShare()}
-            aria-pressed={state.screen.on}
-            className={
-              screenReason
-                ? "cursor-not-allowed opacity-40"
-                : state.screen.on
-                  ? "text-accent-600 dark:text-accent-400"
-                  : ""
-            }
+        {!showThumbnail && liveCount > 0 && (
+          <button
+            type="button"
+            onClick={onOpenCall}
+            aria-label={`Open the call — ${liveCount} showing video`}
+            className="flex shrink-0 items-center gap-1 rounded-full bg-accent-600 px-2 py-1 text-xs font-medium text-white"
           >
-            <ScreenShareIcon />
-          </IconButton>
+            <VideoIcon className="h-3.5 w-3.5" />
+            {liveCount}
+          </button>
         )}
-        {anyVideo && (
-          <IconButton
-            label={stageOpen ? "Hide video" : "Show video"}
-            onClick={onToggleStage}
-            aria-pressed={stageOpen}
-            className={stageOpen ? "text-accent-600 dark:text-accent-400" : ""}
-          >
-            <VideoIcon />
-          </IconButton>
-        )}
-        <IconButton
-          label="Audio devices"
-          onClick={() => setDevicesOpen((open) => !open)}
-          aria-expanded={devicesOpen}
-        >
-          <SpeakerIcon />
-        </IconButton>
-        <IconButton
-          label={state.kind === "room" ? "Leave room" : "Hang up"}
-          onClick={() => void voice.leave()}
-          className="rounded-full bg-red-600 !text-white hover:!text-white hover:bg-red-700"
-        >
-          <PhoneOffIcon />
-        </IconButton>
+
+        <CallControls onOpenDevices={() => setDevicesOpen((open) => !open)} />
       </div>
 
       {state.playbackBlocked && (

@@ -104,15 +104,25 @@ export function startRing(): Loop | null {
   }, 3);
 }
 
-export function blip(kind: "join" | "leave" | "mute" | "unmute"): void {
+export function blip(kind: BlipKind): void {
   playBlip(kind);
   idleAfter(BLIP_SECONDS);
 }
 
-/** The longest blip below ends 0.21 s after it starts. */
-const BLIP_SECONDS = 0.25;
+/**
+ * `video` is the only one of these that announces somebody *else's* doing
+ * rather than confirming your own, so it is the only one that has to be
+ * pleasant rather than merely short: a rising third, two soft notes, well
+ * under half a second. Deliberately unlike `join`, which it would
+ * otherwise be confused with -- somebody arriving and somebody turning a
+ * camera on are different events and a listener should not have to guess.
+ */
+export type BlipKind = "join" | "leave" | "mute" | "unmute" | "video";
 
-function playBlip(kind: "join" | "leave" | "mute" | "unmute"): void {
+/** The longest blip below ends 0.34 s after it starts. */
+const BLIP_SECONDS = 0.4;
+
+function playBlip(kind: BlipKind): void {
   const audio = ctx();
   if (!audio) return;
   const at = audio.currentTime;
@@ -130,6 +140,10 @@ function playBlip(kind: "join" | "leave" | "mute" | "unmute"): void {
       return;
     case "unmute":
       tone(audio, [587], 0.08, 0.08, at);
+      return;
+    case "video":
+      tone(audio, [659], 0.14, 0.075, at);
+      tone(audio, [988], 0.2, 0.065, at + 0.14);
       return;
   }
 }

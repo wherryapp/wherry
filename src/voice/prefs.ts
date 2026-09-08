@@ -62,7 +62,22 @@ export type VoicePrefs = {
    * what the server allowed. `auto` is the grant's own ceiling.
    */
   videoQuality: VideoQualityTier;
+  /**
+   * What the call bar shows while somebody's video is live and the call
+   * page is closed: a moving thumbnail, or a badge that costs nothing.
+   *
+   * `thumbnail` is the default because it answers a question a badge
+   * cannot -- whether their camera is actually working -- and because it
+   * is the affordance that gets people to the call page at all. It holds
+   * one low-layer subscription (a couple of hundred kbit/s) for as long as
+   * it is on screen; `badge` is for a metered connection, and is the
+   * switch to reach for when that matters more than the glance.
+   */
+  videoPreview: VideoPreviewMode;
 };
+
+/** The call bar's two answers to "somebody is live". */
+export type VideoPreviewMode = "thumbnail" | "badge";
 
 /** Settings' three words for the camera tier; the numbers are in rules.ts. */
 export type VideoQualityTier = "auto" | "standard" | "hd";
@@ -83,6 +98,7 @@ const DEFAULTS: VoicePrefs = {
   nativeMedia: true,
   cameraDeviceId: null,
   videoQuality: "auto",
+  videoPreview: "thumbnail",
 };
 
 export function loadVoicePrefs(): VoicePrefs {
@@ -108,6 +124,7 @@ export function loadVoicePrefs(): VoicePrefs {
       nativeMedia: parsed.nativeMedia !== false,
       cameraDeviceId: typeof parsed.cameraDeviceId === "string" ? parsed.cameraDeviceId : null,
       videoQuality: isVideoQualityTier(parsed.videoQuality) ? parsed.videoQuality : "auto",
+      videoPreview: parsed.videoPreview === "badge" ? "badge" : "thumbnail",
     };
   } catch {
     return { ...DEFAULTS };

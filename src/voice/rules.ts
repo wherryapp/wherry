@@ -500,14 +500,83 @@ export function subscriptionFor(input: {
   source: VideoSource;
   participants: number;
   topLayerCallSize: number | null;
+  /** A tile that is a *thumbnail* -- the call bar's live preview -- rather
+   *  than something anybody is trying to read. It never asks for the top
+   *  layer, screen or not: the screen exception below exists because text
+   *  in a shared window is unreadable at the low layer, and nothing is
+   *  readable at 96 pixels wide anyway. Without this a bar preview of a
+   *  shared screen would quietly pull full resolution for the whole call. */
+  preview?: boolean;
 }): VideoQualityRequest {
   if (!input.visible) return "off";
+  if (input.preview) return "low";
   if (input.source === "screen") return "high";
   if (!input.pinned) return "low";
   if (input.topLayerCallSize !== null && input.participants > input.topLayerCallSize) {
     return "low";
   }
   return "high";
+}
+
+/**
+ * Who is showing something, in the order the call bar should prefer.
+ *
+ * A screen before a camera, because a screen is the thing somebody turned
+ * on *to be looked at*; otherwise the first camera. A paused camera does
+ * not count -- the point of the preview is to say "there is something to
+ * see", and a paused tile has nothing.
+ */
+export function previewTileOf(
+  participants: readonly {
+    identity: string;
+    name: string;
+    camera: boolean;
+    cameraMuted: boolean;
+    screen: boolean;
+  }[],
+): { identity: string; name: string; source: VideoSource } | null {
+  const screen = participants.find((participant) => participant.screen);
+  if (screen) return { identity: screen.identity, name: screen.name, source: "screen" };
+  const camera = participants.find(
+    (participant) => participant.camera && !participant.cameraMuted,
+  );
+  if (camera) return { identity: camera.identity, name: camera.name, source: "camera" };
+  return null;
+}
+
+/**
+ * Whose video just came on, for the chime.
+ *
+ * Transitions only, and other people only: a chime for your own camera
+ * would sound every time you pressed the button, and a chime for a state
+ * that was already true would sound on every roster refresh -- which is
+ * every few seconds. A camera coming *back* from the background pause
+ * counts as new, because from the listener's side it is: there is
+ * something to look at again where a moment ago there was not.
+ */
+export function videoJustStarted(
+  before: readonly string[],
+  after: readonly string[],
+): string[] {
+  const had = new Set(before);
+  return after.filter((key) => !had.has(key));
+}
+
+/** The keys `videoJustStarted` compares: one per live remote source. */
+export function liveVideoKeys(
+  participants: readonly {
+    identity: string;
+    camera: boolean;
+    cameraMuted: boolean;
+    screen: boolean;
+  }[],
+): string[] {
+  const keys: string[] = [];
+  for (const participant of participants) {
+    if (participant.camera && !participant.cameraMuted) keys.push(`${participant.identity}/camera`);
+    if (participant.screen) keys.push(`${participant.identity}/screen`);
+  }
+  return keys;
 }
 
 /**
@@ -605,4 +674,51 @@ export function videoLine(stats: {
   // the good case and does not deserve a clause.
   if (stats.limitedBy && stats.limitedBy !== "none") parts.push(`limited by ${stats.limitedBy}`);
   return parts.length > 0 ? parts.join(" · ") : "no reading yet";
+}
+
+// -- the video buttons ------------------------------------------------------
+
+/** What a call allows and what this transport can do, for the two rules
+ *  below. A subset of `VoiceState`, so they stay testable without one. */
+export type VideoButtonState = {
+  capabilities: { camera: boolean; screen: boolean; renderVideo: boolean };
+  grant: { sources: readonly VideoSource[] } | null;
+};
+
+/**
+ * The reason a video button is disabled, or null when it is not.
+ *
+ * Three different answers, and telling them apart is the whole point of
+ * disabling rather than hiding: the grant does not carry the source (the
+ * button is hidden -- nothing to explain), this engine cannot do video
+ * (the switch in the bar is the fix), or this browser cannot (nothing is).
+ */
+export function videoDisabledReason(
+  state: VideoButtonState,
+  source: VideoSource,
+): string | null {
+  if (state.capabilities[source]) return null;
+  if (!state.capabilities.renderVideo) {
+    return "Video runs through the browser engine on this device";
+  }
+  return source === "camera"
+    ? "This browser cannot open a camera"
+    : "This browser cannot share a screen";
+}
+
+/**
+ * Whether to show a video button at all.
+ *
+ * Hidden when the grant does not carry the source -- nothing to explain --
+ * and hidden again when the transport cannot do it and *nothing here can
+ * fix that*: neither phone webview can share a screen and no web-side
+ * switch changes it (the plan's §8), so offering a permanently dead
+ * control is worse than offering none. It stays visible-but-disabled in
+ * the one case that has a way out: a desktop shell on its own audio
+ * engine, where the switch beside it is the fix.
+ */
+export function showsVideoButton(state: VideoButtonState, source: VideoSource): boolean {
+  if (!state.grant?.sources.includes(source)) return false;
+  if (state.capabilities[source]) return true;
+  return !state.capabilities.renderVideo;
 }
