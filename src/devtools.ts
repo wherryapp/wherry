@@ -107,12 +107,17 @@
 //                                    found (or did not) goes to the collector.
 //
 //   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
-//                                    environment rather than the URL, for a
-//                                    shell in `tauri ios dev` -- which loads
-//                                    the dev server's root and takes no query
+//   VITE_TRACE / VITE_DEVUI          environment rather than the URL, for a
+//   VITE_DEVCLICK                    shell in `tauri ios dev` -- which loads
+//   VITE_DEVCLICKAFTER               the dev server's root and takes no query
 //                                    string. Vite inlines VITE_* at serve
 //                                    time, so they are read exactly where the
-//                                    URL params are.
+//                                    URL params are. The last four were added
+//                                    2026-09-08: without them the iOS
+//                                    simulator is the one platform that
+//                                    cannot report what it rendered, since it
+//                                    can neither take a query string nor be
+//                                    tapped.
 //
 // The voice session is also exposed as window.__voice for an inspector.
 
@@ -509,7 +514,7 @@ function snapshotCallUi(): Record<string, unknown> {
 }
 
 function maybeDevUi(params: URLSearchParams): void {
-  if (params.get("devui") !== "1") return;
+  if (params.get("devui") !== "1" && devEnv("VITE_DEVUI") !== "1") return;
   setInterval(() => {
     record("call", { method: "__dev-ui", args: [snapshotCallUi()] });
   }, DEV_UI_INTERVAL_MS);
@@ -524,11 +529,12 @@ function maybeDevUi(params: URLSearchParams): void {
  * the row loudly rather than silently match nothing.
  */
 function maybeDevClick(params: URLSearchParams): void {
-  const raw = params.get("devclick");
+  const raw = params.get("devclick") ?? devEnv("VITE_DEVCLICK");
   if (!raw) return;
   const labels = raw.split("|").map((label) => label.trim()).filter((label) => label !== "");
   if (labels.length === 0) return;
-  const everyMs = Math.max(1, Number(params.get("devclickafter") ?? "20")) * 1_000;
+  const everyMs =
+    Math.max(1, Number(params.get("devclickafter") ?? devEnv("VITE_DEVCLICKAFTER") ?? "20")) * 1_000;
 
   const press = (label: string, deadline: number): void => {
     const wanted = label.toLowerCase();
@@ -661,7 +667,7 @@ const DEV_VIDEO_DELAY_MS = 6_000;
  */
 export async function installDevtools(restore: (() => Promise<void>) | null): Promise<void> {
   const params = new URLSearchParams(window.location.search);
-  const trace = params.get("trace");
+  const trace = params.get("trace") ?? devEnv("VITE_TRACE");
   if (trace) installCryptoTrace(trace);
   if (restore) {
     try {
