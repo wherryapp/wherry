@@ -384,16 +384,22 @@ export class WebviewTransport implements VoiceTransport {
         // The three processing switches are off by requirement, not
         // preference -- see transport-rules.ts's screenAudioCapture.
         //
-        // NOT YET SAFE TO ENABLE FOR REAL on this path, and the video flag
-        // being dark is what makes shipping it harmless: the standing
-        // requirement is that a share must exclude the call's own incoming
-        // audio completely, and a Chromium loopback capture takes the
-        // render endpoint's whole mix, which contains our own playback.
-        // Whether Chromium excludes its own process tree is the single
-        // most valuable unknown on the Windows machine, because the answer
-        // decides whether this path is usable at all or whether screen
-        // audio has to be captured natively on every platform
-        // (docs/prompts/windows-handoff.md).
+        // THIS PATH DOES NOT MEET REQUIREMENT 3, and since 2026-09-09 that
+        // is measured rather than suspected: Chromium's loopback capture
+        // takes the render endpoint's whole mix, our own playback with it,
+        // so a share on this transport returns the far end their own voice
+        // (regression rows S-01 and S-11, the second of which watched both
+        // engines do opposite things in one sitting). The constraint that
+        // would fix it, `restrictOwnAudio`, is gated on Windows 11.
+        //
+        // It ships anyway, by the maintainer's decision the same day: the
+        // people on the system are testing rather than relying on it. An
+        // earlier version of this comment said the dark `video` flag was
+        // what made that harmless -- the flag has been ON globally in
+        // production since some unrecorded date, so it was never the
+        // reason. What actually closes this is capturing in the shell,
+        // which Windows has (voice/screen_audio.rs) and macOS does not yet
+        // (stage M, docs/prompts/screen-audio-handoff.md §6).
         audio: screenAudioCapture(),
         // "detail" is what tells the encoder this is text and not motion;
         // it is the difference between a readable shared window and a
