@@ -12,6 +12,8 @@
 // button is gone (the call bar's own preview opens the page now) and this
 // row is only ever about what *this* device is doing.
 
+import { useState } from "react";
+
 import { useVoice } from "../../voice/hooks";
 import {
   VIDEO_SWITCH_NOTE,
@@ -19,7 +21,8 @@ import {
   videoDisabledReason,
   videoNeedsSwitch,
 } from "../../voice/rules";
-import { voice } from "../../voice/session";
+import { voice, type ScreenSource } from "../../voice/session";
+import { ScreenPicker } from "./ScreenPicker";
 import {
   IconButton,
   MicIcon,
@@ -44,6 +47,35 @@ export function CallControls({
   const cameraReason = videoDisabledReason(state, "camera");
   const screenReason = videoDisabledReason(state, "screen");
   const tint = dark ? "!text-neutral-300 hover:!text-white" : "";
+  // The button that was pressed, kept in state rather than read from a ref
+  // during render: the popover anchors to it, and a ref's `current` is not
+  // something a render may depend on.
+  const [picking, setPicking] = useState<{
+    sources: ScreenSource[];
+    anchor: HTMLElement;
+  } | null>(null);
+
+  /**
+   * Share screen, on a transport that has no picker of its own.
+   *
+   * The ask decides: an empty list means the transport opens something
+   * itself (`getDisplayMedia`, the macOS sheet) and the press is the whole
+   * gesture, exactly as before. A real list means there is nothing to open
+   * — Windows in the shell — so ours goes up and the share waits for a
+   * choice. Stopping never asks.
+   */
+  const onScreenPress = async (anchor: HTMLElement): Promise<void> => {
+    if (state.screen.on) {
+      await voice.setScreenShareEnabled(false);
+      return;
+    }
+    const sources = await voice.screenSources();
+    if (sources.length === 0) {
+      await voice.toggleScreenShare();
+      return;
+    }
+    setPicking({ sources, anchor });
+  };
 
   return (
     <div
@@ -92,7 +124,7 @@ export function CallControls({
             screenReason ?? (videoNeedsSwitch(state, "screen") ? VIDEO_SWITCH_NOTE : undefined)
           }
           disabled={screenReason !== null}
-          onClick={() => void voice.toggleScreenShare()}
+          onClick={(event) => void onScreenPress(event.currentTarget)}
           aria-pressed={state.screen.on}
           className={
             screenReason
@@ -104,6 +136,18 @@ export function CallControls({
         >
           <ScreenShareIcon />
         </IconButton>
+      )}
+
+      {picking && (
+        <ScreenPicker
+          sources={picking.sources}
+          anchor={picking.anchor}
+          onCancel={() => setPicking(null)}
+          onConfirm={(choice) => {
+            setPicking(null);
+            void voice.setScreenShareEnabled(true, choice);
+          }}
+        />
       )}
 
       {onOpenDevices && (

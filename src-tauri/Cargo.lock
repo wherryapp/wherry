@@ -5640,6 +5640,7 @@ name = "wherry-desktop"
 version = "0.3.0"
 dependencies = [
  "block2",
+ "futures-executor",
  "futures-util",
  "keyring",
  "livekit",
@@ -5655,6 +5656,8 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tokio",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

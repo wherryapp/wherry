@@ -12,9 +12,12 @@ import {
   qualityFromWord,
   SCREEN_AUDIENCE_STEP,
   screenAudioCapture,
+  screenAudioMode,
+  screenAudioNote,
   screenAudioPublish,
   SCREEN_AUDIO_BITRATE,
   screenOptionsFor,
+  screenSourceKind,
   tileRect,
   volumeKey,
   userIdFromMetadata,
@@ -295,5 +298,67 @@ describe("screen share audio", () => {
     // mirrored by hand because this file imports no SDK.
     assert.equal(SCREEN_AUDIO_BITRATE, 128_000);
     assert.ok(SCREEN_AUDIO_BITRATE > 64_000);
+  });
+});
+
+describe("screenSourceKind", () => {
+  it("reads the kind off the prefix the shell hands out", () => {
+    assert.equal(screenSourceKind("screen:0"), "screen");
+    assert.equal(screenSourceKind("window:1180440"), "window");
+  });
+
+  it("refuses an id from nowhere rather than guessing", () => {
+    // Guessing "screen" would capture the whole desktop's sound for
+    // somebody who asked for one window, which is the one mistake this
+    // prefix exists to make impossible.
+    assert.equal(screenSourceKind(""), null);
+    assert.equal(screenSourceKind("0"), null);
+    assert.equal(screenSourceKind(":0"), null);
+    assert.equal(screenSourceKind("display:0"), null);
+    assert.equal(screenSourceKind("screen:"), null);
+    assert.equal(screenSourceKind("screen:abc"), null);
+  });
+});
+
+describe("screenAudioMode", () => {
+  it("includes a window's own process tree", () => {
+    // Measured following a browser into the child process that actually
+    // renders its audio (regression row S-05, run 3).
+    assert.equal(screenAudioMode("window:1180440"), "include-target");
+  });
+
+  it("excludes ours when the whole screen is shared", () => {
+    // Requirement 3: a clean digital copy of the far end must not go back
+    // to them. Our own output measured at the floor, 0.8 dB against a
+    // 110 dB self-test (S-05, run 2).
+    assert.equal(screenAudioMode("screen:0"), "exclude-self");
+  });
+
+  it("treats an unreadable id as the safer of the two", () => {
+    // Not "include-target": a target we could not parse has no pid to
+    // include, and the exclusion is the mode that can never carry the
+    // call back to the far end.
+    assert.equal(screenAudioMode("nonsense"), "exclude-self");
+  });
+});
+
+describe("screenAudioNote", () => {
+  it("says something different for a window than for a screen", () => {
+    const window = screenAudioNote("window:5");
+    const screen = screenAudioNote("screen:0");
+    assert.notEqual(window, screen);
+    // Both must promise the call is left out -- that is the requirement
+    // the sentence is reporting, in each mode's own words.
+    assert.match(window, /not the call/);
+    assert.match(screen, /except this call/);
+  });
+
+  it("keeps the wording paired with the mode it describes", () => {
+    // The failure this guards is the two drifting apart: a note claiming
+    // "this app's sound and nothing else" over an exclude-self capture.
+    for (const id of ["window:1", "screen:1", "rubbish"]) {
+      const mentionsOneApp = /this app's sound/.test(screenAudioNote(id));
+      assert.equal(mentionsOneApp, screenAudioMode(id) === "include-target");
+    }
   });
 });

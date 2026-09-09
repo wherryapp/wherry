@@ -91,3 +91,33 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSValue"] }
 # route, and the one completion block it needs -- the camera permission
 # prompt's -- is what block2 is for. Already in the graph through objc2.
 block2 = "0.6"
+
+# Screen-share audio on Windows (voice/screen_audio.rs; docs/prompts/
+# screen-audio-handoff.md §4). WASAPI *process* loopback: the one capture
+# that can carry what an application is playing while leaving our own
+# process tree out, which is requirement 3 of video-plan.md §10.2 -- a
+# share must never send the call's own incoming audio back to the far end.
+# Chromium's display capture cannot do that on Windows 10 (row S-01), and
+# under WebView2 it cannot open a picker at all (S-00), so this is the
+# shell's job rather than the page's.
+#
+# `windows` 0.61 rather than the 0.62 the probe in scripts/regress used:
+# 0.61 is already in this graph through tao and wry, so this adds features
+# to a crate that is compiled anyway instead of a second major version of
+# it. The API shape is identical at both (checked: the completion handler
+# takes the same `Ref<'_, _>`).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_Security",
+  "Win32_System_Com",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "0.61"
+# `NativeAudioSource::capture_frame` is async in signature and synchronous
+# underneath on the fast path (queue size 0), and the capture loop is a
+# plain std thread with no runtime on it. Already in the graph through
+# futures; this makes it a direct dependency for that one call.
+futures-executor = "0.3"

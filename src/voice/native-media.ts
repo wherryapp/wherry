@@ -30,6 +30,13 @@ export type NativeMediaProbe = {
   /** The shell captures and renders video natively (macOS since
    *  2026-09-08). Absent from an older shell, which reads as false. */
   video?: boolean;
+  /** The shell can capture a screen or window through a picker of its own
+   *  (Windows since 2026-09-09; stage W1). Split from `video` because
+   *  Windows captures a screen long before it can draw a received tile. */
+  screenCapture?: boolean;
+  /** The shell can draw received tiles natively (macOS; Windows after the
+   *  child-HWND presenter). */
+  videoRender?: boolean;
 };
 
 let probe: NativeMediaProbe | null = null;
@@ -44,8 +51,15 @@ export function nativeMediaAvailable(): boolean {
   return probe?.available === true;
 }
 
-/** The engine is here *and* it does video (transport-native.ts's
- *  `capabilities`). Feature-detected from the probe, never a platform. */
+/**
+ * The engine is here *and* it does video end to end — a camera it can open
+ * and a tile it can draw.
+ *
+ * Deliberately still the undivided `video` field: both callers are about
+ * the **camera** (the device list, and the settings preview), and Windows
+ * capturing a screen says nothing about either. `capabilities()` in
+ * transport-native.ts is where the three answers come apart.
+ */
 export function nativeVideoAvailable(): boolean {
   return probe?.available === true && probe.video === true;
 }

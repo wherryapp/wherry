@@ -46,6 +46,7 @@ import {
 } from "./transport-rules";
 import type {
   FrameTransformKind,
+  ScreenSource,
   TransportCapabilities,
   TransportConnectOptions,
   TransportEvents,
@@ -348,6 +349,17 @@ export class WebviewTransport implements VoiceTransport {
       throw new Error(publishErrorMessage(error, "camera"));
     }
     this.#reattach("self", "camera");
+  }
+
+  /**
+   * Always empty, on every platform this transport runs on: the picker is
+   * inside `getDisplayMedia` and there is nothing for a list to add. The
+   * one platform where the browser has no picker is Windows under WebView2
+   * (S-00) — and there this transport is not the one sharing, because the
+   * shell captures instead.
+   */
+  async screenSources(): Promise<ScreenSource[]> {
+    return [];
   }
 
   async setScreenShareEnabled(on: boolean, audience = 1): Promise<void> {

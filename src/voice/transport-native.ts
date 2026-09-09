@@ -26,14 +26,21 @@
 // surface is covered (ui/back.ts's overlay depth), because a native view
 // cannot be told by the document's stacking order what is drawn over it.
 //
-// Where the shell answers `video: false` (Windows today) every capability
-// is false and the call keeps the engine switch it has had since stage 4.
+// **Windows shares a screen and renders nothing (2026-09-09, stage W1).**
+// The three capabilities used to be one probe field and now are three,
+// because that platform came apart: it captures a screen and its sound
+// through a picker of our own -- WebView2 opens none and `getDisplayMedia`
+// hangs there (row S-00), so the shell is the only thing that can -- while
+// it still has no camera and cannot draw a received tile, and so keeps the
+// engine switch on the camera button.
 
 import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules";
 import { nativeMediaProbe } from "./native-media";
 import type {
   AudioKind,
   FrameTransformKind,
+  ScreenChoice,
+  ScreenSource,
   TransportCapabilities,
   TransportConnectOptions,
   TransportEvents,
@@ -52,6 +59,7 @@ import {
   nativeGainFor,
   playbackEnabledFor,
   qualityFromWord,
+  screenAudioMode,
   screenOptionsFor,
   tileRect,
   userIdFromMetadata,
@@ -253,14 +261,44 @@ export class NativeTransport implements VoiceTransport {
   // -- video -----------------------------------------------------------------
 
   /**
-   * All three flip together on the probe's `video` answer: the shell that
-   * captures also renders (voice/video.rs), and a shell that does neither
-   * reports none of it -- and the bar keeps the engine switch. Never a
-   * platform name; an older shell without the field reads as false.
+   * The three answers came from one probe field until 2026-09-09, when
+   * Windows made them come apart: a shell there captures a screen (stage
+   * W1) long before it can draw a received tile (W3), and there is no
+   * camera capture at all. So `video` stays the shell that does
+   * everything -- macOS, and any shell older than the split -- and the two
+   * narrower fields raise the ones that platform has.
+   *
+   * The camera keeps the engine switch on Windows while the screen button
+   * shares for real, which `rules.ts`'s `videoNeedsSwitch` already handles:
+   * it reads the per-source capability, not one flag for video.
+   *
+   * Never a platform name; an older shell without the fields reads as the
+   * old all-or-nothing answer.
    */
   capabilities(): TransportCapabilities {
-    const video = nativeMediaProbe()?.video === true;
-    return { camera: video, screen: video, renderVideo: video };
+    const probe = nativeMediaProbe();
+    const video = probe?.video === true;
+    return {
+      camera: video,
+      screen: video || probe?.screenCapture === true,
+      renderVideo: video || probe?.videoRender === true,
+    };
+  }
+
+  /**
+   * Empty where the OS has a picker of its own (macOS), a real list where
+   * it has none (Windows). The page draws one exactly when this is
+   * non-empty -- see the seam's comment on why that is the signal rather
+   * than a platform check.
+   */
+  async screenSources(): Promise<ScreenSource[]> {
+    const invoke = this.#invoke;
+    if (!invoke) return [];
+    try {
+      return await invoke<ScreenSource[]>("voice_screen_sources");
+    } catch {
+      return [];
+    }
   }
 
   async setCameraEnabled(on: boolean, deviceId: string | null): Promise<void> {
@@ -281,7 +319,11 @@ export class NativeTransport implements VoiceTransport {
     }
   }
 
-  async setScreenShareEnabled(on: boolean, audience = 1): Promise<void> {
+  async setScreenShareEnabled(
+    on: boolean,
+    audience = 1,
+    choice?: ScreenChoice | null,
+  ): Promise<void> {
     const invoke = this.#invoke;
     if (!invoke || this.#session === null) return;
     // The audience step, read now and never re-applied: see
@@ -293,6 +335,16 @@ export class NativeTransport implements VoiceTransport {
           enabled: on,
           maxHeight: ceiling?.maxHeight ?? 1080,
           maxFps: ceiling?.maxFps ?? 15,
+          // Null where the OS sheet chooses (macOS). The shell refuses to
+          // start a capture without one anywhere else, which is what keeps
+          // "a display captured with no consent interface" unreachable
+          // rather than merely unused.
+          source: choice?.sourceId ?? null,
+          audio: choice?.audio === true,
+          // The mode is decided here and never in Rust: which loopback a
+          // share uses follows what was picked, and the shell receives it
+          // already chosen (transport-rules.ts's screenAudioMode).
+          audioMode: choice ? screenAudioMode(choice.sourceId) : null,
         },
       });
     } catch (error) {

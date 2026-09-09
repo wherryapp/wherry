@@ -250,6 +250,22 @@ export type TransportStats = {
  */
 export type VideoSurface = "page" | "bar";
 
+/** One row in our own screen picker, as the shell enumerated it. */
+export type ScreenSource = {
+  /** `screen:<id>` or `window:<id>`; opaque to the page except that
+   *  `transport-rules.ts` reads the prefix to decide the audio mode. */
+  id: string;
+  title: string;
+  isScreen: boolean;
+};
+
+/** What the person chose in that picker. */
+export type ScreenChoice = {
+  sourceId: string;
+  /** Publish the shared thing's sound alongside the picture. */
+  audio: boolean;
+};
+
 /** How the frame cipher is applied: the browser SDK's two mechanisms, none
  *  at all, or the shell's own engine (libwebrtc's FrameCryptor in-process). */
 export type FrameTransformKind = "encoded-streams" | "script-transform" | "none" | "native";
@@ -271,9 +287,24 @@ export interface VoiceTransport {
 
   /** `deviceId` null is the platform default camera. */
   setCameraEnabled(on: boolean, deviceId: string | null): Promise<void>;
+  /**
+   * What this transport can share, for a picker of our own to draw.
+   *
+   * Empty means **the transport opens a picker itself** and the caller
+   * must not draw one: `getDisplayMedia` is its own picker in a browser,
+   * and so is the OS sheet on macOS. A non-empty list means there is no
+   * picker to open — Windows, where WebView2 has none either (S-00) — and
+   * the choice has to be made before `setScreenShareEnabled` is called.
+   */
+  screenSources(): Promise<ScreenSource[]>;
   /** `audience` is the call's size at publish time; the transport steps a
-   *  large call's screen down one height (transport-rules.ts). */
-  setScreenShareEnabled(on: boolean, audience?: number): Promise<void>;
+   *  large call's screen down one height (transport-rules.ts). `choice` is
+   *  required exactly where `screenSources` answered non-empty. */
+  setScreenShareEnabled(
+    on: boolean,
+    audience?: number,
+    choice?: ScreenChoice | null,
+  ): Promise<void>;
 
   /**
    * The one DOM crossing on this interface, and it is on purpose: audio

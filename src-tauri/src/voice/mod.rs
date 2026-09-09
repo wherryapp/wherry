@@ -75,6 +75,15 @@ pub mod render;
 #[cfg(not(target_os = "macos"))]
 #[path = "render_stub.rs"]
 pub mod render;
+// A share's own sound (docs/prompts/screen-audio-handoff.md §4). Split the
+// same way rendering is: the platform that has it, and the shape of it
+// where it is still to be written. Windows first here — it is the platform
+// whose browser engine cannot do this at all.
+#[cfg(target_os = "windows")]
+pub mod screen_audio;
+#[cfg(not(target_os = "windows"))]
+#[path = "screen_audio_stub.rs"]
+pub mod screen_audio;
 pub mod video;
 
 /// Which SDK revision this shell carries; shown by the probe so a call
@@ -511,10 +520,20 @@ pub struct Probe {
   aec: String,
   agc: String,
   ns: String,
-  /// Whether this shell captures and renders video natively (video.rs):
-  /// macOS since 2026-09-08, the others not yet. Feature-detected by the
-  /// page from this answer, never from a platform name.
+  /// Whether this shell both captures **and** renders video natively
+  /// (video.rs): macOS since 2026-09-08. Kept as one boolean because a
+  /// shell older than the split answers only this, and a page reading it
+  /// alone still gets a true answer for macOS. Feature-detected by the
+  /// page, never derived from a platform name.
   video: bool,
+  /// The shell can capture a screen or window with a picker of its own
+  /// (Windows since 2026-09-09; stage W1). Split from `video` because
+  /// Windows captures long before it can draw a received tile, and the
+  /// page has to be able to offer the screen button while the camera
+  /// button is still the engine switch.
+  screen_capture: bool,
+  /// The shell can draw received tiles natively (macOS; Windows after W3).
+  video_render: bool,
 }
 
 #[tauri::command]
@@ -525,6 +544,11 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   Ok(Probe {
     livekit_rev: LIVEKIT_REV,
     video: cfg!(target_os = "macos"),
+    // libwebrtc's `DesktopCapturer` is implemented on both, and off macOS
+    // `voice_set_screen` now refuses to start without a source the person
+    // chose (video.rs), which is what makes offering it safe.
+    screen_capture: cfg!(any(target_os = "macos", target_os = "windows")),
+    video_render: cfg!(target_os = "macos"),
     recording_devices: audio.recording_devices().count(),
     playout_devices: audio.playout_devices().count(),
     aec: format!("{:?}", audio.active_aec_type()),

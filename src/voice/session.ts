@@ -68,6 +68,8 @@ import { videoOptionsFor, volumeKey } from "./transport-rules";
 import { blip, startRingback } from "./sounds";
 import type {
   FrameTransformKind,
+  ScreenChoice,
+  ScreenSource,
   TransportCapabilities,
   VoiceQuality,
   VoiceTransport,
@@ -76,6 +78,7 @@ import type {
 } from "./transport";
 
 export type { VoiceQuality } from "./transport";
+export type { ScreenChoice, ScreenSource } from "./transport";
 
 /** What a join needs to know about the conversation: the id, and the
  *  content class that decides whether media is frame-encrypted. Both the
@@ -469,12 +472,32 @@ class VoiceSession {
     if (next) await this.setCameraDevice(next.deviceId);
   }
 
-  async setScreenShareEnabled(on: boolean): Promise<void> {
+  /**
+   * What this transport can share, or empty where it opens its own picker.
+   *
+   * Forwarded rather than handing the transport out, like every other
+   * method here, so nothing outside `index.ts` learns which engine it got.
+   */
+  async screenSources(): Promise<ScreenSource[]> {
+    const transport = this.#transport;
+    if (!transport) return [];
+    try {
+      return await transport.screenSources();
+    } catch {
+      return [];
+    }
+  }
+
+  async setScreenShareEnabled(on: boolean, choice?: ScreenChoice | null): Promise<void> {
     if (on && videoNeedsSwitch(this.#state, "screen")) await this.switchEngineForThisCall();
     const transport = this.#transport;
     if (!transport) return;
     try {
-      await transport.setScreenShareEnabled(on, this.#state.participants.length + 1);
+      await transport.setScreenShareEnabled(
+        on,
+        this.#state.participants.length + 1,
+        choice ?? null,
+      );
       this.#set({ screen: { on }, error: null });
     } catch (error) {
       // A cancelled picker is not a failure worth a red line, but it is
@@ -484,6 +507,14 @@ class VoiceSession {
     }
   }
 
+  /**
+   * Stop sharing, or start where the transport picks for itself.
+   *
+   * Where it does not — the shell on Windows, whose `screenSources` is a
+   * real list — the caller opens `ScreenPicker` and calls
+   * `setScreenShareEnabled` with the choice instead. This stays the whole
+   * gesture for every transport that has a picker of its own.
+   */
   toggleScreenShare(): Promise<void> {
     return this.setScreenShareEnabled(!this.#state.screen.on);
   }

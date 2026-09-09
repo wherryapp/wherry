@@ -296,6 +296,61 @@ export function screenAudioPublish(): {
 }
 
 /**
+ * Which capturer a picked source came from, read back off its id.
+ *
+ * The shell prefixes every id it hands out (`screen:3` / `window:12345`)
+ * because screens and windows are two different capturers with two
+ * different id spaces, and because the kind is what decides the audio
+ * mode below. Null for an id from nowhere — the transport refuses rather
+ * than guessing, since guessing "screen" would capture the whole desktop's
+ * sound for somebody who asked for one window.
+ */
+export function screenSourceKind(sourceId: string): "screen" | "window" | null {
+  const separator = sourceId.indexOf(":");
+  if (separator <= 0) return null;
+  const word = sourceId.slice(0, separator);
+  if (!/^\d+$/.test(sourceId.slice(separator + 1))) return null;
+  return word === "screen" || word === "window" ? word : null;
+}
+
+/**
+ * How a share's audio is captured, per what was picked.
+ *
+ * Two Win32 loopback modes, and the choice follows the thing being shared
+ * rather than a preference. A **window** shares that application's sound
+ * and nothing else, so the capture *includes* its process tree — measured
+ * to follow a browser into the child process that actually renders its
+ * audio (regression row S-05, run 3). A whole **screen** shares everything
+ * you can hear, which must still not include the call itself, so the
+ * capture *excludes* our own tree — our output measured at the floor,
+ * 0.8 dB against a 110 dB self-test (S-05, run 2).
+ *
+ * Requirement 3 of `video-plan.md` §10.2 is met in both directions here:
+ * excluding ourselves is what keeps a clean digital copy of the far end
+ * from going back to them, and including one target is a narrower capture
+ * still.
+ */
+export type ScreenAudioMode = "exclude-self" | "include-target";
+
+export function screenAudioMode(sourceId: string): ScreenAudioMode {
+  return screenSourceKind(sourceId) === "window" ? "include-target" : "exclude-self";
+}
+
+/**
+ * The one sentence under the picker's audio checkbox.
+ *
+ * It changes with the highlighted source because the two modes really do
+ * different things, and a checkbox labelled only *Share audio* would be
+ * the same words for "this app" and "everything you hear". Kept beside the
+ * mode it describes so the two cannot drift apart.
+ */
+export function screenAudioNote(sourceId: string): string {
+  return screenAudioMode(sourceId) === "include-target"
+    ? "Shares this app's sound, and nothing else — not the call, not your other apps."
+    : "Shares everything you hear except this call.";
+}
+
+/**
  * How a per-person volume is keyed, now that a person can be two sources
  * of sound: their voice, and the audio of whatever they are sharing.
  *

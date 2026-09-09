@@ -161,12 +161,103 @@ impl Sweep {
 
 // -- the screen --------------------------------------------------------------
 
+/// Which of libwebrtc's two capturers a source came from.
+///
+/// It is part of the identity of a pick, not a detail: screens and windows
+/// are separate `DesktopCapturer`s with separate id spaces, so an id alone
+/// cannot be started. The page carries the kind back as the `screen:` or
+/// `window:` prefix on the id it was given.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScreenKind {
+  Screen,
+  Window,
+}
+
+/// One entry in our own picker's list (Windows; macOS uses the OS sheet).
+///
+/// The `allow` is because macOS never calls `screen_sources` — its picker
+/// is the OS's — so on that target this type and that function are dead by
+/// design rather than by oversight, and `mod voice` is private so the
+/// compiler would say so.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[derive(Clone, Debug)]
+pub struct ScreenSourceInfo {
+  pub kind: ScreenKind,
+  pub id: u64,
+  pub title: String,
+}
+
+/// What `voice_set_screen` chose, resolved back to a capturer and an id.
+#[derive(Clone, Copy, Debug)]
+pub struct PickedSource {
+  pub kind: ScreenKind,
+  pub id: u64,
+}
+
+impl ScreenKind {
+  fn source_type(self) -> DesktopCaptureSourceType {
+    match self {
+      ScreenKind::Screen => DesktopCaptureSourceType::Screen,
+      ScreenKind::Window => DesktopCaptureSourceType::Window,
+    }
+  }
+}
+
+/// The frame size the grant allows, from the size actually captured.
+///
+/// One function because two places need the same answer and they must not
+/// drift: `video.rs` sizes the publication with it before any frame has
+/// been scaled, and the capture callback applies it to *every* frame. That
+/// second application is what a window share needs and a display share
+/// never did — a window is resized while it is being shared, and a policy
+/// ceiling that were read once from the first frame would be exceeded the
+/// moment somebody maximised it.
+pub fn fit_height(width: u32, height: u32, max_height: u32) -> (u32, u32) {
+  let max_height = max_height.max(2);
+  if height <= max_height {
+    return (width & !1, height & !1);
+  }
+  let scale = max_height as f64 / height as f64;
+  (((width as f64 * scale).round() as u32).max(2) & !1, max_height & !1)
+}
+
+/// Every screen and window this machine can capture, screens first.
+///
+/// Windows only in practice: macOS answers through the system picker
+/// instead (`set_sck_system_picker`), which is why `voice_screen_sources`
+/// keeps returning an empty list there and the page keeps opening the OS
+/// sheet. Windows with no title are dropped — they are the invisible
+/// tool and message windows every process owns, and none of them is
+/// something a person meant to share.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn screen_sources() -> Vec<ScreenSourceInfo> {
+  let mut out = Vec::new();
+  for kind in [ScreenKind::Screen, ScreenKind::Window] {
+    let mut options = DesktopCapturerOptions::new(kind.source_type());
+    options.set_include_cursor(true);
+    #[cfg(target_os = "macos")]
+    options.set_sck_system_picker(false);
+    let Some(capturer) = DesktopCapturer::new(options) else { continue };
+    for source in capturer.get_source_list() {
+      let title = source.title();
+      if kind == ScreenKind::Window && title.trim().is_empty() {
+        continue;
+      }
+      out.push(ScreenSourceInfo { kind, id: source.id(), title });
+    }
+  }
+  out
+}
+
 /// libwebrtc's desktop capturer on its own thread, converting each ARGB
 /// frame to I420 for the source. On macOS the system picker is the
 /// interface (`set_sck_system_picker`): the person picks a screen or a
 /// window in the OS's own sheet, and the Screen Recording grant is the
-/// bundle's. The first frame's size is reported once, because the source
-/// and the publication want it and nothing knows it before the pick.
+/// bundle's. On Windows there is no OS picker to open — WebView2 has none
+/// either (regression row S-00) — so the page picks from `screen_sources`
+/// and the choice arrives here already made. The first frame's size is
+/// reported once, because the source and the publication want it and
+/// nothing knows it before the pick.
 pub struct Screen {
   stop: Arc<AtomicBool>,
   frames: Arc<AtomicU64>,
@@ -179,32 +270,56 @@ pub struct Screen {
 pub type SourceSlot = Arc<Mutex<Option<NativeVideoSource>>>;
 
 impl Screen {
-  /// `first` receives the first frame's `(width, height)`; the caller waits
-  /// on it with a timeout that covers the picker. `target` is a size to
-  /// scale every frame to before it reaches the source, set once the grant
-  /// has been applied to the picked screen's size.
+  /// `first` receives the first frame's `(width, height)` as captured; the
+  /// caller waits on it with a timeout that covers the picker, and applies
+  /// `fit_height` to it to size the publication. `picked` is `None` where
+  /// the OS's own sheet is the interface (macOS), and `Some` where the page
+  /// drew the list itself (Windows).
   pub fn start(
     fps: u32,
+    max_height: u32,
+    picked: Option<PickedSource>,
     slot: SourceSlot,
-    target: Arc<Mutex<Option<(u32, u32)>>>,
     first: std::sync::mpsc::Sender<(u32, u32)>,
   ) -> Result<Screen, VoiceError> {
     let stop = Arc::new(AtomicBool::new(false));
     let frames = Arc::new(AtomicU64::new(0));
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    // `(code, message)` rather than a message alone: "this platform has no
+    // capturer" and "the window you picked has closed" are different things
+    // to say to somebody, and the second is the one our own picker made
+    // reachable.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), (&'static str, String)>>();
     let join = {
       let stop = stop.clone();
       let frames = frames.clone();
       std::thread::Builder::new()
         .name("wherry-screen".into())
         .spawn(move || {
-          let mut options = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
+          let kind = picked.map(|p| p.kind).unwrap_or(ScreenKind::Screen);
+          let mut options = DesktopCapturerOptions::new(kind.source_type());
           options.set_include_cursor(true);
+          // The OS sheet only where nothing was picked for us.
           #[cfg(target_os = "macos")]
-          options.set_sck_system_picker(true);
+          options.set_sck_system_picker(picked.is_none());
           let Some(mut capturer) = DesktopCapturer::new(options) else {
-            let _ = ready_tx.send(Err("no desktop capturer on this platform".into()));
+            let _ = ready_tx.send(Err(("screen_unsupported", "no desktop capturer on this platform".into())));
             return;
+          };
+          // A pick is resolved against a *fresh* list on this thread rather
+          // than carried over from the enumeration: the window may have
+          // closed between the person seeing it and choosing it, and that
+          // is a sentence to show rather than a capture of nothing.
+          let chosen = match picked {
+            None => None,
+            Some(pick) => {
+              match capturer.get_source_list().into_iter().find(|s| s.id() == pick.id) {
+                Some(source) => Some(source),
+                None => {
+                  let _ = ready_tx.send(Err(("screen_gone", "that window or screen is no longer there".into())));
+                  return;
+                }
+              }
+            }
           };
           let mut announced = false;
           let mut buffer = I420Buffer::new(2, 2);
@@ -248,9 +363,9 @@ impl Screen {
                 height,
               );
               if let Some(source) = slot.lock().unwrap().as_ref() {
-                let scaled = target.lock().unwrap().and_then(|(w, h)| {
-                  (w != width as u32 || h != height as u32).then(|| buffer.scale(w as i32, h as i32))
-                });
+                let (w, h) = fit_height(width as u32, height as u32, max_height);
+                let scaled = (w != width as u32 || h != height as u32)
+                  .then(|| buffer.scale(w as i32, h as i32));
                 match scaled {
                   Some(scaled) => source.capture_frame(&VideoFrame {
                     rotation: VideoRotation::VideoRotation0,
@@ -269,7 +384,7 @@ impl Screen {
               }
             }
           };
-          capturer.start_capture(None, callback);
+          capturer.start_capture(chosen, callback);
           let _ = ready_tx.send(Ok(()));
           let interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
           while !stop.load(Ordering::Relaxed) {
@@ -281,7 +396,7 @@ impl Screen {
     };
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
       Ok(Ok(())) => Ok(Screen { stop, frames, join: Some(join) }),
-      Ok(Err(message)) => Err(VoiceError::new("screen_unsupported", message)),
+      Ok(Err((code, message))) => Err(VoiceError::new(code, message)),
       Err(_) => Err(VoiceError::new("screen_failed", "the capturer did not start")),
     }
   }

@@ -31,10 +31,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
+use livekit::options::{AudioEncoding, TrackPublishOptions, VideoCodec, VideoEncoding};
 use livekit::prelude::*;
 use livekit::track::VideoQuality;
 use livekit::webrtc::stats::RtcStats;
+use livekit::webrtc::audio_source::native::NativeAudioSource;
+use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_track::RtcVideoTrack;
@@ -44,6 +46,7 @@ use tauri::AppHandle;
 
 use super::capture::{self, Source, SourceSlot, VideoDevice};
 use super::render::{PageRect, Tile};
+use super::screen_audio::{self, ScreenAudio};
 use super::{apply_key_index, current, emit, Event, VoiceError, VoiceResult};
 
 // -- state -------------------------------------------------------------------
@@ -58,6 +61,18 @@ struct Published {
   /// the publication exists.
   slot: Option<SourceSlot>,
   device_id: Option<String>,
+  /// The share's own sound, where one was asked for and the platform has
+  /// it: a second publication of its own, on purpose. Two tracks and two
+  /// volumes is requirement 1 of video-plan.md §10.2 — turning a colleague
+  /// down must not turn down the film they are showing you — and it is
+  /// also what keeps "muted" meaning the microphone, since mute reads the
+  /// microphone publication and this is not one.
+  audio: Option<PublishedAudio>,
+}
+
+struct PublishedAudio {
+  publication: LocalTrackPublication,
+  capture: ScreenAudio,
 }
 
 struct TileEntry {
@@ -148,15 +163,62 @@ pub fn voice_video_devices() -> VoiceResult<Vec<VideoDevice>> {
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenSource {
+  /// `screen:<id>` or `window:<id>`. The prefix is not decoration: the two
+  /// are different capturers with different id spaces (capture.rs), and it
+  /// is also what `transport-rules.ts` reads to decide the audio mode.
   pub id: String,
   pub title: String,
+  /// True for a whole display, so the page can head the two groups without
+  /// parsing the id.
+  pub is_screen: bool,
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn screen_id(kind: capture::ScreenKind, id: u64) -> String {
+  match kind {
+    capture::ScreenKind::Screen => format!("screen:{id}"),
+    capture::ScreenKind::Window => format!("window:{id}"),
+  }
+}
+
+fn parse_screen_id(id: &str) -> VoiceResult<capture::PickedSource> {
+  let (word, rest) = id
+    .split_once(':')
+    .ok_or_else(|| VoiceError::new("bad_source", format!("unrecognised screen source {id}")))?;
+  let kind = match word {
+    "screen" => capture::ScreenKind::Screen,
+    "window" => capture::ScreenKind::Window,
+    _ => return Err(VoiceError::new("bad_source", format!("unrecognised screen source {id}"))),
+  };
+  let id = rest
+    .parse::<u64>()
+    .map_err(|_| VoiceError::new("bad_source", format!("unrecognised screen source {id}")))?;
+  Ok(capture::PickedSource { kind, id })
 }
 
 /// Empty on macOS on purpose: the system picker is the interface there
 /// (capture.rs), so the bar opens it directly rather than drawing a list.
+/// On Windows there is no OS picker to open — not in the shell and not in
+/// WebView2 either (S-00) — so this is the list our own picker draws.
 #[tauri::command]
 pub fn voice_screen_sources() -> VoiceResult<Vec<ScreenSource>> {
-  Ok(Vec::new())
+  #[cfg(target_os = "macos")]
+  {
+    Ok(Vec::new())
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    Ok(
+      capture::screen_sources()
+        .into_iter()
+        .map(|source| ScreenSource {
+          id: screen_id(source.kind, source.id),
+          title: source.title,
+          is_screen: source.kind == capture::ScreenKind::Screen,
+        })
+        .collect(),
+    )
+  }
 }
 
 // -- the camera --------------------------------------------------------------
@@ -302,6 +364,7 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
       capture: Some(capture),
       slot: None,
       device_id: args.device_id,
+      audio: None,
     });
   });
   rebind_tiles(session, &room);
@@ -316,32 +379,62 @@ pub struct ScreenArgs {
   pub enabled: bool,
   pub max_height: u32,
   pub max_fps: u32,
+  /// `screen:<id>` or `window:<id>` from `voice_screen_sources`; `None` on
+  /// macOS, where the OS's own sheet does the choosing.
+  #[serde(default)]
+  pub source: Option<String>,
+  /// Publish the shared thing's sound beside its picture.
+  #[serde(default)]
+  pub audio: bool,
+  /// `exclude-self` or `include-target`, decided by `transport-rules.ts`'s
+  /// `screenAudioMode` and never inferred here. Absent is treated as the
+  /// safer of the two: an exclusion can never carry the call back to the
+  /// far end, and an unrecognised include has no target anyway.
+  #[serde(default)]
+  pub audio_mode: Option<String>,
 }
 
-// The camera path answers "unsupported" off macOS (see `open_camera`); this one
-// did not, and it is the more dangerous of the two to leave open. libwebrtc's
-// `DesktopCapturer` *is* implemented on Windows, and this path starts it with no
-// source chosen and no picker -- so the two ways it can go are capturing a
-// display with no consent interface, or blocking the command on its
-// 120-second `recv_timeout`. Neither is reachable today, because the probe
-// answers `video: false` off macOS and the client never calls it. It arms
-// itself the day a Windows shell reports `video: true`, which is exactly when
-// somebody will be looking at something else. The `allow` is because
-// everything after the guard is dead code off macOS, on purpose: the body is
-// platform-neutral enough to compile there, which is what made this latent
-// rather than a compile error in the first place.
+// **A capture with no consent interface is the thing to keep impossible
+// here.** libwebrtc's `DesktopCapturer` is implemented on Windows as well as
+// macOS, so until 2026-09-09 this command's danger was that a Windows caller
+// would start it with no source and no picker and capture a display nobody
+// had chosen. That is now structural rather than guarded: off macOS the
+// command **requires** `args.source`, and the only thing that produces one is
+// `voice_screen_sources` feeding a list a person picked from.
 #[tauri::command]
-#[cfg_attr(not(target_os = "macos"), allow(unreachable_code, unused_variables))]
 pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<()> {
-  #[cfg(not(target_os = "macos"))]
-  return Err(VoiceError::new(
-    "unsupported",
-    "no native screen capture on this platform yet",
-  ));
+  let picked = match args.source.as_deref() {
+    Some(id) => Some(parse_screen_id(id)?),
+    None => {
+      // macOS opens the system picker with no source; nowhere else has one
+      // to open, and starting a capturer without a pick is what would take
+      // a display unasked.
+      #[cfg(not(target_os = "macos"))]
+      if args.enabled {
+        return Err(VoiceError::new(
+          "bad_source",
+          "a screen or window must be chosen on this platform",
+        ));
+      }
+      None
+    }
+  };
 
   let (session, room, shared) = current()?;
   let existing = with_state(session, |state| state.screen.take());
   if let Some(published) = existing {
+    // Audio first on the way out, so the last thing a viewer loses is the
+    // sound of a picture that has already stopped rather than the reverse.
+    if let Some(audio) = published.audio {
+      if let Err(error) =
+        room.local_participant().unpublish_track(&audio.publication.sid()).await
+      {
+        log::warn!("voice: unpublish screen audio: {error}");
+      }
+      let capture = audio.capture;
+      tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+      log::info!("voice: screen audio unpublished");
+    }
     if let Err(error) = room.local_participant().unpublish_track(&published.publication.sid()).await {
       log::warn!("voice: unpublish screen: {error}");
     }
@@ -359,12 +452,14 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   // person has chosen one, and that can take as long as they like.
   let slot: SourceSlot = SourceSlot::default();
   let (first_tx, first_rx) = std::sync::mpsc::channel::<(u32, u32)>();
-  let target = std::sync::Arc::new(Mutex::new(None));
-  let (screen, picked) = {
+  let max_height = args.max_height;
+  let (screen, captured) = {
     let slot = slot.clone();
-    let target = target.clone();
     tauri::async_runtime::spawn_blocking(move || {
-      let screen = capture::Screen::start(args.max_fps.max(1), slot, target, first_tx)?;
+      let screen = capture::Screen::start(args.max_fps.max(1), max_height, picked, slot, first_tx)?;
+      // Our own picker has already been dismissed by the time this is
+      // called, so on Windows the wait is only ever the capturer's first
+      // frame; on macOS it is the person in front of the OS sheet.
       match first_rx.recv_timeout(std::time::Duration::from_secs(120)) {
         Ok(size) => Ok((screen, size)),
         Err(_) => {
@@ -377,18 +472,12 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
     .map_err(|e| VoiceError::new("screen_failed", e.to_string()))??
   };
 
-  // Fit the grant: a display taller than the ceiling is scaled by the
-  // capture thread before it reaches the encoder, so the encoder never
-  // sees pixels the policy did not allow.
-  let (width, height) = if picked.1 > args.max_height {
-    let scale = args.max_height as f64 / picked.1 as f64;
-    (((picked.0 as f64 * scale).round() as u32) & !1, args.max_height & !1)
-  } else {
-    (picked.0 & !1, picked.1 & !1)
-  };
-  if (width, height) != (picked.0, picked.1) {
-    *target.lock().unwrap() = Some((width, height));
-  }
+  // Fit the grant: a display or window taller than the ceiling is scaled by
+  // the capture thread before it reaches the encoder, so the encoder never
+  // sees pixels the policy did not allow. The same function runs on every
+  // frame there (capture.rs's `fit_height`), which is what keeps a window
+  // that is resized mid-share inside the ceiling too.
+  let (width, height) = capture::fit_height(captured.0, captured.1, max_height);
   let source = NativeVideoSource::new(VideoResolution { width, height }, true);
   *slot.lock().unwrap() = Some(source.clone());
   let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
@@ -415,13 +504,39 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
       return Err(VoiceError::new("screen_failed", format!("publish: {error}")));
     }
   };
+  // The share's sound, if it was asked for. A failure here costs the audio
+  // and never the picture: somebody who pressed Share is sharing, and a
+  // platform that cannot capture sound (or a window that closed between the
+  // pick and the publish) is a line in the log rather than a share that
+  // did not happen.
+  let audio = if args.audio {
+    match publish_screen_audio(&room, &args, picked).await {
+      Ok(audio) => Some(audio),
+      Err(error) => {
+        log::warn!("voice: screen audio not published: {}", error.message);
+        None
+      }
+    }
+  } else {
+    None
+  };
+
+  // **After both publishes, never between them.** A sender's cryptor exists
+  // only once `publish_track` has returned, so walking the ring before the
+  // audio track is published leaves that sender with no key and the peer
+  // hears silence with `MissingKey` in their log -- the same shape as the
+  // microphone's first publish.
   let index = *shared.key_index.lock().unwrap();
   let cryptors = apply_key_index(&room, index);
   log::info!(
-    "voice: screen published as {} at {width}x{height} (captured {}x{}), {cryptors} cryptor(s) on index {index}",
+    "voice: screen published as {} at {width}x{height} (captured {}x{}){}, {cryptors} cryptor(s) on index {index}",
     publication.sid(),
-    picked.0,
-    picked.1
+    captured.0,
+    captured.1,
+    match &audio {
+      Some(audio) => format!(" with audio as {}", audio.publication.sid()),
+      None => String::new(),
+    }
   );
   with_state(session, |state| {
     state.screen = Some(Published {
@@ -431,11 +546,70 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
       capture: Some(Source::Screen(screen)),
       slot: Some(slot),
       device_id: None,
+      audio,
     });
   });
   let _ = &app;
   rebind_tiles(session, &room);
   Ok(())
+}
+
+/// The share's own sound as a second publication.
+///
+/// The three publish numbers are `transport-rules.ts`'s `screenAudioPublish`
+/// mirrored by hand, the way `rules.ts` mirrors the SDK's audio presets: no
+/// DTX, because silence suppression audibly clips a soundtrack's quiet
+/// passages and the tails of notes; no RED, because redundancy is for a
+/// voice on a lossy link and pure overhead here; and 128 kbps stereo, which
+/// is four times a speech bitrate because music needs it. They are
+/// **copied**, not derived — this file must not become a second place the
+/// webview's numbers live — and they have to be changed together.
+async fn publish_screen_audio(
+  room: &Room,
+  args: &ScreenArgs,
+  picked: Option<capture::PickedSource>,
+) -> VoiceResult<PublishedAudio> {
+  let mode = args
+    .audio_mode
+    .as_deref()
+    .and_then(screen_audio::Mode::parse)
+    .unwrap_or(screen_audio::Mode::ExcludeSelf);
+  // Only a window has a process tree to follow; a display share is the
+  // exclusion, and the id is not a window handle.
+  let window = picked
+    .filter(|p| p.kind == capture::ScreenKind::Window)
+    .map(|p| p.id);
+
+  // Requirement 2 is met by construction: a pushed source never passes
+  // through the ADM's processing path, so there is no canceller,
+  // suppressor or gain control between the shared sound and the encoder.
+  let source = NativeAudioSource::new(
+    AudioSourceOptions {
+      echo_cancellation: false,
+      noise_suppression: false,
+      auto_gain_control: false,
+    },
+    48_000,
+    2,
+    0,
+  );
+  let capture = ScreenAudio::start(mode, window, source.clone())?;
+  let track =
+    LocalAudioTrack::create_audio_track("screen-audio", RtcAudioSource::Native(source));
+  let options = TrackPublishOptions {
+    source: TrackSource::ScreenshareAudio,
+    dtx: false,
+    red: false,
+    audio_encoding: Some(AudioEncoding { max_bitrate: 128_000 }),
+    ..Default::default()
+  };
+  match room.local_participant().publish_track(LocalTrack::Audio(track), options).await {
+    Ok(publication) => Ok(PublishedAudio { publication, capture }),
+    Err(error) => {
+      tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+      Err(VoiceError::new("screen_audio_failed", format!("publish: {error}")))
+    }
+  }
 }
 
 // -- subscriptions -------------------------------------------------------------
@@ -697,7 +871,7 @@ pub async fn stats_rows(room: &Room) -> Vec<Value> {
 pub fn native_summary() -> Value {
   let guard = VIDEO.lock().unwrap();
   let Some(state) = guard.as_ref() else {
-    return json!({ "cameraFrames": null, "screenFrames": null, "tiles": 0, "bound": 0, "drawn": 0, "dropped": 0, "skipped": 0 });
+    return json!({ "cameraFrames": null, "screenFrames": null, "screenAudioFrames": null, "tiles": 0, "bound": 0, "drawn": 0, "dropped": 0, "skipped": 0 });
   };
   let frames = |p: &Option<Published>| p.as_ref().and_then(|p| p.capture.as_ref()).map(|c| c.frames());
   let bound = state.tiles.values().filter(|e| e.tile.is_bound()).count();
@@ -710,6 +884,11 @@ pub fn native_summary() -> Value {
   json!({
     "cameraFrames": frames(&state.camera),
     "screenFrames": frames(&state.screen),
+    // 10 ms frames pushed into the share's audio source. Null where no
+    // audio was published, and **zero is the reading that matters**: the
+    // capture activated and initialised but nothing is flowing, which is
+    // exactly what a machine with no active render endpoint does (D-27b).
+    "screenAudioFrames": state.screen.as_ref().and_then(|s| s.audio.as_ref()).map(|a| a.capture.frames()),
     "tiles": state.tiles.len(),
     "bound": bound,
     "drawn": drawn,
