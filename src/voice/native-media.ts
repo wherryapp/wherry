@@ -27,6 +27,9 @@ export type NativeMediaProbe = {
   aec?: string;
   agc?: string;
   ns?: string;
+  /** The shell captures and renders video natively (macOS since
+   *  2026-09-08). Absent from an older shell, which reads as false. */
+  video?: boolean;
 };
 
 let probe: NativeMediaProbe | null = null;
@@ -39,6 +42,12 @@ function notify(): void {
 /** True once the probe has answered yes; false before it answers. */
 export function nativeMediaAvailable(): boolean {
   return probe?.available === true;
+}
+
+/** The engine is here *and* it does video (transport-native.ts's
+ *  `capabilities`). Feature-detected from the probe, never a platform. */
+export function nativeVideoAvailable(): boolean {
+  return probe?.available === true && probe.video === true;
 }
 
 export function nativeMediaProbe(): NativeMediaProbe | null {

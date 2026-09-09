@@ -14,10 +14,6 @@ rust-version = "1.77.2"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# Path (b)'s z-order spike (src/spike_view.rs), deleted with its answer.
-[features]
-video-native-view = []
-
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 
@@ -52,15 +48,22 @@ tauri-plugin-single-instance = "2"
 # the prebuilt libwebrtc archive from the SDK's GitHub releases at compile
 # time and needs clang 21 on Linux; release.yml carries both.
 # Since 2026-09-08 the dependency is the wherryapp fork itself, not upstream
-# plus a `[patch]`: three commits sit on top of upstream's dee418bb (the
+# plus a `[patch]`: four commits sit on top of upstream's dee418bb (the
 # cryptor-thread detach; `configure_audio_processing` doing something on
-# desktop; a remote track's `set_volume`) and they touch `webrtc-sys`,
+# desktop; a remote track's `set_volume`; and, since the evening of
+# 2026-09-08 on `wherry/stage-3n`, the detach made safe for video
+# receivers -- the null it handed them segfaulted the shell the first time a
+# received video track's cryptor dropped) and they touch `webrtc-sys`,
 # `libwebrtc` and `livekit`, which one patched crate cannot carry. Each is
 # also kept in patches/ with its note. When upstream merges them, point this
-# back at livekit/rust-sdks and bump `rev` with LIVEKIT_REV in src/voice.rs.
-livekit = { git = "https://github.com/wherryapp/rust-sdks", rev = "9566238baccf6b0b559be05d70d3106e941cb761", features = ["rustls-tls-native-roots"] }
+# back at livekit/rust-sdks and bump `rev` with LIVEKIT_REV in src/voice/mod.rs.
+livekit = { git = "https://github.com/wherryapp/rust-sdks", rev = "e75845b1f0efc311d64c9570737c4f404d072c33", features = ["rustls-tls-native-roots"] }
 # Only for naming the room event receiver's type; the runtime is Tauri's.
 tokio = { version = "1", features = ["sync"] }
+# `StreamExt::next` on the SDK's `NativeVideoStream` (voice/render.rs): the
+# received-frame path is a `Stream`, and this is already in the graph
+# through livekit.
+futures-util = "0.3"
 
 # The OS keychain behind the vault_* commands in lib.rs -- the one place the
 # shell holds data rather than merely registering a plugin, and the reason
@@ -83,3 +86,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSValue"] }
+# Native video (voice/capture.rs, voice/render.rs; the next-stages handoff's
+# §3, path (b)): the camera is AVFoundation through the same `msg_send!`
+# route, and the one completion block it needs -- the camera permission
+# prompt's -- is what block2 is for. Already in the graph through objc2.
+block2 = "0.6"

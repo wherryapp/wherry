@@ -13,7 +13,7 @@
 // `knownDeviceId`), so flipping the engine on or off falls back to the
 // default device rather than failing a call.
 
-import { nativeMediaSelected } from "./native-media";
+import { nativeMediaSelected, nativeVideoAvailable } from "./native-media";
 
 export type AudioDevice = { deviceId: string; label: string };
 
@@ -82,17 +82,26 @@ export async function listAudioDevices(): Promise<AudioDevices> {
 /**
  * The cameras this browser will admit to.
  *
- * Always the browser's list, even where the native engine is on: video in
- * v1 publishes through the webview transport only
- * (docs/prompts/video-execution-handoff.md §0), so the shell's
- * `voice_devices` carries no cameras and asking it for one would answer
- * an empty picker on the very device most likely to have a camera. Stage
- * 3N is what changes this, alongside the shell's own capture.
+ * The shell's list where the native engine does video (macOS since
+ * 2026-09-08, `voice_video_devices`): real labels, the same ids the native
+ * publish takes, no permission needed. Everywhere else -- the web, the
+ * phones, and a desktop shell whose probe answers `video: false` -- the
+ * browser's, because that is the transport that will open the camera.
  *
- * Labels are empty until a camera permission has been granted once, the
- * same as microphones, so the picker says "Camera 1" until then.
+ * Labels there are empty until a camera permission has been granted once,
+ * the same as microphones, so the picker says "Camera 1" until then.
  */
 export async function listVideoDevices(): Promise<VideoDevice[]> {
+  if (nativeVideoAvailable() && nativeMediaSelected()) {
+    // The shell lists its own cameras (voice/video.rs): real labels, no
+    // permission needed, the same ids the native publish takes.
+    try {
+      const core = await import("@tauri-apps/api/core");
+      return await core.invoke<VideoDevice[]>("voice_video_devices");
+    } catch {
+      return [];
+    }
+  }
   if (
     typeof navigator === "undefined" ||
     typeof navigator.mediaDevices?.enumerateDevices !== "function"

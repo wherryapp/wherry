@@ -34,11 +34,6 @@
 #[cfg(desktop)]
 mod voice;
 
-// Path (b)'s z-order spike (docs/prompts/video-next-stages-handoff.md
-// §2.3). Behind a cargo feature and deleted with its answer.
-#[cfg(all(target_os = "macos", feature = "video-native-view"))]
-mod spike_view;
-
 #[cfg(any(target_vendor = "apple", target_os = "windows"))]
 fn vault_entry(key: &str) -> Result<keyring::Entry, String> {
   keyring::Entry::new("app.wherry", key).map_err(|e| e.to_string())
@@ -176,7 +171,7 @@ pub fn run() {
   #[cfg(not(desktop))]
   let builder =
     builder.invoke_handler(tauri::generate_handler![vault_get, vault_set, vault_delete]);
-  #[cfg(all(desktop, not(feature = "video-native-view")))]
+  #[cfg(desktop)]
   let builder = builder.invoke_handler(tauri::generate_handler![
     vault_get,
     vault_set,
@@ -195,31 +190,16 @@ pub fn run() {
     voice::voice_stats,
     voice::voice_pong,
     voice::page_pulse,
+    voice::video::voice_video_devices,
+    voice::video::voice_screen_sources,
+    voice::video::voice_set_camera,
+    voice::video::voice_set_screen,
+    voice::video::voice_set_video_subscription,
+    voice::video::voice_attach_video,
+    voice::video::voice_set_video_rect,
+    voice::video::voice_set_video_covered,
+    voice::video::voice_detach_video,
     shell_keep_page_visible,
-  ]);
-
-  #[cfg(all(target_os = "macos", feature = "video-native-view"))]
-  let builder = builder.invoke_handler(tauri::generate_handler![
-    vault_get,
-    vault_set,
-    vault_delete,
-    voice::voice_probe,
-    voice::voice_devices,
-    voice::voice_connect,
-    voice::voice_disconnect,
-    voice::voice_set_mic,
-    voice::voice_set_input_device,
-    voice::voice_set_output_device,
-    voice::voice_set_epoch_key,
-    voice::voice_set_playback,
-    voice::voice_set_volume,
-    voice::voice_roster,
-    voice::voice_stats,
-    voice::voice_pong,
-    voice::page_pulse,
-    shell_keep_page_visible,
-    spike_view::spike_view_show,
-    spike_view::spike_view_hide,
   ]);
 
   builder

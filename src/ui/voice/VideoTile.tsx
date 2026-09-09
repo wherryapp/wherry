@@ -23,6 +23,7 @@
 import { useEffect, useRef } from "react";
 import type { VideoSource } from "../../voice/rules";
 import { voice } from "../../voice/session";
+import type { VideoSurface } from "../../voice/transport";
 import { Avatar, MicOffIcon, PinnedIcon } from "../kit";
 
 export function VideoTile({
@@ -37,6 +38,7 @@ export function VideoTile({
   paused = false,
   pinned = false,
   large = false,
+  surface = "page",
   onPin,
 }: {
   /** The device id, or `"self"` for this device's own preview. */
@@ -52,6 +54,9 @@ export function VideoTile({
   paused?: boolean;
   pinned?: boolean;
   large?: boolean;
+  /** Which chrome this tile is in, for a transport that draws above the
+   *  page (voice/transport.ts's `VideoSurface`). */
+  surface?: VideoSurface;
   onPin?: () => void;
 }) {
   const element = useRef<HTMLVideoElement | null>(null);
@@ -59,8 +64,8 @@ export function VideoTile({
   useEffect(() => {
     const node = element.current;
     if (!node) return;
-    return voice.attachVideo(identity, source, node);
-  }, [identity, source]);
+    return voice.attachVideo(identity, source, node, surface);
+  }, [identity, source, surface]);
 
   useEffect(() => {
     const node = element.current;

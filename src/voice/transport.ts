@@ -199,6 +199,18 @@ export type TransportVideoStats = {
   limitedBy: string | null;
 };
 
+/** The shell's own video counters, where the transport renders natively. */
+export type NativeVideoSummary = {
+  cameraFrames: number | null;
+  screenFrames: number | null;
+  tiles: number;
+  bound: number;
+  drawn: number;
+  dropped: number;
+  /** Frames not drawn because the tile was hidden or covered. */
+  skipped: number;
+};
+
 export type TransportStats = {
   mic: TransportMicReport;
   packetsSent: number | null;
@@ -207,7 +219,19 @@ export type TransportStats = {
   peers: TransportPeerStats[];
   /** Empty where no video is publishing or subscribed. */
   video: TransportVideoStats[];
+  /** Only the native transport has one. */
+  native?: NativeVideoSummary | null;
 };
+
+/**
+ * Which piece of chrome a video element belongs to. The native transport
+ * draws a tile *above* the page, so it needs to know whose overlays cover
+ * it: the call page's tiles hide under a Popover opened over the page, the
+ * bar's thumbnail hides under any overlay at all -- the page included.
+ * The webview transport ignores it; its `<video>` is in the document and
+ * the document's own stacking does the work.
+ */
+export type VideoSurface = "page" | "bar";
 
 /** How the frame cipher is applied: the browser SDK's two mechanisms, none
  *  at all, or the shell's own engine (libwebrtc's FrameCryptor in-process). */
@@ -246,7 +270,15 @@ export interface VoiceTransport {
     identity: string | "self",
     source: VideoSource,
     element: HTMLVideoElement,
+    surface: VideoSurface,
   ): () => void;
+
+  /**
+   * Something is drawn over `surface`, or no longer is (ui/back.ts's
+   * overlay depth, decided in the call page and the bar). A no-op on a
+   * transport whose video lives in the document.
+   */
+  setSurfaceCovered(surface: VideoSurface, covered: boolean): void;
 
   /** Subscribe, unsubscribe, and pick the simulcast layer, in one verb --
    *  the three are one decision (`rules.ts`'s `subscriptionFor`). */

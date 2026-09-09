@@ -1,0 +1,55 @@
+From e75845b1f0efc311d64c9570737c4f404d072c33 Mon Sep 17 00:00:00 2001
+From: Connor Tarabocchia <connorcjcj11@gmail.com>
+Date: Tue, 8 Sep 2026 20:43:52 -0400
+Subject: [PATCH] webrtc-sys: never hand a video receiver a null frame
+ transformer
+
+The detach in ~FrameCryptor (73ff28c) cleared the transformer on the
+RtpReceiver so the FrameCryptorTransformer thread could be reclaimed. That
+is what libwebrtc's audio receiver expects a null to mean. Its video
+receiver does not: RtpVideoStreamReceiver2::SetDepacketizerToDecoderFrameTransformer
+wraps the argument in a RtpVideoStreamReceiverFrameTransformerDelegate and
+calls Init(), which dereferences it -- SIGSEGV on the worker thread,
+measured 2026-09-08 the first time a subscribed video track's cryptor was
+dropped (KERN_INVALID_ADDRESS at 0x0 in
+RtpVideoStreamReceiverFrameTransformerDelegate::Init, called from
+~FrameCryptor on a tokio worker).
+
+Detach audio receivers as before; leave a video receiver's transformer
+attached, which is the behaviour before 73ff28c for those tracks only.
+Senders are unchanged: the video send path recreates its stream on a
+transformer change and takes a null.
+---
+ webrtc-sys/src/frame_cryptor.cpp | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/webrtc-sys/src/frame_cryptor.cpp b/webrtc-sys/src/frame_cryptor.cpp
+index 2cf2282..cbb9dec 100644
+--- a/webrtc-sys/src/frame_cryptor.cpp
++++ b/webrtc-sys/src/frame_cryptor.cpp
+@@ -177,8 +177,21 @@ FrameCryptor::~FrameCryptor() {
+   if (sender_) {
+     sender_->SetEncoderToPacketizerFrameTransformer(nullptr);
+   }
++  // Receivers: audio only. libwebrtc's audio receiver treats a null
++  // transformer as "none"; its video receiver (RtpVideoStreamReceiver2)
++  // wraps whatever it is handed in a RtpVideoStreamReceiverFrameTransformerDelegate
++  // and dereferences it in Init(), so a null there is a segfault on the
++  // worker thread the moment a video cryptor is destroyed -- which is every
++  // unsubscribe, every remote unpublish and every room close once a video
++  // track has been received. A video receiver therefore keeps its
++  // transformer attached until the peer connection goes, the pre-patch
++  // behaviour, and leaks that one thread per video track per room; the
++  // audio receivers, which are every call, are still reclaimed.
+   if (receiver_) {
+-    receiver_->SetDepacketizerToDecoderFrameTransformer(nullptr);
++    auto track = receiver_->track();
++    if (track && track->kind() == "audio") {
++      receiver_->SetDepacketizerToDecoderFrameTransformer(nullptr);
++    }
+   }
+ }
+ 
+-- 
+2.55.0
+

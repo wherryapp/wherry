@@ -27,7 +27,7 @@
 // over a tiny history interface (back.test.ts), with the singleton below
 // binding it to the real one.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 /** The half of `window.history` this needs, so a test can supply its own. */
 export interface HistoryLike {
@@ -38,6 +38,15 @@ export interface HistoryLike {
 interface Layer {
   readonly id: number;
   readonly close: () => void;
+  /**
+   * Drawn *over* the screen (a Popover, the photo viewer, a dialog, the
+   * call page) rather than replacing it (a Settings panel, the phone's open
+   * conversation). The distinction exists for one reader: a native video
+   * tile sits above everything the page draws, so it must hide while an
+   * overlay is above its surface -- and must *not* hide because somebody
+   * opened Settings under the call bar. See `overlayDepth`.
+   */
+  readonly overlay: boolean;
 }
 
 /**
@@ -74,6 +83,7 @@ export class BackStack {
   #backInFlight = false;
 
   readonly #history: HistoryLike;
+  readonly #listeners = new Set<() => void>();
 
   // A plain field rather than a parameter property: `erasableSyntaxOnly` is
   // on, and that syntax emits code rather than erasing to nothing.
@@ -84,13 +94,25 @@ export class BackStack {
   /**
    * Registers a layer as the topmost thing a back press should dismiss.
    * Returns the release function for when it closes some other way -- a
-   * close button, Escape, a tap on the backdrop.
+   * close button, Escape, a tap on the backdrop. `overlay` is the Layer
+   * field of that name; the default is the common case.
    */
-  push(close: () => void): () => void {
-    const layer: Layer = { id: this.#nextId++, close };
+  push(close: () => void, overlay = true): () => void {
+    const layer: Layer = { id: this.#nextId++, close, overlay };
     this.#layers.push(layer);
     this.#sync();
+    this.#notify();
     return () => this.#release(layer);
+  }
+
+  /** Called whenever the set of layers changes. Returns the unsubscribe. */
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #notify(): void {
+    for (const listener of this.#listeners) listener();
   }
 
   /**
@@ -114,12 +136,23 @@ export class BackStack {
     }
     layer.close();
     this.#sync();
+    this.#notify();
     return true;
   }
 
   /** Layers currently registered. For the tests. */
   get depth(): number {
     return this.#layers.length;
+  }
+
+  /**
+   * How many *overlay* layers are open (see `Layer.overlay`). A layer that
+   * registered as an overlay when there were N of them is the (N+1)th, so
+   * "is something above me" is `overlayDepth > N + 1` -- which is exactly
+   * what the call page asks (`useBackLayer` hands N back).
+   */
+  get overlayDepth(): number {
+    return this.#layers.filter((layer) => layer.overlay).length;
   }
 
   /** History entries currently believed owned. For the tests. */
@@ -134,6 +167,7 @@ export class BackStack {
     if (index === -1) return;
     this.#layers.splice(index, 1);
     this.#sync();
+    this.#notify();
   }
 
   /**
@@ -180,9 +214,25 @@ function stack(): BackStack {
  * release function. Outside a browser (the tsx test runner) this is a
  * no-op, the way the rest of the ui/ helpers are.
  */
-export function pushBackLayer(close: () => void): () => void {
+export function pushBackLayer(close: () => void, overlay = true): () => void {
   if (typeof window === "undefined") return () => {};
-  return stack().push(close);
+  return stack().push(close, overlay);
+}
+
+/** Open overlay layers right now; 0 outside a browser. */
+export function overlayDepth(): number {
+  if (typeof window === "undefined") return 0;
+  return stack().overlayDepth;
+}
+
+function subscribeStack(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  return stack().subscribe(listener);
+}
+
+/** `overlayDepth`, live: re-renders the caller when a layer opens or closes. */
+export function useOverlayDepth(): number {
+  return useSyncExternalStore(subscribeStack, overlayDepth, () => 0);
 }
 
 /**
@@ -191,9 +241,21 @@ export function pushBackLayer(close: () => void): () => void {
  * `close` is read through a ref so that a caller re-rendering with a fresh
  * closure -- which is every caller, since these are inline arrows -- does
  * not tear the history entry down and push a new one on every render.
+ *
+ * Returns a ref whose `current` is, while the layer is open, how many
+ * overlays were open *beneath* it when it registered (null when it is not
+ * an overlay, or not open). A ref rather than state, because it is read in
+ * effects that already re-run on `useOverlayDepth`, and setting state from
+ * an effect would only add a render.
  */
-export function useBackLayer(active: boolean, close: () => void): void {
+export function useBackLayer(
+  active: boolean,
+  close: () => void,
+  options: { overlay?: boolean } = {},
+): { readonly current: number | null } {
+  const overlay = options.overlay ?? true;
   const latest = useRef(close);
+  const position = useRef<number | null>(null);
   // Updated in an effect rather than during render: declared first, so it
   // runs before the effect below on every commit, and a back press can only
   // arrive between commits anyway.
@@ -202,6 +264,12 @@ export function useBackLayer(active: boolean, close: () => void): void {
   });
   useEffect(() => {
     if (!active) return;
-    return pushBackLayer(() => latest.current());
-  }, [active]);
+    position.current = overlay ? overlayDepth() : null;
+    const release = pushBackLayer(() => latest.current(), overlay);
+    return () => {
+      release();
+      position.current = null;
+    };
+  }, [active, overlay]);
+  return position;
 }

@@ -35,7 +35,7 @@ export function CallPreview({
   useEffect(() => {
     const node = element.current;
     if (!node) return;
-    const detach = voice.attachVideo(identity, source, node);
+    const detach = voice.attachVideo(identity, source, node, "bar");
     // No IntersectionObserver here, unlike a tile: the bar is one row of
     // chrome that is either rendered or not, and a thumbnail that measured
     // itself would go dark behind the call page — which is exactly when it
@@ -55,6 +55,9 @@ export function CallPreview({
         source === "screen" ? "screen" : "camera"
       }`}
       className="relative h-9 w-16 shrink-0 overflow-hidden rounded bg-neutral-900 ring-1 ring-accent-400/60 transition hover:ring-accent-500 focus-visible:ring-2 focus-visible:ring-accent-500"
+      // A native tile is clipped to this button, the way `overflow-hidden`
+      // clips the `<video>` (transport-rules.ts's tileRect).
+      data-video-clip=""
     >
       <video
         ref={element}

@@ -1,6 +1,7 @@
 // The native media transport, TypeScript half: `VoiceTransport` over the
-// shell's `voice_*` commands and its `voice` event (src-tauri/src/voice.rs
-// is the other half; docs/prompts/native-media-plan.md §5 is the plan).
+// shell's `voice_*` commands and its `voice` event (src-tauri/src/voice/ is
+// the other half; docs/prompts/native-media-plan.md §5 is the plan, and
+// docs/prompts/video-next-stages-handoff.md §3 the video stage on top).
 // Chosen in index.ts when the desktop shell has the engine and this device
 // turned it on; every other platform keeps `transport-webview.ts`.
 //
@@ -8,13 +9,28 @@
 // sends, receives and plays, and reports facts (a roster, a state word, a
 // stats reading). Everything that is a decision -- which ring index an
 // epoch maps to, whether a volume is silence, what an encryption state
-// means, whether a saved device id is still real -- is made here or in
-// `transport-rules.ts`, and crosses the IPC already decided.
+// means, whether a saved device id is still real, where a tile is and
+// whether anything covers it -- is made here or in `transport-rules.ts`,
+// and crosses the IPC already decided.
 //
-// No DOM at all: playback is the audio device module's, so `startPlayback`
-// is a no-op and `playbackBlocked` never becomes true.
+// **Video, since 2026-09-08 on macOS (path (b)).** The camera and the
+// screen are captured and published by the shell; a received track is
+// drawn by the shell in a native view *above* the page, placed at the rect
+// this file measures from the `<video>` element the tile hands over. The
+// element itself stays empty -- it is the placeholder the native view
+// covers, and what shows through when the view hides. Two things follow.
+// The rect is reported on every change this file can observe (resize,
+// scroll, the element's own size) and polled slowly for the ones it
+// cannot (a sibling tile leaving, which moves this one without resizing
+// it). And the page says which *surface* a tile is on and when that
+// surface is covered (ui/back.ts's overlay depth), because a native view
+// cannot be told by the document's stacking order what is drawn over it.
+//
+// Where the shell answers `video: false` (Windows today) every capability
+// is false and the call keeps the engine switch it has had since stage 4.
 
-import { keyIndexFor, type VideoSource } from "./rules";
+import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules";
+import { nativeMediaProbe } from "./native-media";
 import type {
   FrameTransformKind,
   TransportCapabilities,
@@ -22,6 +38,8 @@ import type {
   TransportEvents,
   TransportParticipant,
   TransportStats,
+  TransportVideoOptions,
+  VideoSurface,
   VoiceQuality,
   VoiceTransport,
 } from "./transport";
@@ -33,10 +51,13 @@ import {
   nativeGainFor,
   playbackEnabledFor,
   qualityFromWord,
+  screenOptionsFor,
+  tileRect,
   userIdFromMetadata,
+  type Rect,
 } from "./transport-rules";
 
-/** One remote participant as the shell reports them (voice.rs `RosterEntry`). */
+/** One remote participant as the shell reports them (voice/mod.rs `RosterEntry`). */
 type NativeEntry = {
   identity: string;
   name: string;
@@ -46,10 +67,9 @@ type NativeEntry = {
   encrypted: boolean;
   audioLevel: number;
   playing: boolean | null;
-  /** Video publications this engine can neither render nor publish; see
-   *  `capabilities` below for why they are reported anyway. */
   hasCamera: boolean;
   hasScreen: boolean;
+  cameraMuted: boolean;
 };
 
 type NativeRoster = { participants: NativeEntry[]; localLevel: number };
@@ -61,6 +81,7 @@ type NativeEvent = { session: number } & (
   | { kind: "participant_left" }
   | { kind: "connection"; state: string; quality: string }
   | { kind: "encryption"; identity: string; state: string }
+  | { kind: "video_changed" }
 );
 
 type NativeDevices = {
@@ -69,6 +90,9 @@ type NativeDevices = {
 };
 
 type ConnectResult = { session: number; connectMs: number; roster: NativeRoster };
+
+/** How often a tile's rect is re-read when nothing observable moved it. */
+const RECT_POLL_MS = 500;
 
 /** A command's rejection: the shell's `VoiceError`, or something else. */
 function nativeError(error: unknown, mic = false): Error {
@@ -82,6 +106,11 @@ function nativeError(error: unknown, mic = false): Error {
 }
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+function rectOf(element: Element): Rect {
+  const r = element.getBoundingClientRect();
+  return { x: r.left, y: r.top, width: r.width, height: r.height };
+}
 
 export class NativeTransport implements VoiceTransport {
   #invoke: Invoke | null = null;
@@ -102,10 +131,16 @@ export class NativeTransport implements VoiceTransport {
   /** Whether this call was joined with the echo canceller on (rules.ts's
    *  EchoReport.disabled is the readout's honest word when it was not). */
   #echoCancellation = true;
+  /** The publish ceilings this call resolved, for the two publish commands. */
+  #video: TransportVideoOptions = { codec: "h264", camera: null, screen: null };
+  /** Tiles this transport has asked the shell for, by element, so a detach
+   *  can find its id and a covered surface can be re-sent on reconnect. */
+  #tiles = new Map<HTMLVideoElement, { id: number | null; stop: () => void }>();
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
     this.#events = events;
     this.#echoCancellation = options.processing.echoCancellation;
+    this.#video = options.video;
     const [core, event] = await Promise.all([
       import("@tauri-apps/api/core"),
       import("@tauri-apps/api/event"),
@@ -160,6 +195,10 @@ export class NativeTransport implements VoiceTransport {
     this.#events = {};
     this.#roster = { participants: [], localLevel: 0 };
     this.#playbackSent.clear();
+    // The shell destroys its tiles with the session; the observers here
+    // are ours to stop.
+    for (const tile of this.#tiles.values()) tile.stop();
+    this.#tiles.clear();
     if (invoke) {
       try {
         await invoke("voice_disconnect");
@@ -208,46 +247,151 @@ export class NativeTransport implements VoiceTransport {
     }
   }
 
+  // -- video -----------------------------------------------------------------
+
   /**
-   * No video, in either direction, until stage 3N.
-   *
-   * Not a placeholder and not a platform check -- a statement of what the
-   * `livekit` Rust crate this shell links can actually do, read from the
-   * checkout the build links (docs/prompts/video-execution-handoff.md §0).
-   * It has no camera capture at all (`NativeVideoSource` takes frames you
-   * push, and the crate's only camera example is a Jetson driver), and it
-   * delivers received video as decoded frames in Rust with nothing
-   * carrying them to a `<video>` element in the webview. `desktop_capturer`
-   * does exist, which is why screen share was once planned native-first --
-   * but a screen captured natively would be invisible in this engine's own
-   * stage, so that too waits for a transport that can render.
-   *
-   * The honest v1 is therefore: this transport reports none of it, the bar
-   * disables the buttons *with the reason*, and one action beside them
-   * rejoins the call through the webview transport for the price of one
-   * reconnect. Nothing built for the webview is thrown away -- 3N fills in
-   * this half of the interface and these three booleans flip.
+   * All three flip together on the probe's `video` answer: the shell that
+   * captures also renders (voice/video.rs), and a shell that does neither
+   * reports none of it -- and the bar keeps the engine switch. Never a
+   * platform name; an older shell without the field reads as false.
    */
   capabilities(): TransportCapabilities {
-    return { camera: false, screen: false, renderVideo: false };
+    const video = nativeMediaProbe()?.video === true;
+    return { camera: video, screen: video, renderVideo: video };
   }
 
-  async setCameraEnabled(): Promise<void> {
-    throw new Error("unsupported");
+  async setCameraEnabled(on: boolean, deviceId: string | null): Promise<void> {
+    const invoke = this.#invoke;
+    if (!invoke || this.#session === null) return;
+    const ceiling = this.#video.camera;
+    try {
+      await invoke("voice_set_camera", {
+        args: {
+          enabled: on,
+          deviceId,
+          maxHeight: ceiling?.maxHeight ?? 720,
+          maxFps: ceiling?.maxFps ?? 30,
+        },
+      });
+    } catch (error) {
+      throw nativeError(error, true);
+    }
   }
 
-  async setScreenShareEnabled(): Promise<void> {
-    throw new Error("unsupported");
+  async setScreenShareEnabled(on: boolean, audience = 1): Promise<void> {
+    const invoke = this.#invoke;
+    if (!invoke || this.#session === null) return;
+    // The audience step, read now and never re-applied: see
+    // transport-rules.ts's screenOptionsFor.
+    const ceiling = screenOptionsFor(this.#video.screen, audience);
+    try {
+      await invoke("voice_set_screen", {
+        args: {
+          enabled: on,
+          maxHeight: ceiling?.maxHeight ?? 1080,
+          maxFps: ceiling?.maxFps ?? 15,
+        },
+      });
+    } catch (error) {
+      throw nativeError(error, true);
+    }
   }
 
-  attachVideo(_identity: string, _source: VideoSource, _element: HTMLVideoElement): () => void {
-    return () => {};
+  attachVideo(
+    identity: string,
+    source: VideoSource,
+    element: HTMLVideoElement,
+    surface: VideoSurface,
+  ): () => void {
+    const invoke = this.#invoke;
+    if (!invoke || this.#session === null || !this.capabilities().renderVideo) return () => {};
+    if (this.#tiles.has(element)) return () => this.#detach(element);
+
+    const entry: { id: number | null; stop: () => void } = { id: null, stop: () => {} };
+    this.#tiles.set(element, entry);
+    let gone = false;
+
+    // -- the rect, reported on every change and polled for the rest ------
+    let frame: number | null = null;
+    let last = "";
+    const report = (): void => {
+      frame = null;
+      if (gone || entry.id === null) return;
+      const clipElement = element.closest("[data-video-clip]");
+      const measured = tileRect(
+        rectOf(element),
+        clipElement ? rectOf(clipElement) : null,
+        { width: window.innerWidth, height: window.innerHeight },
+      );
+      // Off screen for a disconnected element, or one hidden by CSS
+      // (display: none measures 0x0 and is caught by `visible`).
+      const visible = measured.visible && element.isConnected;
+      const key = JSON.stringify([measured.frame, measured.clip, visible]);
+      if (key === last) return;
+      last = key;
+      void invoke("voice_set_video_rect", {
+        args: { tile: entry.id, clip: measured.clip, frame: measured.frame, visible },
+      }).catch(() => {});
+    };
+    const schedule = (): void => {
+      if (frame !== null || gone) return;
+      frame = requestAnimationFrame(report);
+    };
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    observer?.observe(element);
+    observer?.observe(document.documentElement);
+    window.addEventListener("scroll", schedule, { capture: true, passive: true });
+    window.addEventListener("resize", schedule);
+    const poll = window.setInterval(schedule, RECT_POLL_MS);
+    entry.stop = () => {
+      gone = true;
+      if (frame !== null) cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("scroll", schedule, { capture: true });
+      window.removeEventListener("resize", schedule);
+      window.clearInterval(poll);
+    };
+
+    void invoke<number>("voice_attach_video", { identity, source, surface })
+      .then((id) => {
+        if (gone) {
+          void invoke("voice_detach_video", { tile: id }).catch(() => {});
+          return;
+        }
+        entry.id = id;
+        report();
+      })
+      .catch(() => {
+        // No tile: the placeholder stays, which is the honest picture.
+      });
+
+    return () => this.#detach(element);
   }
 
-  setVideoSubscription(): void {
-    // Nothing to subscribe: `capabilities().renderVideo` is false, so the
-    // stage never asks for a layer here.
+  #detach(element: HTMLVideoElement): void {
+    const entry = this.#tiles.get(element);
+    if (!entry) return;
+    this.#tiles.delete(element);
+    entry.stop();
+    if (entry.id !== null) {
+      void this.#invoke?.("voice_detach_video", { tile: entry.id }).catch(() => {});
+    }
   }
+
+  setSurfaceCovered(surface: VideoSurface, covered: boolean): void {
+    const invoke = this.#invoke;
+    if (!invoke || this.#session === null) return;
+    void invoke("voice_set_video_covered", { surface, covered }).catch(() => {});
+  }
+
+  setVideoSubscription(identity: string, source: VideoSource, quality: VideoQualityRequest): void {
+    const invoke = this.#invoke;
+    if (!invoke || this.#session === null) return;
+    void invoke("voice_set_video_subscription", { identity, source, quality }).catch(() => {});
+  }
+
+  // -- playback and readings -------------------------------------------------
 
   async startPlayback(): Promise<void> {
     // Playback is the audio device module's; no autoplay policy applies.
@@ -270,10 +414,7 @@ export class NativeTransport implements VoiceTransport {
         audioLevel: entry.audioLevel,
         camera: entry.hasCamera,
         screen: entry.hasScreen,
-        // The shell reports a publication's existence, not its mute state:
-        // this engine cannot render video at all until stage 3N, so the
-        // distinction buys nothing here.
-        cameraMuted: false,
+        cameraMuted: entry.cameraMuted,
       };
     });
   }
@@ -294,14 +435,11 @@ export class NativeTransport implements VoiceTransport {
     const invoke = this.#invoke;
     if (!invoke || this.#session === null) return null;
     try {
-      const stats = await invoke<Omit<TransportStats, "video">>("voice_stats");
+      const stats = await invoke<TransportStats>("voice_stats");
       // With the canceller off the APM reports no echo metrics, and the
       // shell's stats read an absent number as 0 dB; say "off" instead.
       const echo = this.#echoCancellation ? stats.echo : { ...stats.echo, disabled: true };
-      // No video rows: this engine carries none (see `capabilities`), and
-      // an empty list is what the details readout wants -- not a row of
-      // nulls implying a track that is not there.
-      return { ...stats, echo, video: [] };
+      return { ...stats, echo, video: stats.video ?? [] };
     } catch {
       return null;
     }
@@ -340,6 +478,9 @@ export class NativeTransport implements VoiceTransport {
       }
       case "encryption":
         if (isEncryptionFailure(payload.state)) events.encryptionError?.(payload.state);
+        break;
+      case "video_changed":
+        events.videoChanged?.();
         break;
     }
   }

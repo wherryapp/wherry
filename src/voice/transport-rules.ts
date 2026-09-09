@@ -233,6 +233,44 @@ export function videoOptionsFor(
   };
 }
 
+/** A rectangle in CSS pixels, viewport origin -- `getBoundingClientRect`'s. */
+export type Rect = { x: number; y: number; width: number; height: number };
+
+/**
+ * What the native transport tells the shell about one tile: the rect the
+ * tile occupies, the rect it is clipped to, and whether any of it is on
+ * screen.
+ *
+ * A native view is above the page and cannot be clipped by the page's
+ * scroller, so the clip goes across the seam beside the frame: the shell
+ * puts the video inside a container the size of the clip, offset by how
+ * far the tile pokes out of it. The clip is the tile's nearest
+ * `[data-video-clip]` ancestor's rect intersected with the viewport, or
+ * the viewport alone. `visible` is false for a tile with no area, one
+ * entirely outside its clip, or one whose clip is itself off screen --
+ * the cases where the shell should draw nothing rather than a sliver.
+ */
+export function tileRect(
+  frame: Rect,
+  clip: Rect | null,
+  viewport: { width: number; height: number },
+): { frame: Rect; clip: Rect; visible: boolean } {
+  const screen: Rect = { x: 0, y: 0, width: viewport.width, height: viewport.height };
+  const clipped = intersect(clip ?? screen, screen);
+  const shown = intersect(frame, clipped);
+  const visible =
+    frame.width > 0 && frame.height > 0 && shown.width > 0 && shown.height > 0;
+  return { frame, clip: clipped, visible };
+}
+
+function intersect(a: Rect, b: Rect): Rect {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
+}
+
 /**
  * Why a publish failed, in words the bar can show.
  *

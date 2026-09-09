@@ -12,6 +12,7 @@ import {
   qualityFromWord,
   SCREEN_AUDIENCE_STEP,
   screenOptionsFor,
+  tileRect,
   userIdFromMetadata,
   videoCodecFor,
   videoOptionsFor,
@@ -205,5 +206,37 @@ describe("screenOptionsFor", () => {
   });
   it("is null for a grant that does not carry a screen", () => {
     assert.equal(screenOptionsFor(null, 2), null);
+  });
+});
+
+describe("tileRect", () => {
+  const viewport = { width: 1000, height: 800 };
+
+  it("clips to the viewport when the tile has no scroller", () => {
+    const out = tileRect({ x: 900, y: 700, width: 200, height: 200 }, null, viewport);
+    assert.deepEqual(out.clip, { x: 0, y: 0, width: 1000, height: 800 });
+    assert.equal(out.visible, true);
+  });
+
+  it("clips to the scroller, which is itself clipped to the viewport", () => {
+    const scroller = { x: 0, y: 100, width: 1000, height: 900 };
+    const out = tileRect({ x: 10, y: 120, width: 300, height: 170 }, scroller, viewport);
+    assert.deepEqual(out.clip, { x: 0, y: 100, width: 1000, height: 700 });
+    // The frame is passed through untouched: the shell offsets it inside
+    // the clip, so a tile half under the header stays half under it.
+    assert.deepEqual(out.frame, { x: 10, y: 120, width: 300, height: 170 });
+    assert.equal(out.visible, true);
+  });
+
+  it("is not visible when scrolled entirely out of its clip", () => {
+    const scroller = { x: 0, y: 100, width: 1000, height: 600 };
+    assert.equal(tileRect({ x: 10, y: 720, width: 300, height: 170 }, scroller, viewport).visible, false);
+    assert.equal(tileRect({ x: 10, y: -200, width: 300, height: 170 }, scroller, viewport).visible, false);
+  });
+
+  it("is not visible with no area, or with a clip off screen", () => {
+    assert.equal(tileRect({ x: 10, y: 10, width: 0, height: 0 }, null, viewport).visible, false);
+    const gone = { x: 0, y: 900, width: 1000, height: 100 };
+    assert.equal(tileRect({ x: 10, y: 910, width: 300, height: 50 }, gone, viewport).visible, false);
   });
 });

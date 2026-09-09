@@ -107,3 +107,27 @@ FrameCryptor::~FrameCryptor() {
 
 With this, the same soak reads 0 threads after 6 calls (12 cryptors), and
 encryption state stays `Ok` at both ends. Happy to open a PR.
+
+## Amended 2026-09-08 (evening): video receivers are left attached
+
+The detach as written segfaults the shell the first time a **video**
+receiver's cryptor is dropped. libwebrtc's audio receiver reads a null
+transformer as "none"; its video receiver
+(`RtpVideoStreamReceiver2::SetDepacketizerToDecoderFrameTransformer`)
+wraps the argument in a delegate and dereferences it in `Init()` --
+`KERN_INVALID_ADDRESS at 0x0`, on a worker thread, from `~FrameCryptor`
+on a tokio worker (the crash report is
+`wherry-dev-80c136fd26-2026-09-08-203755.ips`; the run was stage 3N's
+first receive of a camera on the native transport). Latent in
+production only because nothing publishes video there yet: with
+`auto_subscribe` on, any received video track would have taken the app
+down at its first unsubscribe, unpublish or room close.
+
+`rust-sdks-frame-cryptor-detach-video.patch` (`wherry/stage-3n`,
+`e75845b`) keeps the detach for audio receivers and every sender, and
+leaves a video receiver's transformer attached -- the pre-patch leak, for
+those tracks only (one thread per received video track per room, D-34's
+count). A null-free detach for video would be a pass-through
+`FrameTransformerInterface` in place of the cryptor; not built, because
+the leak is per call and the crash was per call too. Carry both patches
+to the upstream PR together.

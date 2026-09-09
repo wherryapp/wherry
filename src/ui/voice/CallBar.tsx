@@ -26,6 +26,7 @@ import { useVoice, useVoicePrefs } from "../../voice/hooks";
 import { saveVoicePrefs } from "../../voice/prefs";
 import { voice } from "../../voice/session";
 import { CallDetails } from "./CallDetails";
+import { useOverlayDepth } from "../back";
 
 function elapsed(since: number | null, now: number): string {
   if (since === null) return "";
@@ -49,6 +50,14 @@ export function CallBar({
   const state = useVoice();
   const prefs = useVoicePrefs();
   const isDesktop = useIsDesktop();
+  // The bar's native thumbnail (path (b)) hides under *any* overlay, the
+  // call page included -- the bar is the bottom of the chrome, so anything
+  // drawn over the screen is drawn over it. Panels are not overlays
+  // (ui/back.ts): Settings under the bar leaves the thumbnail showing.
+  const overlays = useOverlayDepth();
+  useEffect(() => {
+    voice.setSurfaceCovered("bar", overlays > 0);
+  }, [overlays]);
   const [now, setNow] = useState(() => Date.now());
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);

@@ -47,6 +47,7 @@ import type {
   TransportStats,
   TransportVideoOptions,
   TransportVideoStats,
+  VideoSurface,
   VoiceQuality,
   VoiceTransport,
 } from "./transport";
@@ -370,6 +371,7 @@ export class WebviewTransport implements VoiceTransport {
     identity: string,
     source: VideoSource,
     element: HTMLVideoElement,
+    _surface: VideoSurface,
   ): () => void {
     const key = `${identity}/${source}`;
     const set = this.#elements.get(key) ?? new Set();
@@ -388,6 +390,11 @@ export class WebviewTransport implements VoiceTransport {
       // track attached to an element that is going away.
       this.#videoTrack(identity, source)?.detach(element);
     };
+  }
+
+  setSurfaceCovered(): void {
+    // The `<video>` is in the document, under whatever the document draws
+    // over it; nothing to hide.
   }
 
   setVideoSubscription(

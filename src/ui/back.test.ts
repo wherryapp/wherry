@@ -210,3 +210,48 @@ test("several layers released at once cost one entry each", () => {
   assert.equal(stack.depth, 0);
   assert.equal(history.backs, 3);
 });
+
+test("overlay depth counts overlays only, and a listener hears every change", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+  let heard = 0;
+  const off = stack.subscribe(() => (heard += 1));
+
+  // A Settings panel replaces the screen: depth 1, overlays 0.
+  const panel = stack.push(() => {}, false);
+  assert.equal(stack.depth, 1);
+  assert.equal(stack.overlayDepth, 0);
+  // The call page over it, then a profile card over that.
+  const page = stack.push(() => {});
+  assert.equal(stack.overlayDepth, 1);
+  stack.push(() => {});
+  assert.equal(stack.overlayDepth, 2);
+  assert.equal(heard, 3);
+
+  // The card goes by a back press; the page by its own close.
+  stack.onPopState();
+  assert.equal(stack.overlayDepth, 1);
+  page();
+  assert.equal(stack.overlayDepth, 0);
+  assert.equal(stack.depth, 1);
+  assert.equal(heard, 5);
+  off();
+  panel();
+  assert.equal(heard, 5);
+});
+
+test("a layer's own overlay position is the count beneath it, so 'covered' is depth > position + 1", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  stack.push(() => {}, false);
+  const position = stack.overlayDepth; // what useBackLayer records: 0
+  stack.push(() => {}); // the call page
+  assert.equal(stack.overlayDepth > position + 1, false);
+  stack.push(() => {}); // a Popover over it
+  assert.equal(stack.overlayDepth > position + 1, true);
+  stack.onPopState();
+  assert.equal(stack.overlayDepth > position + 1, false);
+});

@@ -676,6 +676,33 @@ export function videoLine(stats: {
   return parts.length > 0 ? parts.join(" · ") : "no reading yet";
 }
 
+/**
+ * The native engine's own video counters in one line (transport.ts's
+ * `NativeVideoSummary`): what the shell captured and what its tiles drew.
+ * "no tiles" is the honest word for a call page nobody has opened.
+ */
+export function nativeVideoLine(summary: {
+  cameraFrames: number | null;
+  screenFrames: number | null;
+  tiles: number;
+  bound: number;
+  drawn: number;
+  dropped: number;
+  skipped?: number;
+}): string {
+  const parts: string[] = [];
+  if (summary.cameraFrames !== null) parts.push(`camera ${summary.cameraFrames} frames`);
+  if (summary.screenFrames !== null) parts.push(`screen ${summary.screenFrames} frames`);
+  if (summary.tiles === 0) parts.push("no tiles");
+  else {
+    parts.push(`${summary.bound} of ${summary.tiles} tile${summary.tiles === 1 ? "" : "s"} bound`);
+    parts.push(`${summary.drawn} drawn`);
+    if (summary.dropped > 0) parts.push(`${summary.dropped} dropped`);
+    if ((summary.skipped ?? 0) > 0) parts.push(`${summary.skipped} skipped while hidden`);
+  }
+  return parts.join(" · ");
+}
+
 // -- the video buttons ------------------------------------------------------
 
 /** What a call allows and what this transport can do, for the two rules

@@ -1012,8 +1012,9 @@ export function Panel({
 
   // A panel replaces the screen, so Android's back gesture should back out
   // of it rather than out of the app. Mounted means open here -- every
-  // caller renders the panel conditionally.
-  useBackLayer(true, onClose);
+  // caller renders the panel conditionally. Not an overlay: it sits under
+  // the call bar, and a native video tile in the bar must keep showing.
+  useBackLayer(true, onClose, { overlay: false });
 
   return (
     // Entrance only; the unmount model has no exit frame to animate, and a

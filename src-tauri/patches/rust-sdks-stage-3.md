@@ -101,3 +101,12 @@ git -C /Volumes/Scratch/rust-sdks am client/src-tauri/patches/0001-*.patch clien
 
 (A clone holding unpushed commits is not regenerable and does not belong on
 the scratch disk for long — push it, or keep it under the home directory.)
+
+## Amended 2026-09-08 (evening): a fourth commit, on `wherry/stage-3n`
+
+`e75845b1f0efc311d64c9570737c4f404d072c33` (branch `wherry/stage-3n`,
+on top of `wherry/stage-3`) — `rust-sdks-frame-cryptor-detach-video.patch`:
+the detach must not hand a *video* receiver a null transformer (it
+segfaults in libwebrtc). `Cargo.toml` points at it; `LIVEKIT_REV` names
+it. The clone that produced it was `/Volumes/Scratch/rust-sdks-fork`,
+pushed the same minute.

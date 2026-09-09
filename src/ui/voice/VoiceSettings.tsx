@@ -15,7 +15,7 @@ import {
   type VideoDevice,
 } from "../../voice/devices";
 import { useNativeMediaAvailable, useVoicePrefs } from "../../voice/hooks";
-import { nativeMediaProbe } from "../../voice/native-media";
+import { nativeMediaProbe, nativeMediaSelected, nativeVideoAvailable } from "../../voice/native-media";
 import {
   saveVoicePrefs,
   type VideoPreviewMode,
@@ -274,9 +274,11 @@ export function VoiceSettings({
  * The preview is its own `getUserMedia`, released on unmount and on stop --
  * deliberately not the call's track, because this is answered *before* a
  * call and because holding a camera open in Settings is exactly the kind of
- * light nobody wants left on. Cameras come from the browser's list even
- * where the app's audio engine is on: video publishes through the web view
- * in v1 (docs/prompts/video-execution-handoff.md §0).
+ * light nobody wants left on. Where the app's own engine does video (a
+ * macOS shell since 2026-09-08), the list is the shell's and the preview
+ * is hidden with one sentence: the shell opens the camera into the call,
+ * not into a page element, and a preview outside a call is its own later
+ * piece of work (docs/prompts/video-next-stages-handoff.md §3.3).
  */
 function CameraSection({
   tier,
@@ -393,6 +395,12 @@ function CameraSection({
         </span>
       </label>
 
+      {nativeVideoAvailable() && nativeMediaSelected() ? (
+        <span className="text-xs text-neutral-500 dark:text-neutral-400">
+          The app's own engine opens the camera straight into a call, so there is
+          no preview here; your own tile on the call page is the preview.
+        </span>
+      ) : (
       <div className="flex items-start gap-3">
         <Button
           variant="secondary"
@@ -413,6 +421,7 @@ function CameraSection({
           }`}
         />
       </div>
+      )}
       {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
     </div>
   );

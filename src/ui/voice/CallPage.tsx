@@ -19,7 +19,7 @@
 // re-applying over a person who then pinned a face.
 
 import { useEffect, useRef } from "react";
-import { useBackLayer } from "../back";
+import { useBackLayer, useOverlayDepth } from "../back";
 import { useIsDesktop } from "../viewport";
 import { Button, IconButton, LockIcon, XIcon } from "../kit";
 import { CallControls } from "./CallControls";
@@ -137,7 +137,20 @@ export function CallPage({
   onClose: () => void;
 }) {
   const isDesktop = useIsDesktop();
-  useBackLayer(true, onClose);
+  const layer = useBackLayer(true, onClose);
+
+  // A native video tile sits above everything the page draws (path (b),
+  // src-tauri/src/voice/render.rs), so the page says when something is
+  // over it: any overlay registered after this one -- a profile card, the
+  // photo viewer, the incoming-call sheet. The decision is the back
+  // stack's overlay count against this layer's own position; the transport
+  // that has no native tiles ignores the call.
+  const overlays = useOverlayDepth();
+  useEffect(() => {
+    const own = layer.current;
+    voice.setSurfaceCovered("page", own !== null && overlays > own + 1);
+  }, [overlays, layer]);
+  useEffect(() => () => voice.setSurfaceCovered("page", false), []);
 
   // Escape closes it on a keyboard, the same as back does on a phone.
   useEffect(() => {
@@ -256,7 +269,7 @@ export function CallPage({
           )}
         </div>
       ) : (
-        <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
+        <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-2" data-video-clip="">
           {featured && featuredProps && (
             <div className="min-h-0 flex-1">
               <VideoTile

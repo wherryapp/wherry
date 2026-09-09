@@ -67,9 +67,19 @@ use tauri::{AppHandle, Emitter};
 use tauri::Manager;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+// Video (docs/prompts/video-next-stages-handoff.md §3): the sources, the
+// native tiles, and the commands that publish, subscribe and place them.
+pub mod capture;
+#[cfg(target_os = "macos")]
+pub mod render;
+#[cfg(not(target_os = "macos"))]
+#[path = "render_stub.rs"]
+pub mod render;
+pub mod video;
+
 /// Which SDK revision this shell carries; shown by the probe so a call
 /// details readout can name it. Bump with the `rev` in Cargo.toml.
-pub const LIVEKIT_REV: &str = "rust-sdks dee418bb + wherryapp/rust-sdks wherry/stage-3 9566238b (2026-09-08)";
+pub const LIVEKIT_REV: &str = "rust-sdks dee418bb + wherryapp/rust-sdks wherry/stage-3n e75845b1 (2026-09-08)";
 
 /// The name every per-call event from this module is emitted under.
 const EVENT: &str = "voice";
@@ -221,6 +231,10 @@ pub struct RosterEntry {
   /// rather than shown nothing at all.
   has_camera: bool,
   has_screen: bool,
+  /// Their camera publication is muted -- camera off, or their app in the
+  /// background. Read the same way the webview reads `isMuted`, since
+  /// 2026-09-08 when this transport learned to render.
+  camera_muted: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -266,6 +280,7 @@ fn roster(room: &Room) -> Roster {
         playing,
         has_camera: has_video_source(&participant, TrackSource::Camera),
         has_screen: has_video_source(&participant, TrackSource::Screenshare),
+        camera_muted: video::camera_muted(&participant),
       }
     })
     .collect();
@@ -292,6 +307,10 @@ enum Event {
   /// (`Ok`, `MissingKey`, `DecryptionFailed`, ...). TypeScript decides which
   /// of these count as a frame that failed to open.
   Encryption { identity: String, state: String },
+  /// A video publication appeared, went, muted, or was (un)subscribed: the
+  /// seam's `videoChanged`, kept apart from the roster event because a tile
+  /// remounting is expensive where a name changing is not.
+  VideoChanged,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -362,13 +381,25 @@ async fn pump(
         apply_key_index(&room, index);
         apply_playback(&shared, &participant);
         emit(&app, session, Event::Roster { roster: roster(&room) });
+        if publication.kind() == TrackKind::Video {
+          video::on_video_event(&app, session, &room);
+        }
       }
-      RoomEvent::TrackUnsubscribed { .. }
-      | RoomEvent::TrackMuted { .. }
-      | RoomEvent::TrackUnmuted { .. }
-      | RoomEvent::TrackPublished { .. }
-      | RoomEvent::TrackUnpublished { .. }
-      | RoomEvent::ParticipantEncryptionStatusChanged { .. }
+      RoomEvent::TrackUnsubscribed { publication, .. }
+      | RoomEvent::TrackPublished { publication, .. }
+      | RoomEvent::TrackUnpublished { publication, .. } => {
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+        if publication.kind() == TrackKind::Video {
+          video::on_video_event(&app, session, &room);
+        }
+      }
+      RoomEvent::TrackMuted { publication, .. } | RoomEvent::TrackUnmuted { publication, .. } => {
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+        if publication.kind() == TrackKind::Video {
+          video::on_video_event(&app, session, &room);
+        }
+      }
+      RoomEvent::ParticipantEncryptionStatusChanged { .. }
       | RoomEvent::ParticipantNameChanged { .. }
       | RoomEvent::ParticipantMetadataChanged { .. } => {
         emit(&app, session, Event::Roster { roster: roster(&room) });
@@ -433,14 +464,20 @@ pub struct Probe {
   aec: String,
   agc: String,
   ns: String,
+  /// Whether this shell captures and renders video natively (video.rs):
+  /// macOS since 2026-09-08, the others not yet. Feature-detected by the
+  /// page from this answer, never from a platform name.
+  video: bool,
 }
 
 #[tauri::command]
 pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   let audio = platform_audio()?;
+  render::remember_app(&app);
   start_device_poller(app);
   Ok(Probe {
     livekit_rev: LIVEKIT_REV,
+    video: cfg!(target_os = "macos"),
     recording_devices: audio.recording_devices().count(),
     playout_devices: audio.playout_devices().count(),
     aec: format!("{:?}", audio.active_aec_type()),
@@ -575,6 +612,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   }
   let started = Instant::now();
   let audio = platform_audio()?;
+  render::remember_app(&app);
 
   if let Some(id) = args.mic_device_id.as_deref() {
     audio
@@ -631,6 +669,12 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
 
   let mut options = RoomOptions::default();
   options.auto_subscribe = true;
+  // Dynacast: the SFU tells this sender to stop encoding a simulcast layer
+  // nobody subscribes to. Adaptive stream is deliberately *off*: which
+  // layer a tile wants is the session's rule (rules.ts's subscriptionFor)
+  // and arrives through voice_set_video_subscription; a second mechanism
+  // guessing from element sizes would fight it.
+  options.dynacast = true;
   options.encryption = keys
     .clone()
     .map(|key_provider| E2eeOptions { encryption_type: EncryptionType::Gcm, key_provider });
@@ -712,6 +756,9 @@ pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
   };
   let Session { room, keys, mic, pump, started, .. } = session;
   log::info!("voice: disconnect requested after {} ms", started.elapsed().as_millis());
+  // Video first: devices closed and tiles gone before the room closes
+  // under their tracks.
+  video::teardown().await;
   // The microphone first, so the sender's channel is torn down through the
   // SDK's own unpublish path before the peer connection closes under it.
   if let Some(publication) = mic {
@@ -985,6 +1032,8 @@ pub async fn voice_stats() -> VoiceResult<Value> {
     peers.push(peer);
   }
   out["peers"] = json!(peers);
+  out["video"] = json!(video::stats_rows(&room).await);
+  out["native"] = video::native_summary();
   log::debug!("voice: stats sampled ({} peer(s))", peers.len());
   Ok(out)
 }

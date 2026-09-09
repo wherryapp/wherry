@@ -466,7 +466,7 @@ export function Chat({
   // the gesture Android people actually use -- and, being the bottom layer,
   // the one that hands the app back to the system once the list is showing.
   // Desktop shows both panes, so there is nothing to back out of.
-  useBackLayer(!isDesktop && selected !== null, () => setSelected(null));
+  useBackLayer(!isDesktop && selected !== null, () => setSelected(null), { overlay: false });
 
   // Only when a thread is actually on screen. On a phone that is the same
   // thing as being selected; on desktop both panes are visible at once.

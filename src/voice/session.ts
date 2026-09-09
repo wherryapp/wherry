@@ -57,6 +57,7 @@ import {
   subscriptionFor,
   videoJustStarted,
   videoLine,
+  nativeVideoLine,
   videoNeedsSwitch,
   type EchoReport,
   type MicFailure,
@@ -70,6 +71,7 @@ import type {
   TransportCapabilities,
   VoiceQuality,
   VoiceTransport,
+  VideoSurface,
 } from "./transport";
 
 export type { VoiceQuality } from "./transport";
@@ -487,8 +489,23 @@ class VoiceSession {
    * no-op. A transport that cannot render answers with a no-op detach and
    * the tile draws its placeholder.
    */
-  attachVideo(identity: string, source: VideoSource, element: HTMLVideoElement): () => void {
-    return this.#transport?.attachVideo(identity, source, element) ?? (() => {});
+  attachVideo(
+    identity: string,
+    source: VideoSource,
+    element: HTMLVideoElement,
+    surface: VideoSurface = "page",
+  ): () => void {
+    return this.#transport?.attachVideo(identity, source, element, surface) ?? (() => {});
+  }
+
+  /**
+   * Something is drawn over a video surface, or no longer is. Decided by
+   * the surface itself from ui/back.ts's overlay depth (the call page and
+   * the bar each know their own position); only the native transport,
+   * whose tiles sit above the page, acts on it.
+   */
+  setSurfaceCovered(surface: VideoSurface, covered: boolean): void {
+    this.#transport?.setSurfaceCovered(surface, covered);
   }
 
   /**
@@ -607,15 +624,21 @@ class VoiceSession {
       quality: state.quality,
       grant: grantLine(state.grant),
       capabilities: state.capabilities,
-      video: stats.video.map((track) => ({
-        label:
-          track.identity === "self"
-            ? `Your ${track.source === "camera" ? "camera" : "screen"}`
-            : `${roster.get(track.identity)?.name ?? track.identity}'s ${
-                track.source === "camera" ? "camera" : "screen"
-              }`,
-        line: videoLine(track),
-      })),
+      video: [
+        ...stats.video.map((track) => ({
+          label:
+            track.identity === "self"
+              ? `Your ${track.source === "camera" ? "camera" : "screen"}`
+              : `${roster.get(track.identity)?.name ?? track.identity}'s ${
+                  track.source === "camera" ? "camera" : "screen"
+                }`,
+          line: videoLine(track),
+        })),
+        // The native engine's own counters, as one more row: whether the
+        // camera is delivering, and whether tiles are bound and drawing
+        // (docs/regression/desktop.md's D-30 reads it).
+        ...(stats.native ? [{ label: "Native tiles", line: nativeVideoLine(stats.native) }] : []),
+      ],
     };
   }
 

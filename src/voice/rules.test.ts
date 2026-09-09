@@ -22,6 +22,7 @@ import {
   SILENT_ENERGY,
   liveVideoKeys,
   previewTileOf,
+  nativeVideoLine,
   showsVideoButton,
   videoDisabledReason,
   videoNeedsSwitch,
@@ -614,5 +615,20 @@ test("a browser that simply cannot is told so, and differently", () => {
   assert.equal(
     videoDisabledReason({ capabilities: caps(), grant: null, engineOverride: null }, "camera"),
     null,
+  );
+});
+
+test("the native tiles line says what was captured and what was drawn", () => {
+  assert.equal(
+    nativeVideoLine({ cameraFrames: null, screenFrames: null, tiles: 0, bound: 0, drawn: 0, dropped: 0 }),
+    "no tiles",
+  );
+  assert.equal(
+    nativeVideoLine({ cameraFrames: 312, screenFrames: null, tiles: 2, bound: 2, drawn: 640, dropped: 0 }),
+    "camera 312 frames · 2 of 2 tiles bound · 640 drawn",
+  );
+  assert.equal(
+    nativeVideoLine({ cameraFrames: null, screenFrames: 40, tiles: 1, bound: 0, drawn: 0, dropped: 3 }),
+    "screen 40 frames · 0 of 1 tile bound · 0 drawn · 3 dropped",
   );
 });
