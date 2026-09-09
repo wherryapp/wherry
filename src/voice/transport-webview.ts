@@ -36,7 +36,12 @@ import {
   type VideoPreset,
 } from "livekit-client";
 import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
-import { publishErrorMessage, screenOptionsFor, userIdFromMetadata } from "./transport-rules";
+import {
+  publishErrorMessage,
+  screenOptionsFor,
+  userIdFromMetadata,
+  volumeKey,
+} from "./transport-rules";
 import type {
   FrameTransformKind,
   TransportCapabilities,
@@ -46,6 +51,7 @@ import type {
   TransportPeerStats,
   TransportStats,
   TransportVideoOptions,
+  AudioKind,
   TransportVideoStats,
   VideoSurface,
   VoiceQuality,
@@ -418,16 +424,19 @@ export class WebviewTransport implements VoiceTransport {
     publication.setVideoQuality(quality === "high" ? VideoQuality.HIGH : VideoQuality.LOW);
   }
 
-  setParticipantVolume(userId: string, volume: number): void {
+  setParticipantVolume(userId: string, volume: number, kind: AudioKind): void {
     const clamped = Math.max(0, Math.min(1, volume));
-    this.#volumes.set(userId, clamped);
+    this.#volumes.set(volumeKey(userId, kind), clamped);
     const room = this.#room;
     if (!room) return;
+    const source =
+      kind === "screen" ? Track.Source.ScreenShareAudio : Track.Source.Microphone;
     for (const participant of room.remoteParticipants.values()) {
       if (userIdOf(participant) !== userId) continue;
-      for (const publication of participant.audioTrackPublications.values()) {
-        (publication.track as RemoteAudioTrack | undefined)?.setVolume(clamped);
-      }
+      // That source only: their voice and the sound of what they are
+      // sharing are two controls (transport.ts's `AudioKind`).
+      const publication = participant.getTrackPublication(source);
+      (publication?.track as RemoteAudioTrack | undefined)?.setVolume(clamped);
     }
   }
 
@@ -446,14 +455,19 @@ export class WebviewTransport implements VoiceTransport {
     const speaking = new Set(room.activeSpeakers.map((p) => p.identity));
     const list: TransportParticipant[] = [];
     for (const participant of room.remoteParticipants.values()) {
-      const audio = [...participant.audioTrackPublications.values()];
+      // The *microphone*, not "any audio": a screen share's soundtrack is
+      // an audio publication too, and counting it here would report
+      // somebody as unmuted because a video they are sharing has sound.
+      const mic = participant.getTrackPublication(Track.Source.Microphone);
       list.push({
         identity: participant.identity,
         userId: userIdOf(participant),
         name: participant.name || userIdOf(participant),
         speaking: speaking.has(participant.identity),
-        micMuted: audio.length === 0 || audio.every((pub) => pub.isMuted),
+        micMuted: mic === undefined || mic.isMuted,
         encrypted: participant.isEncrypted,
+        screenAudio:
+          participant.getTrackPublication(Track.Source.ScreenShareAudio) !== undefined,
         audioLevel: participant.audioLevel,
         camera: participant.getTrackPublication(Track.Source.Camera) !== undefined,
         screen: participant.getTrackPublication(Track.Source.ScreenShare) !== undefined,
@@ -531,9 +545,10 @@ export class WebviewTransport implements VoiceTransport {
 
     const peers: TransportPeerStats[] = [];
     for (const participant of room.remoteParticipants.values()) {
-      const audio =
-        participant.getTrackPublication(Track.Source.Microphone) ??
-        [...participant.audioTrackPublications.values()][0];
+      // No fallback to "whatever audio track is first": with a screen
+      // share carrying sound that is a coin flip, and this readout exists
+      // to answer "is their *voice* reaching me".
+      const audio = participant.getTrackPublication(Track.Source.Microphone);
       const track = audio?.track as RemoteAudioTrack | undefined;
       let bytesReceived: number | null = null;
       let audioEnergy: number | null = null;
@@ -747,7 +762,9 @@ export class WebviewTransport implements VoiceTransport {
     const element = track.attach();
     element.setAttribute("data-voice-participant", participant.identity);
     host.appendChild(element);
-    const volume = this.#volumes.get(userIdOf(participant));
+    const kind: AudioKind =
+      track.source === Track.Source.ScreenShareAudio ? "screen" : "microphone";
+    const volume = this.#volumes.get(volumeKey(userIdOf(participant), kind));
     if (volume !== undefined) track.setVolume(volume);
     const speaker = this.#speakerDeviceId;
     if (speaker && "setSinkId" in element) {

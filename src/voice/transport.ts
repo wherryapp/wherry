@@ -102,6 +102,20 @@ export type TransportConnectOptions = {
 
 export type TransportConnectionState = "connected" | "reconnecting" | "disconnected";
 
+/**
+ * Which of somebody's audio tracks is meant.
+ *
+ * A screen share may carry its own audio, and from 2026-09-09 that is a
+ * separate thing from a person's voice everywhere it could be confused:
+ * separate volume (the maintainer's decision — turning a colleague down
+ * must not turn down the film they are showing you), separate mute state,
+ * and a diagnostics readout that describes the microphone rather than
+ * whichever track happened to be first. Before this, both would have been
+ * "their audio", and a screen with sound would have made a muted person
+ * read as unmuted.
+ */
+export type AudioKind = "microphone" | "screen";
+
 /** One remote participant as the transport sees them, one per device. */
 export type TransportParticipant = {
   identity: string;
@@ -112,7 +126,10 @@ export type TransportParticipant = {
   micMuted: boolean;
   /** Whether their tracks arrive frame-encrypted. */
   encrypted: boolean;
-  /** 0..1, the SFU's reading of their signal. */
+  /** Their screen share carries audio as well as picture. Never folded
+   *  into `micMuted`; it has its own volume. */
+  screenAudio: boolean;
+  /** 0..1, the SFU's reading of their signal — the microphone's. */
   audioLevel: number;
   /** A camera publication exists for them, muted or not. The tile draws
    *  from this; whether it is *subscribed* is the viewer's own choice. */
@@ -289,8 +306,10 @@ export interface VoiceTransport {
   ): void;
 
   /** This listener's own volume for one account's devices, 0..1: a gain on
-   *  what this device plays, never sent anywhere. */
-  setParticipantVolume(userId: string, volume: number): void;
+   *  what this device plays, never sent anywhere. `kind` says which of
+   *  their tracks — a person's voice and the sound of what they are
+   *  sharing are two controls. */
+  setParticipantVolume(userId: string, volume: number, kind: AudioKind): void;
 
   /** The browser's autoplay tap; a no-op where playback needs none. */
   startPlayback(): Promise<void>;

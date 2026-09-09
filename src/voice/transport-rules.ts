@@ -3,7 +3,7 @@
 // (docs/prompts/native-media-plan.md §0.4: policy in TypeScript, mechanism
 // in Rust). Nothing here imports a media SDK or the Tauri API.
 
-import type { TransportConnectionState, VoiceQuality } from "./transport";
+import type { AudioKind, TransportConnectionState, VoiceQuality } from "./transport";
 
 /**
  * The account behind a participant. The server puts `{ userId }` in each
@@ -231,6 +231,19 @@ export function videoOptionsFor(
     camera: has("camera") ? cameraCeilingFor(grant?.camera ?? null, tier) : null,
     screen: has("screen") ? (grant?.screen ?? null) : null,
   };
+}
+
+/**
+ * How a per-person volume is keyed, now that a person can be two sources
+ * of sound: their voice, and the audio of whatever they are sharing.
+ *
+ * A string key rather than a nested map because it is remembered in three
+ * places — the session, both transports — and the awkward case is a volume
+ * set for somebody whose track has not arrived yet, which a flat map
+ * replays trivially. Pure, so the three cannot drift.
+ */
+export function volumeKey(userId: string, kind: AudioKind): string {
+  return `${userId}/${kind}`;
 }
 
 /** A rectangle in CSS pixels, viewport origin -- `getBoundingClientRect`'s. */

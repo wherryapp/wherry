@@ -64,7 +64,7 @@ import {
   type MicStatus,
   type VideoSource,
 } from "./rules";
-import { videoOptionsFor } from "./transport-rules";
+import { videoOptionsFor, volumeKey } from "./transport-rules";
 import { blip, startRingback } from "./sounds";
 import type {
   FrameTransformKind,
@@ -72,6 +72,7 @@ import type {
   VoiceQuality,
   VoiceTransport,
   VideoSurface,
+  AudioKind,
 } from "./transport";
 
 export type { VoiceQuality } from "./transport";
@@ -100,8 +101,13 @@ export type VoiceParticipant = {
   micMuted: boolean;
   /** Whether the SFU reports this participant's tracks as E2EE. */
   encrypted: boolean;
-  /** 0..1, this listener's own volume for them. */
+  /** 0..1, this listener's own volume for their *voice*. */
   volume: number;
+  /** Their screen share carries audio, and this is its own volume --
+   *  turning a colleague down must not turn down the film they are
+   *  showing you (the maintainer's decision, 2026-09-09). */
+  screenAudio: boolean;
+  screenVolume: number;
   /** A camera publication exists for them, muted or not; likewise a
    *  screen. What the stage draws a tile from. */
   camera: boolean;
@@ -308,7 +314,7 @@ class VoiceSession {
   #unsubscribeSync: (() => void) | null = null;
   #unsubscribeBroadcasts: (() => void) | null = null;
   #ringback: { stop: () => void } | null = null;
-  #volumes = new Map<string, number>();
+  #volumes = new Map<string, { userId: string; kind: AudioKind; volume: number }>();
   #leaving = false;
   /** How getUserMedia failed, if it did, for the details' mic row. */
   #micFailure: MicFailure | null = null;
@@ -408,10 +414,12 @@ class VoiceSession {
     }
   }
 
-  setVolume(userId: string, volume: number): void {
+  /** `kind` defaults to the microphone, which is what every caller before
+   *  screen audio existed meant. */
+  setVolume(userId: string, volume: number, kind: AudioKind = "microphone"): void {
     const clamped = Math.max(0, Math.min(1, volume));
-    this.#volumes.set(userId, clamped);
-    this.#transport?.setParticipantVolume(userId, clamped);
+    this.#volumes.set(volumeKey(userId, kind), { userId, kind, volume: clamped });
+    this.#transport?.setParticipantVolume(userId, clamped, kind);
     this.#refreshParticipants();
   }
 
@@ -717,7 +725,9 @@ class VoiceSession {
       await this.#teardown({ tellServer: true, error: connectError(error) });
       return;
     }
-    for (const [userId, volume] of this.#volumes) transport.setParticipantVolume(userId, volume);
+    for (const set of this.#volumes.values()) {
+      transport.setParticipantVolume(set.userId, set.volume, set.kind);
+    }
 
     this.#set({
       phase: "connected",
@@ -901,7 +911,9 @@ class VoiceSession {
       speaking: p.speaking,
       micMuted: p.micMuted,
       encrypted: p.encrypted,
-      volume: this.#volumes.get(p.userId) ?? 1,
+      volume: this.#volumes.get(volumeKey(p.userId, "microphone"))?.volume ?? 1,
+      screenAudio: p.screenAudio,
+      screenVolume: this.#volumes.get(volumeKey(p.userId, "screen"))?.volume ?? 1,
       camera: p.camera,
       screen: p.screen,
       cameraMuted: p.cameraMuted,

@@ -13,6 +13,7 @@ import {
   SCREEN_AUDIENCE_STEP,
   screenOptionsFor,
   tileRect,
+  volumeKey,
   userIdFromMetadata,
   videoCodecFor,
   videoOptionsFor,
@@ -238,5 +239,18 @@ describe("tileRect", () => {
     assert.equal(tileRect({ x: 10, y: 10, width: 0, height: 0 }, null, viewport).visible, false);
     const gone = { x: 0, y: 900, width: 1000, height: 100 };
     assert.equal(tileRect({ x: 10, y: 910, width: 300, height: 50 }, gone, viewport).visible, false);
+  });
+});
+
+describe("volumeKey", () => {
+  it("keeps a person's voice and their shared audio apart", () => {
+    // The whole point: one person, two independent gains. If these ever
+    // collide, turning a colleague down silences the film they are sharing.
+    assert.notEqual(volumeKey("u1", "microphone"), volumeKey("u1", "screen"));
+  });
+
+  it("is stable per person and kind, so a volume set early replays later", () => {
+    assert.equal(volumeKey("u1", "microphone"), volumeKey("u1", "microphone"));
+    assert.notEqual(volumeKey("u1", "microphone"), volumeKey("u2", "microphone"));
   });
 });

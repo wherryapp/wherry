@@ -148,11 +148,12 @@ struct Shared {
   /// The local participant's last reported connection quality, lowercased
   /// (`excellent`, `good`, `poor`, `lost`); `unknown` before the first.
   quality: Mutex<String>,
-  /// Per remote identity, whether their audio should play. Applied when a
-  /// track is subscribed as well as on demand, so a participant who joins
-  /// after the listener turned them down stays turned down.
+  /// Whether audio should play, keyed by `audio_kind_key` -- identity and
+  /// kind, not identity alone, since 2026-09-09. Applied when a track is
+  /// subscribed as well as on demand, so a participant who joins after the
+  /// listener turned them down stays turned down.
   playback: Mutex<HashMap<String, bool>>,
-  /// Per remote identity, the playout gain (WebRTC's range, 1.0 is unity;
+  /// The playout gain on the same key (WebRTC's range, 1.0 is unity;
   /// TypeScript never sends above it). Applied the same way.
   volume: Mutex<HashMap<String, f64>>,
   /// The key index every cryptor should sit on; walked onto new cryptors
@@ -231,6 +232,9 @@ pub struct RosterEntry {
   /// rather than shown nothing at all.
   has_camera: bool,
   has_screen: bool,
+  /// Their screen share carries a second audio track. A separate volume
+  /// from their voice, never folded into `mic_muted`.
+  has_screen_audio: bool,
   /// Their camera publication is muted -- camera off, or their app in the
   /// background. Read the same way the webview reads `isMuted`, since
   /// 2026-09-08 when this transport learned to render.
@@ -244,12 +248,47 @@ pub struct Roster {
   local_level: f32,
 }
 
-fn audio_publications(participant: &RemoteParticipant) -> Vec<RemoteTrackPublication> {
+/// A remote's audio publications of one source.
+///
+/// Split by source since 2026-09-09, and the distinction is load-bearing
+/// rather than tidy: a screen share may carry a second audio track
+/// (`ScreenshareAudio`), and everything this file says about "their audio"
+/// meant *their microphone*. Reading the microphone's mute state from
+/// "every audio publication is muted" would call somebody unmuted because
+/// they are sharing a video's soundtrack, and a volume applied to every
+/// publication would move their voice and the thing they are sharing
+/// together. The maintainer's decision on 2026-09-09 is that those are two
+/// controls, so they are two keys everywhere below.
+fn audio_publications_of(
+  participant: &RemoteParticipant,
+  source: TrackSource,
+) -> Vec<RemoteTrackPublication> {
   participant
     .track_publications()
     .into_values()
-    .filter(|publication| publication.kind() == TrackKind::Audio)
+    .filter(|publication| publication.kind() == TrackKind::Audio && publication.source() == source)
     .collect()
+}
+
+fn mic_publications(participant: &RemoteParticipant) -> Vec<RemoteTrackPublication> {
+  audio_publications_of(participant, TrackSource::Microphone)
+}
+
+/// The audio kind a command names, as TypeScript spells it. Unknown words
+/// fall back to the microphone, which is what every caller before
+/// 2026-09-09 meant.
+fn audio_source_of(word: &str) -> TrackSource {
+  match word {
+    "screen" => TrackSource::ScreenshareAudio,
+    _ => TrackSource::Microphone,
+  }
+}
+
+fn audio_kind_key(identity: &str, source: TrackSource) -> String {
+  match source {
+    TrackSource::ScreenshareAudio => format!("{identity}/screen"),
+    _ => format!("{identity}/microphone"),
+  }
 }
 
 fn has_video_source(participant: &RemoteParticipant, source: TrackSource) -> bool {
@@ -264,7 +303,7 @@ fn roster(room: &Room) -> Roster {
     .remote_participants()
     .into_iter()
     .map(|(identity, participant)| {
-      let audio = audio_publications(&participant);
+      let audio = mic_publications(&participant);
       let playing = audio.iter().find_map(|publication| match publication.track() {
         Some(RemoteTrack::Audio(track)) => Some(track.rtc_track().enabled()),
         _ => None,
@@ -280,6 +319,8 @@ fn roster(room: &Room) -> Roster {
         playing,
         has_camera: has_video_source(&participant, TrackSource::Camera),
         has_screen: has_video_source(&participant, TrackSource::Screenshare),
+        has_screen_audio: !audio_publications_of(&participant, TrackSource::ScreenshareAudio)
+          .is_empty(),
         camera_muted: video::camera_muted(&participant),
       }
     })
@@ -327,13 +368,19 @@ fn emit(app: &AppHandle, session: u64, event: Event) {
 }
 
 fn apply_playback(shared: &Shared, participant: &RemoteParticipant) {
-  let identity = participant.identity();
-  let enabled = shared.playback.lock().unwrap().get(identity.as_str()).copied();
-  let volume = shared.volume.lock().unwrap().get(identity.as_str()).copied();
+  for source in [TrackSource::Microphone, TrackSource::ScreenshareAudio] {
+    apply_playback_of(shared, participant, source);
+  }
+}
+
+fn apply_playback_of(shared: &Shared, participant: &RemoteParticipant, source: TrackSource) {
+  let key = audio_kind_key(participant.identity().as_str(), source);
+  let enabled = shared.playback.lock().unwrap().get(&key).copied();
+  let volume = shared.volume.lock().unwrap().get(&key).copied();
   if enabled.is_none() && volume.is_none() {
     return;
   }
-  for publication in audio_publications(participant) {
+  for publication in audio_publications_of(participant, source) {
     if let Some(RemoteTrack::Audio(track)) = publication.track() {
       if let Some(enabled) = enabled {
         track.rtc_track().set_enabled(enabled);
@@ -904,11 +951,12 @@ pub fn voice_set_epoch_key(key: KeyArgs) -> VoiceResult<KeyResult> {
 /// Enable or disable one participant's audio at the WebRTC track level.
 /// Remembered for tracks that arrive later.
 #[tauri::command]
-pub fn voice_set_playback(identity: String, enabled: bool) -> VoiceResult<()> {
+pub fn voice_set_playback(identity: String, source: String, enabled: bool) -> VoiceResult<()> {
   let (_, room, shared) = current()?;
-  shared.playback.lock().unwrap().insert(identity.clone(), enabled);
+  let source = audio_source_of(&source);
+  shared.playback.lock().unwrap().insert(audio_kind_key(&identity, source), enabled);
   if let Some(participant) = room.remote_participants().get(&ParticipantIdentity::from(identity)) {
-    apply_playback(&shared, participant);
+    apply_playback_of(&shared, participant, source);
   }
   Ok(())
 }
@@ -918,11 +966,12 @@ pub fn voice_set_playback(identity: String, enabled: bool) -> VoiceResult<()> {
 /// this listener hears the difference. Remembered for tracks that arrive
 /// later, like the enable flag.
 #[tauri::command]
-pub fn voice_set_volume(identity: String, volume: f64) -> VoiceResult<()> {
+pub fn voice_set_volume(identity: String, source: String, volume: f64) -> VoiceResult<()> {
   let (_, room, shared) = current()?;
-  shared.volume.lock().unwrap().insert(identity.clone(), volume);
+  let source = audio_source_of(&source);
+  shared.volume.lock().unwrap().insert(audio_kind_key(&identity, source), volume);
   if let Some(participant) = room.remote_participants().get(&ParticipantIdentity::from(identity)) {
-    apply_playback(&shared, participant);
+    apply_playback_of(&shared, participant, source);
   }
   Ok(())
 }
@@ -1021,7 +1070,7 @@ pub async fn voice_stats() -> VoiceResult<Value> {
       "concealedSamples": null,
       "playing": null,
     });
-    if let Some(publication) = audio_publications(&participant).into_iter().next() {
+    if let Some(publication) = mic_publications(&participant).into_iter().next() {
       if let Some(RemoteTrack::Audio(track)) = publication.track() {
         peer["playing"] = json!(track.rtc_track().enabled());
         if let Ok(stats) = track.get_stats().await {

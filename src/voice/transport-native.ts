@@ -32,6 +32,7 @@
 import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules";
 import { nativeMediaProbe } from "./native-media";
 import type {
+  AudioKind,
   FrameTransformKind,
   TransportCapabilities,
   TransportConnectOptions,
@@ -54,6 +55,7 @@ import {
   screenOptionsFor,
   tileRect,
   userIdFromMetadata,
+  volumeKey,
   type Rect,
 } from "./transport-rules";
 
@@ -69,6 +71,7 @@ type NativeEntry = {
   playing: boolean | null;
   hasCamera: boolean;
   hasScreen: boolean;
+  hasScreenAudio: boolean;
   cameraMuted: boolean;
 };
 
@@ -126,7 +129,7 @@ export class NativeTransport implements VoiceTransport {
   /** This listener's volume per account, applied to every device of theirs
    *  as it appears. */
   #volumes = new Map<string, number>();
-  /** Identities whose playback flag has been sent to the shell. */
+  /** `identity/kind` pairs whose playback flag has been sent to the shell. */
   #playbackSent = new Set<string>();
   /** Whether this call was joined with the echo canceller on (rules.ts's
    *  EchoReport.disabled is the readout's honest word when it was not). */
@@ -238,12 +241,12 @@ export class NativeTransport implements VoiceTransport {
     }
   }
 
-  setParticipantVolume(userId: string, volume: number): void {
+  setParticipantVolume(userId: string, volume: number, kind: AudioKind): void {
     const clamped = Math.max(0, Math.min(1, volume));
-    this.#volumes.set(userId, clamped);
+    this.#volumes.set(volumeKey(userId, kind), clamped);
     for (const entry of this.#roster.participants) {
       if (userIdFromMetadata(entry.metadata, entry.identity) !== userId) continue;
-      this.#sendPlayback(entry.identity, clamped);
+      this.#sendPlayback(entry.identity, clamped, kind);
     }
   }
 
@@ -414,6 +417,7 @@ export class NativeTransport implements VoiceTransport {
         audioLevel: entry.audioLevel,
         camera: entry.hasCamera,
         screen: entry.hasScreen,
+        screenAudio: entry.hasScreenAudio,
         cameraMuted: entry.cameraMuted,
       };
     });
@@ -488,23 +492,34 @@ export class NativeTransport implements VoiceTransport {
   /** A volume set before somebody's device appeared reaches it now. */
   #applyVolumes(): void {
     for (const entry of this.#roster.participants) {
-      if (this.#playbackSent.has(entry.identity)) continue;
-      const volume = this.#volumes.get(userIdFromMetadata(entry.metadata, entry.identity));
-      if (volume !== undefined) this.#sendPlayback(entry.identity, volume);
+      const userId = userIdFromMetadata(entry.metadata, entry.identity);
+      for (const kind of ["microphone", "screen"] as const) {
+        const sent = `${entry.identity}/${kind}`;
+        if (this.#playbackSent.has(sent)) continue;
+        const volume = this.#volumes.get(volumeKey(userId, kind));
+        if (volume !== undefined) this.#sendPlayback(entry.identity, volume, kind);
+      }
     }
   }
 
-  /** The enable flag and the gain, both decided here (transport-rules.ts). */
-  #sendPlayback(identity: string, volume: number): void {
+  /** The enable flag and the gain, both decided here (transport-rules.ts).
+   *  `kind` reaches the shell as the source it applies to, so a volume for
+   *  somebody's voice does not move the film they are sharing. */
+  #sendPlayback(identity: string, volume: number, kind: AudioKind): void {
     const invoke = this.#invoke;
     if (!invoke || this.#session === null) return;
-    this.#playbackSent.add(identity);
+    const sent = `${identity}/${kind}`;
+    this.#playbackSent.add(sent);
     void Promise.all([
-      invoke("voice_set_playback", { identity, enabled: playbackEnabledFor(volume) }),
-      invoke("voice_set_volume", { identity, volume: nativeGainFor(volume) }),
+      invoke("voice_set_playback", {
+        identity,
+        source: kind,
+        enabled: playbackEnabledFor(volume),
+      }),
+      invoke("voice_set_volume", { identity, source: kind, volume: nativeGainFor(volume) }),
     ]).catch(() => {
       // The next roster event tries again.
-      this.#playbackSent.delete(identity);
+      this.#playbackSent.delete(sent);
     });
   }
 }
