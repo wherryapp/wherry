@@ -60,3 +60,30 @@ index 1dd4413b9e98f67eb922ffeba00980083ac7ecd9..b4d4ddb606fc11b34e81a39127dcf375
              if (subtle !== undefined) {
                  return {
                      async sign(signKey, message) {
+diff --git a/dist/src/clientState.js b/dist/src/clientState.js
+--- a/dist/src/clientState.js
++++ b/dist/src/clientState.js
+@@ -281,11 +281,22 @@
+                 if (tree[nodeIndex]?.nodeType !== "leaf" && !dp.includes(toNodeIndex(i)))
+                     return new ValidationError("Unmerged leaf did not represent a non-blank descendant leaf node");
+                 for (const parentIdx of dp) {
++                    // Only the segment between the leaf and *this* node. RFC 9420
++                    // s7.9 constrains the non-blank intermediates BELOW P and says
++                    // nothing about P's own ancestors, which an update path above P
++                    // legitimately merges the leaf into. Walking the whole direct
++                    // path made any group unjoinable once somebody was removed,
++                    // re-added and then anybody committed a path above them.
++                    if (parentIdx === toNodeIndex(i))
++                        break;
+                     const dpNode = tree[parentIdx];
+                     if (dpNode !== undefined) {
+                         if (dpNode.nodeType !== "parent")
+                             return new InternalError("Expected parent node");
+-                        if (!arraysEqual(dpNode.parent.unmergedLeaves, n.parent.unmergedLeaves))
++                        // Membership, not list equality: an intermediate below P
++                        // carries a subset of P's unmerged leaves, never the same
++                        // set, so comparing the lists rejects valid trees.
++                        if (!dpNode.parent.unmergedLeaves.includes(unmergedLeaf))
+                             return new ValidationError("non-blank intermediate node must list leaf node in its unmerged_leaves");
+                     }
+                 }

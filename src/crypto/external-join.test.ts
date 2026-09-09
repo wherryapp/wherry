@@ -21,6 +21,7 @@ import { test } from "node:test";
 import {
   acceptAll,
   createApplicationMessage,
+  createCommit,
   createGroup,
   createGroupInfoWithExternalPubAndRatchetTree,
   decodeMlsMessage,
@@ -35,6 +36,7 @@ import {
   processMessage,
   type ClientState,
   type Credential,
+  type Proposal,
 } from "ts-mls";
 import { ratchetTreeFromExtension } from "ts-mls/groupInfo.js";
 
@@ -327,4 +329,176 @@ test("a rejoin under a fresh identity is a plain join beside the dead leaf", asy
   const fromB = await send(rejoin.state, "still here");
   const atA = await recv(stateA, fromB.wire);
   assert.equal(atA.text, "still here");
+});
+
+
+// ---------------------------------------------------------------------------
+// The tree a remove-then-re-add leaves behind
+//
+// Why these exist: the W40 regression group became unjoinable by any new
+// device on 2026-09-07 -- every external join failed ts-mls's own ratchet
+// tree validation with `non-blank intermediate node must list leaf node in
+// its unmerged_leaves`, at an epoch whose GroupInfo matched the server's,
+// so the tree itself was being rejected rather than a client being behind.
+// The sequence that produced it was a member removed by mis-click, re-added,
+// and then a rebuilt device added, all committed by one member's device on
+// this same ts-mls. It was never established whether the committer wrote a
+// bad tree or the validator is stricter than the producer -- both are this
+// library (`docs/roadmap.md`, 2026-09-07 intake).
+//
+// These reproduce that shape at the protocol level. A failure here is the
+// answer: the library disagrees with itself, and the group is a symptom.
+// Passing is also an answer, and a narrower one -- the shape alone does not
+// do it, and whatever W40 hit needs something else in the sequence.
+
+/** An add commit, the shape `commitAdd` in mls.ts builds. */
+async function commitAdds(
+  state: ClientState,
+  packages: Awaited<ReturnType<typeof freshPackage>>[],
+): Promise<{ state: ClientState; commitWire: Uint8Array }> {
+  const suite = await suitePromise;
+  const proposals: Proposal[] = packages.map((pkg) => ({
+    proposalType: "add",
+    add: { keyPackage: pkg.publicPackage },
+  }));
+  const result = await createCommit(
+    { state, cipherSuite: suite },
+    { extraProposals: proposals, ratchetTreeExtension: true },
+  );
+  return { state: result.newState, commitWire: encodeMlsMessage(result.commit) };
+}
+
+/** A remove commit, the shape `commitRemove` in mls.ts builds. */
+async function commitRemoves(
+  state: ClientState,
+  leafIndexes: readonly number[],
+): Promise<{ state: ClientState; commitWire: Uint8Array }> {
+  const suite = await suitePromise;
+  const proposals: Proposal[] = leafIndexes.map((leafIndex) => ({
+    proposalType: "remove",
+    remove: { removed: leafIndex },
+  }));
+  const result = await createCommit(
+    { state, cipherSuite: suite },
+    { extraProposals: proposals },
+  );
+  return { state: result.newState, commitWire: encodeMlsMessage(result.commit) };
+}
+
+/** The leaf index of a device id, for a remove proposal. */
+function leafIndexOf(state: ClientState, deviceId: string): number {
+  for (let i = 0; i < state.ratchetTree.length; i += 2) {
+    const node = state.ratchetTree[i];
+    if (!node || node.nodeType !== "leaf") continue;
+    if (node.leaf.credential.credentialType !== "basic") continue;
+    const parsed = JSON.parse(decoder.decode(node.leaf.credential.identity)) as { d: string };
+    if (parsed.d === deviceId) return i / 2;
+  }
+  throw new Error(`no leaf for ${deviceId}`);
+}
+
+test("a member removed and re-added leaves a tree a fresh device can still join", async () => {
+  const suite = await suitePromise;
+  const keys = {
+    A: await suite.signature.keygen(),
+    B: await suite.signature.keygen(),
+    C: await suite.signature.keygen(),
+    D: await suite.signature.keygen(),
+    E: await suite.signature.keygen(),
+  };
+
+  // Four leaves, so the tree has intermediate nodes at all -- the error
+  // names a *non-blank intermediate node*, and a two-member group has none
+  // worth the name.
+  const pkgA = await freshPackage("user1", "devA", keys.A);
+  let stateA = await createGroup(
+    encoder.encode("conv-readd"),
+    pkgA.publicPackage,
+    pkgA.privatePackage,
+    [],
+    suite,
+  );
+  const added = await commitAdds(stateA, [
+    await freshPackage("user2", "devB", keys.B),
+    await freshPackage("user3", "devC", keys.C),
+    await freshPackage("user4", "devD", keys.D),
+  ]);
+  stateA = added.state;
+  assert.deepEqual(rosterDevices(stateA), ["devA", "devB", "devC", "devD"]);
+
+  // The mis-click: B removed, then re-added with a fresh package under the
+  // same identity -- which is what the app does, since a key package is
+  // consumed by the add that used it.
+  const removed = await commitRemoves(stateA, [leafIndexOf(stateA, "devB")]);
+  stateA = removed.state;
+  assert.deepEqual(rosterDevices(stateA), ["devA", "devC", "devD"]);
+
+  const readded = await commitAdds(stateA, [
+    await freshPackage("user2", "devB", keys.B),
+  ]);
+  stateA = readded.state;
+  assert.deepEqual(rosterDevices(stateA), ["devA", "devB", "devC", "devD"]);
+
+  // And now the thing W40 cannot do: a device that has never seen this
+  // group joins off the published GroupInfo.
+  const joinE = await externalJoin("user5", "devE", keys.E, await exportInfo(stateA));
+  stateA = await applyCommitWire(stateA, joinE.commitWire);
+  assert.deepEqual(rosterDevices(stateA), ["devA", "devB", "devC", "devD", "devE"]);
+
+  // And the group still works for everybody afterwards.
+  const fromE = await send(joinE.state, "joined after a re-add");
+  const atA = await recv(stateA, fromE.wire);
+  assert.equal(atA.text, "joined after a re-add");
+});
+
+test("a re-add into a vacated leaf, then another add, still leaves a joinable tree", async () => {
+  // W40's exact epoch sequence: remove, re-add, then a *further* add by the
+  // same committer -- the rebuilt device -- before anybody tried to join.
+  // The extra add is the part the first test above does not cover: it
+  // repopulates the committer's direct path a second time over a subtree
+  // that already carries an unmerged leaf.
+  const suite = await suitePromise;
+  const keys = {
+    A: await suite.signature.keygen(),
+    B: await suite.signature.keygen(),
+    C: await suite.signature.keygen(),
+    D: await suite.signature.keygen(),
+    E: await suite.signature.keygen(),
+    F: await suite.signature.keygen(),
+  };
+
+  const pkgA = await freshPackage("user1", "devA", keys.A);
+  let stateA = await createGroup(
+    encoder.encode("conv-readd-2"),
+    pkgA.publicPackage,
+    pkgA.privatePackage,
+    [],
+    suite,
+  );
+  stateA = (
+    await commitAdds(stateA, [
+      await freshPackage("user2", "devB", keys.B),
+      await freshPackage("user3", "devC", keys.C),
+    ])
+  ).state;
+  stateA = (await commitRemoves(stateA, [leafIndexOf(stateA, "devB")])).state;
+  stateA = (await commitAdds(stateA, [await freshPackage("user2", "devB", keys.B)])).state;
+  stateA = (await commitAdds(stateA, [await freshPackage("user4", "devD", keys.D)])).state;
+  assert.deepEqual(rosterDevices(stateA), ["devA", "devB", "devC", "devD"]);
+
+  const joinE = await externalJoin("user5", "devE", keys.E, await exportInfo(stateA));
+  stateA = await applyCommitWire(stateA, joinE.commitWire);
+
+  // A second fresh joiner, off the first joiner's GroupInfo, because that is
+  // how the app bootstraps a chain of new devices.
+  const joinF = await externalJoin("user6", "devF", keys.F, await exportInfo(joinE.state));
+  stateA = await applyCommitWire(stateA, joinF.commitWire);
+  assert.deepEqual(rosterDevices(stateA), [
+    "devA",
+    "devB",
+    "devC",
+    "devD",
+    "devE",
+    "devF",
+  ]);
 });
