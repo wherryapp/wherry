@@ -234,6 +234,62 @@ export function videoOptionsFor(
 }
 
 /**
+ * What a screen share's audio is captured with.
+ *
+ * All three switches **off**, and this is a requirement rather than a
+ * preference (the maintainer, 2026-09-09): the browser's canceller,
+ * suppressor and gain control are tuned for a voice in a room, and they
+ * mangle music and dialogue — the suppressor hears a soundtrack as noise
+ * and the gain control pumps it. There is also nothing for a canceller to
+ * do here: this audio never went through a speaker, so there is no echo
+ * path to model. Stereo is asked for because the material is usually
+ * mixed for it and a screen share is the one place in a call where that
+ * matters.
+ *
+ * Chromium may ignore any of these on a display capture; asking is still
+ * right, and what it actually honours is a Windows row.
+ */
+export function screenAudioCapture(): {
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+  channelCount: number;
+} {
+  return {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    channelCount: 2,
+  };
+}
+
+/**
+ * What a screen share's audio is published with, in bits per second.
+ *
+ * `AudioPresets.musicHighQualityStereo`, mirrored by hand rather than
+ * imported for the reason rules.ts states about every SDK number: this
+ * file must not import livekit-client.
+ *
+ * The room's own audio defaults are wrong here in a way that is easy to
+ * miss. They carry `dtx` — discontinuous transmission, which stops sending
+ * during silence — and on speech that is free bandwidth, while on music it
+ * audibly clips the quiet passages and the tails of notes. `red` is
+ * redundant encoding, useful for a voice on a lossy link and pure overhead
+ * on a stream nobody is straining to understand word by word. And a speech
+ * bitrate is a quarter of what music needs.
+ */
+export const SCREEN_AUDIO_BITRATE = 128_000;
+
+export function screenAudioPublish(): {
+  dtx: boolean;
+  red: boolean;
+  forceStereo: boolean;
+  maxBitrate: number;
+} {
+  return { dtx: false, red: false, forceStereo: true, maxBitrate: SCREEN_AUDIO_BITRATE };
+}
+
+/**
  * How a per-person volume is keyed, now that a person can be two sources
  * of sound: their voice, and the audio of whatever they are sharing.
  *

@@ -13,7 +13,7 @@
 // the two apart. The way to the video is the bar's own title row and its
 // live preview now, both of which say "open the call".
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { StoredConversation } from "../../store/types";
 import { conversationTitle } from "../format";
 import { Avatar, Button, LockIcon, MicOffIcon, Select, VideoIcon } from "../kit";
@@ -345,7 +345,14 @@ function DevicePicker({ onClose }: { onClose: () => void }) {
 function VolumeList({
   participants,
 }: {
-  participants: readonly { userId: string; identity: string; name: string; volume: number }[];
+  participants: readonly {
+    userId: string;
+    identity: string;
+    name: string;
+    volume: number;
+    screenAudio: boolean;
+    screenVolume: number;
+  }[];
 }) {
   const [open, setOpen] = useState(false);
   if (!open) {
@@ -361,19 +368,42 @@ function VolumeList({
   return (
     <div className="mt-2 grid gap-1">
       {participants.map((p) => (
-        <label key={p.identity} className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-300">
-          <span className="w-24 truncate">{p.name}</span>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={p.volume}
-            onChange={(e) => voice.setVolume(p.userId, Number(e.target.value))}
-            aria-label={`Volume for ${p.name}`}
-            className="flex-1"
-          />
-        </label>
+        <Fragment key={p.identity}>
+          <label className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-300">
+            <span className="w-24 truncate">{p.name}</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={p.volume}
+              onChange={(e) => voice.setVolume(p.userId, Number(e.target.value), "microphone")}
+              aria-label={`Volume for ${p.name}`}
+              className="flex-1"
+            />
+          </label>
+          {/*
+            A second slider only for somebody actually sharing sound. Two
+            controls rather than one is a requirement, not a nicety: one
+            gain over both would mean turning a colleague down also turns
+            down whatever they are showing you.
+          */}
+          {p.screenAudio && (
+            <label className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-300">
+              <span className="w-24 truncate pl-3 italic">their screen</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={p.screenVolume}
+                onChange={(e) => voice.setVolume(p.userId, Number(e.target.value), "screen")}
+                aria-label={`Volume for the audio ${p.name} is sharing`}
+                className="flex-1"
+              />
+            </label>
+          )}
+        </Fragment>
       ))}
       <button
         onClick={() => setOpen(false)}

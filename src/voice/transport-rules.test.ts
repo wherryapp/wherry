@@ -11,6 +11,9 @@ import {
   publishErrorMessage,
   qualityFromWord,
   SCREEN_AUDIENCE_STEP,
+  screenAudioCapture,
+  screenAudioPublish,
+  SCREEN_AUDIO_BITRATE,
   screenOptionsFor,
   tileRect,
   volumeKey,
@@ -252,5 +255,37 @@ describe("volumeKey", () => {
   it("is stable per person and kind, so a volume set early replays later", () => {
     assert.equal(volumeKey("u1", "microphone"), volumeKey("u1", "microphone"));
     assert.notEqual(volumeKey("u1", "microphone"), volumeKey("u2", "microphone"));
+  });
+});
+
+describe("screen share audio", () => {
+  it("captures with every processing switch off", () => {
+    // A requirement, not a preference: the canceller, suppressor and gain
+    // control are tuned for a voice in a room and mangle music, and there
+    // is no echo path to model on audio that never went through a speaker.
+    const capture = screenAudioCapture();
+    assert.equal(capture.echoCancellation, false);
+    assert.equal(capture.noiseSuppression, false);
+    assert.equal(capture.autoGainControl, false);
+    assert.equal(capture.channelCount, 2);
+  });
+
+  it("publishes without the speech tricks that ruin music", () => {
+    const publish = screenAudioPublish();
+    // dtx stops sending during silence -- free on speech, audible clipping
+    // on a soundtrack's quiet passages.
+    assert.equal(publish.dtx, false);
+    // red is redundancy for a voice on a lossy link; overhead here.
+    assert.equal(publish.red, false);
+    assert.equal(publish.forceStereo, true);
+    assert.equal(publish.maxBitrate, SCREEN_AUDIO_BITRATE);
+  });
+
+  it("asks for far more bitrate than a voice does", () => {
+    // The room's own audio ceiling is a speech number; this must not
+    // silently inherit it. 128 kbps is AudioPresets.musicHighQualityStereo,
+    // mirrored by hand because this file imports no SDK.
+    assert.equal(SCREEN_AUDIO_BITRATE, 128_000);
+    assert.ok(SCREEN_AUDIO_BITRATE > 64_000);
   });
 });

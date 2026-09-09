@@ -38,6 +38,8 @@ import {
 import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
 import {
   publishErrorMessage,
+  screenAudioCapture,
+  screenAudioPublish,
   screenOptionsFor,
   userIdFromMetadata,
   volumeKey,
@@ -355,18 +357,48 @@ export class WebviewTransport implements VoiceTransport {
     // transport-rules.ts's screenOptionsFor for why a republish mid-share
     // would be worse than the bandwidth it saved.
     const ceiling = screenOptionsFor(this.#video.screen, audience);
+    const audioPublish = screenAudioPublish();
     try {
-      await room.localParticipant.setScreenShareEnabled(on, {
-        // No tab or system audio in v1: the checkbox is a second audio
-        // track per participant and a disclosure question of its own (the
-        // plan's §10).
-        audio: false,
+      await room.localParticipant.setScreenShareEnabled(
+        on,
+        {
+        // Audio is **always requested**, so the option to share it is
+        // always in front of the person sharing (the maintainer,
+        // 2026-09-09). Asking is not taking: on Chromium the request is
+        // what puts the "also share audio" checkbox in the system picker,
+        // and the person ticks it or does not. Asking for nothing is what
+        // would remove the choice.
+        //
+        // The three processing switches are off by requirement, not
+        // preference -- see transport-rules.ts's screenAudioCapture.
+        //
+        // NOT YET SAFE TO ENABLE FOR REAL on this path, and the video flag
+        // being dark is what makes shipping it harmless: the standing
+        // requirement is that a share must exclude the call's own incoming
+        // audio completely, and a Chromium loopback capture takes the
+        // render endpoint's whole mix, which contains our own playback.
+        // Whether Chromium excludes its own process tree is the single
+        // most valuable unknown on the Windows machine, because the answer
+        // decides whether this path is usable at all or whether screen
+        // audio has to be captured natively on every platform
+        // (docs/prompts/windows-handoff.md).
+        audio: screenAudioCapture(),
         // "detail" is what tells the encoder this is text and not motion;
         // it is the difference between a readable shared window and a
         // smear.
-        contentHint: "detail",
-        ...(ceiling ? { resolution: screenPresetFor(ceiling) } : {}),
-      });
+          contentHint: "detail",
+          ...(ceiling ? { resolution: screenPresetFor(ceiling) } : {}),
+        },
+        // Publish options for the *audio* track that share carries. The
+        // room's defaults are speech settings and wrong for a soundtrack;
+        // transport-rules.ts's screenAudioPublish says why each one moves.
+        {
+          dtx: audioPublish.dtx,
+          red: audioPublish.red,
+          forceStereo: audioPublish.forceStereo,
+          audioPreset: { maxBitrate: audioPublish.maxBitrate },
+        },
+      );
     } catch (error) {
       throw new Error(publishErrorMessage(error, "screen"));
     }
