@@ -593,8 +593,22 @@ fn start_device_poller(app: AppHandle) {
         .map(|d| (format!("in:{}", d.device_id), d.label.clone()))
         .chain(devices.outputs.iter().map(|d| (format!("out:{}", d.device_id), d.label.clone())))
         .collect();
+      // The first reading is logged as an inventory rather than skipped as
+      // "not a change". Only emitting on a difference is right -- the event
+      // exists to re-list the pickers -- but only *logging* on a difference
+      // meant a machine where nothing is ever replugged printed no device
+      // line at all, so D-27 had nothing to read and no way to tell "the
+      // poller is working and the list is static" from "the poller is dead".
+      let first = last.is_none();
       let changed = last.as_ref().is_some_and(|previous| previous != &key);
       last = Some(key);
+      if first {
+        log::info!(
+          "voice: devices at start ({} input(s), {} output(s))",
+          devices.inputs.len(),
+          devices.outputs.len()
+        );
+      }
       if changed {
         log::info!(
           "voice: devices changed ({} input(s), {} output(s))",
@@ -661,15 +675,64 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   let audio = platform_audio()?;
   render::remember_app(&app);
 
-  if let Some(id) = args.mic_device_id.as_deref() {
-    audio
-      .set_recording_device(&RecordingDeviceId::from_unchecked_guid(id))
-      .map_err(|e| VoiceError::new("device", format!("set_recording_device: {e:?}")))?;
+  // Say which devices this call actually opened, by id and by name.
+  //
+  // Nothing used to. The id was set silently on success, the mid-call switch
+  // commands logged nothing at all, and `voice: devices changed` prints two
+  // integers and never fires on a first reading -- so on a machine where
+  // nothing is replugged it never appears. That left "the call connects and
+  // captures nothing" and "the call connects and captures from the wrong
+  // device" indistinguishable, and a moving microphone level is not evidence
+  // the intended device is open. Device ids are the one genuinely
+  // platform-shaped part of this engine (macOS hands back a UID, Windows a
+  // WASAPI endpoint string like `{0.0.1.00000000}.{guid}`), and Windows has
+  // never run it, so this is the readout that makes the first pass there
+  // falsifiable rather than merely observed.
+  let devices = list_devices(&audio);
+  log::info!(
+    "voice: device inventory -- {} input(s), {} output(s)",
+    devices.inputs.len(),
+    devices.outputs.len()
+  );
+  for d in devices.inputs.iter().chain(devices.outputs.iter()) {
+    log::info!("voice:   {} = {:?}", d.device_id, d.label);
   }
-  if let Some(id) = args.speaker_device_id.as_deref() {
-    audio
-      .set_playout_device(&PlayoutDeviceId::from_unchecked_guid(id))
-      .map_err(|e| VoiceError::new("device", format!("set_playout_device: {e:?}")))?;
+  let name_of = |id: &str| {
+    devices
+      .inputs
+      .iter()
+      .chain(devices.outputs.iter())
+      .find(|d| d.device_id == id)
+      .map(|d| d.label.clone())
+      .unwrap_or_else(|| "NOT IN THE LIST".to_string())
+  };
+
+  match args.mic_device_id.as_deref() {
+    Some(id) => {
+      log::info!("voice: capture requested {id} ({})", name_of(id));
+      audio
+        .set_recording_device(&RecordingDeviceId::from_unchecked_guid(id))
+        .map_err(|e| VoiceError::new("device", format!("set_recording_device: {e:?}")))?;
+    }
+    None => log::info!("voice: capture left at the platform default"),
+  }
+  match args.speaker_device_id.as_deref() {
+    Some(id) => {
+      log::info!("voice: playout requested {id} ({})", name_of(id));
+      audio
+        .set_playout_device(&PlayoutDeviceId::from_unchecked_guid(id))
+        .map_err(|e| VoiceError::new("device", format!("set_playout_device: {e:?}")))?;
+    }
+    None => log::info!("voice: playout left at the platform default"),
+  }
+  // Zero outputs is not a warning about a preference, it is "nobody will hear
+  // anything" -- and it is a real state: this project's Windows box enumerated
+  // 0 active render endpoints out of 57 known ones on 2026-09-09.
+  if devices.outputs.is_empty() {
+    log::warn!("voice: no active output device -- the call will connect and play to nothing");
+  }
+  if devices.inputs.is_empty() {
+    log::warn!("voice: no active input device -- the call will connect and capture nothing");
   }
   // Before the microphone track exists: these are its source's options.
   let processing = args.processing;
@@ -912,16 +975,44 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
   Ok(())
 }
 
+// The mid-call switches, unlike `voice_connect`'s pair, do NOT validate the id
+// against the live list upstream in the SDK -- and the C++ under them
+// (`webrtc-sys/src/audio_device_controller.cpp`) answers a guid it cannot find
+// by selecting device *index 0* and returning success. So an id from the wrong
+// id space does not fail here, it quietly opens some other device. Checking the
+// id against the list first turns that into an error with a name in it, which
+// is the same thing `voice_connect` gets for free by being handed an id the
+// TypeScript side already filtered through `knownDeviceId`.
 #[tauri::command]
 pub fn voice_set_input_device(device_id: String) -> VoiceResult<()> {
-  platform_audio()?
+  let audio = platform_audio()?;
+  let devices = list_devices(&audio);
+  let Some(found) = devices.inputs.iter().find(|d| d.device_id == device_id) else {
+    log::warn!("voice: capture switch refused, {device_id} is not in the list");
+    return Err(VoiceError::new(
+      "device",
+      format!("switch_recording_device: {device_id} is not an active capture device"),
+    ));
+  };
+  log::info!("voice: capture switched to {device_id} ({})", found.label);
+  audio
     .switch_recording_device(&RecordingDeviceId::from_unchecked_guid(&device_id))
     .map_err(|e| VoiceError::new("device", format!("switch_recording_device: {e:?}")))
 }
 
 #[tauri::command]
 pub fn voice_set_output_device(device_id: String) -> VoiceResult<()> {
-  platform_audio()?
+  let audio = platform_audio()?;
+  let devices = list_devices(&audio);
+  let Some(found) = devices.outputs.iter().find(|d| d.device_id == device_id) else {
+    log::warn!("voice: playout switch refused, {device_id} is not in the list");
+    return Err(VoiceError::new(
+      "device",
+      format!("switch_playout_device: {device_id} is not an active playout device"),
+    ));
+  };
+  log::info!("voice: playout switched to {device_id} ({})", found.label);
+  audio
     .switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(&device_id))
     .map_err(|e| VoiceError::new("device", format!("switch_playout_device: {e:?}")))
 }

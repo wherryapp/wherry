@@ -180,7 +180,24 @@ export function VoiceSettings({
           <input
             type="checkbox"
             checked={prefs.nativeMedia}
-            onChange={(e) => saveVoicePrefs({ nativeMedia: e.target.checked })}
+            // The saved device ids go with the engine, because the two engines
+            // do not share an id space: the shell's are the platform's own
+            // (a WASAPI endpoint string on Windows, a UID on macOS) and the web
+            // view's are `enumerateDevices` hashes. Keeping one across the
+            // switch is an id this side cannot resolve -- `getUserMedia` with
+            // `deviceId: { exact: … }` then throws OverconstrainedError and the
+            // panel reads "The microphone could not be started" on a machine
+            // whose microphone is fine, while the picker shows a value matching
+            // no option. Clearing them falls back to the platform default,
+            // which is the right answer for a device list this side has not
+            // seen yet.
+            onChange={(e) =>
+              saveVoicePrefs({
+                nativeMedia: e.target.checked,
+                micDeviceId: null,
+                speakerDeviceId: null,
+              })
+            }
             className="mt-0.5 h-4 w-4"
           />
           <span className="grid gap-1">

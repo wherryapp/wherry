@@ -318,8 +318,27 @@ pub struct ScreenArgs {
   pub max_fps: u32,
 }
 
+// The camera path answers "unsupported" off macOS (see `open_camera`); this one
+// did not, and it is the more dangerous of the two to leave open. libwebrtc's
+// `DesktopCapturer` *is* implemented on Windows, and this path starts it with no
+// source chosen and no picker -- so the two ways it can go are capturing a
+// display with no consent interface, or blocking the command on its
+// 120-second `recv_timeout`. Neither is reachable today, because the probe
+// answers `video: false` off macOS and the client never calls it. It arms
+// itself the day a Windows shell reports `video: true`, which is exactly when
+// somebody will be looking at something else. The `allow` is because
+// everything after the guard is dead code off macOS, on purpose: the body is
+// platform-neutral enough to compile there, which is what made this latent
+// rather than a compile error in the first place.
 #[tauri::command]
+#[cfg_attr(not(target_os = "macos"), allow(unreachable_code, unused_variables))]
 pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<()> {
+  #[cfg(not(target_os = "macos"))]
+  return Err(VoiceError::new(
+    "unsupported",
+    "no native screen capture on this platform yet",
+  ));
+
   let (session, room, shared) = current()?;
   let existing = with_state(session, |state| state.screen.take());
   if let Some(published) = existing {

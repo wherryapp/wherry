@@ -95,6 +95,14 @@ describe("knownDeviceId", () => {
     assert.equal(knownDeviceId(null, devices), null);
     assert.equal(knownDeviceId("a", []), null);
   });
+  it("treats the empty string as no id, even when the list is full of them", () => {
+    // A browser that has not been granted the microphone yet answers
+    // enumerateDevices with every deviceId blank. Matching one of those and
+    // passing "" on as an exact constraint is an OverconstrainedError on a
+    // machine whose microphone is fine.
+    assert.equal(knownDeviceId("", devices), null);
+    assert.equal(knownDeviceId("", [{ deviceId: "" }, { deviceId: "" }]), null);
+  });
 });
 
 describe("videoCodecFor", () => {

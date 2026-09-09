@@ -103,7 +103,13 @@ export function knownDeviceId(
   id: string | null,
   devices: readonly { deviceId: string }[],
 ): string | null {
-  if (id === null) return null;
+  // Falsy rather than `=== null`, because the empty string is a real value
+  // here and it is not an id. Before microphone permission is granted a
+  // browser's `enumerateDevices` answers with every `deviceId` blank -- so an
+  // empty stored id would *match* one of those entries and be handed on as an
+  // exact constraint, which is an OverconstrainedError on a machine whose
+  // microphone is fine.
+  if (!id) return null;
   return devices.some((device) => device.deviceId === id) ? id : null;
 }
 
