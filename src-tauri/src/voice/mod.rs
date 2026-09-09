@@ -541,7 +541,7 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   let audio = platform_audio()?;
   render::remember_app(&app);
   start_device_poller(app);
-  Ok(Probe {
+  let probe = Probe {
     livekit_rev: LIVEKIT_REV,
     video: cfg!(target_os = "macos"),
     // libwebrtc's `DesktopCapturer` is implemented on both, and off macOS
@@ -554,7 +554,35 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
     aec: format!("{:?}", audio.active_aec_type()),
     agc: format!("{:?}", audio.active_agc_type()),
     ns: format!("{:?}", audio.active_ns_type()),
-  })
+  };
+  // Regression row D-43 reads the three capability booleans, and until
+  // 2026-09-09 the only place they existed was the page's own devtools --
+  // which this shell does not relay. Logged from the struct rather than
+  // from the `cfg!`s again, so the line cannot come to disagree with the
+  // answer the page was actually given.
+  log::info!(
+    "voice: probe video={} screenCapture={} videoRender={} ({} input(s), {} output(s))",
+    probe.video,
+    probe.screen_capture,
+    probe.video_render,
+    probe.recording_devices,
+    probe.playout_devices
+  );
+  // `WHERRY_DEV_SCREEN_SOURCES=1`, debug builds only: log what our own
+  // picker would list, at boot, so row S-09's "is there anything to show"
+  // half can be read without a call and without a second person. Deliberately
+  // the *same* call the picker makes rather than a probe of its own -- a
+  // separate instrument would be testing a copy. Off unless asked, because
+  // enumerating windows is not free and nothing else needs it at boot.
+  #[cfg(debug_assertions)]
+  if std::env::var("WHERRY_DEV_SCREEN_SOURCES").ok().as_deref() == Some("1") {
+    let sources = capture::screen_sources();
+    log::info!("voice: screen sources ({} found)", sources.len());
+    for source in &sources {
+      log::info!("voice:   {:?} {} = {:?}", source.kind, source.id, source.title);
+    }
+  }
+  Ok(probe)
 }
 
 /// `devices.ts`'s shape: labels are real and ids are stable, with no
