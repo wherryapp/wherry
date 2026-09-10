@@ -17,8 +17,11 @@
 // -- the prompt needs a person -- must at least be one whose every step is
 // read and understood, and eighty lines of `msg_send!` against a framework
 // whose behaviour is documented is that; a backend whose format table is
-// wrong on the platform in hand is not. Windows is deferred with the rest
-// of native video there (video.rs's header), so nothing is lost today.
+// wrong on the platform in hand is not. **A Windows camera is stage W4 and
+// is the only part of native video still missing there** -- that platform
+// shares a screen (W1, 2026-09-09) and draws received tiles (W3,
+// 2026-09-10, render_win.rs), which is why its camera button alone is the
+// per-call engine switch.
 //
 // The camera delivers NV12 (`420v`), and NV12 goes straight into the
 // source: VideoToolbox encodes it without a conversion, which is the

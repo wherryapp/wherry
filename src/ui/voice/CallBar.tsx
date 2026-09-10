@@ -228,12 +228,19 @@ export function CallBar({
       )}
 
       {/*
-        The desktop shell's own media engine has no camera capture and no
-        way to put a received frame on screen (video's stage 3N is what
-        changes that), so somebody who wants video here rejoins this one
-        call through the webview engine. One reconnect -- a second or two
-        of silence -- and their `nativeMedia` preference is untouched,
+        A shell whose own media engine cannot put a received frame on
+        screen: somebody who wants video here rejoins this one call
+        through the webview engine. One reconnect -- a second or two of
+        silence -- and their `nativeMedia` preference is untouched,
         because they did not change their mind about audio.
+
+        This strip is standing rather than per-source, so it is gated on
+        `renderVideo` alone, and both desktop platforms have now left it
+        behind: macOS renders since stage 3N (2026-09-08) and Windows
+        since W3 (2026-09-10). What Windows still lacks is camera
+        *capture*, and that is the camera button's business -- the press
+        there is the switch, through `rules.ts`'s `nativeEngine`. Leave
+        this for a shell that renders nothing at all.
       */}
       {!state.capabilities.renderVideo &&
         state.phase === "connected" &&

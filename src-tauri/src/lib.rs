@@ -251,10 +251,13 @@ pub fn run() {
         }
       }
       // `WHERRY_DEV_TILE=1`: one magenta child window over the page at
-      // boot, no call and no track (docs/prompts/w3-native-render-windows.md
-      // §3). It is how the five z-order, hit-test and DPI readings the
-      // Windows tile stands on were taken, and it is the production path
-      // apart from the picture.
+      // boot, no call and no track. `=sweep` goes further and binds a real
+      // track fed by capture.rs's synthetic sweep, plus a second tile
+      // sharing the first one's clip. It is how every z-order, hit-test,
+      // covered and grid reading the Windows tile stands on was taken with
+      // one person at the machine and no second account
+      // (docs/regression/desktop.md, rows D-44 to D-54; the plan is
+      // docs/prompts/archive/w3-native-render-windows.md §3).
       #[cfg(all(target_os = "windows", debug_assertions))]
       if std::env::var("WHERRY_DEV_TILE").is_ok() {
         crate::voice::render::dev_tile(&app.handle().clone());

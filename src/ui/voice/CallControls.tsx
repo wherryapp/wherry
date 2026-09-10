@@ -97,8 +97,10 @@ export function CallControls({
       {showsVideoButton(state, "camera") && (
         <IconButton
           label={state.camera.on ? "Turn camera off" : "Turn camera on"}
-          // On a transport that cannot do video the press *is* the engine
-          // switch (rules.ts's videoNeedsSwitch); the hover text says so.
+          // Where this transport cannot capture *this source*, the press
+          // *is* the engine switch (rules.ts's videoNeedsSwitch); the
+          // hover text says so. Per source, not per transport: Windows
+          // shares a screen in place and still switches for a camera.
           title={
             cameraReason ?? (videoNeedsSwitch(state, "camera") ? VIDEO_SWITCH_NOTE : undefined)
           }

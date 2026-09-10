@@ -1,5 +1,5 @@
 // Path (b) on Windows: a native child window per video tile, over
-// WebView2 (docs/prompts/w3-native-render-windows.md, stage W3).
+// WebView2 (docs/prompts/archive/w3-native-render-windows.md, stage W3).
 //
 // The argument is `render.rs`'s and is not repeated here: carrying decoded
 // frames *into* the page cost 2.4x the webview transport for the same 720p

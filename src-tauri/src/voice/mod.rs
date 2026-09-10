@@ -766,12 +766,32 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
       .unwrap_or_else(|| "NOT IN THE LIST".to_string())
   };
 
+  // `switch_*` rather than `set_*`, and it is not a preference -- it is what
+  // makes the **second** call in a process work.
+  //
+  // Measured on Windows 2026-09-10, twice from a cold start: call one
+  // connects, call two fails outright with `set_playout_device:
+  // DeviceNotFound` and the person sees "Could not connect to the voice
+  // server". The device is still in the shell's own inventory a line
+  // earlier, so it is not gone; what has changed is that WebRTC started
+  // playout during the first call and never stopped it, and the ADM
+  // refuses a device change while playout is initialised. The SDK's
+  // `set_playout_device` says in its own comment that it deliberately does
+  // not init or start, so it has no idea it has to stop first;
+  // `switch_playout_device` is the sibling that does the
+  // stop/change/init/start sequence, and on a first call
+  // (`playout_is_initialized()` false) it does exactly what `set_` did.
+  //
+  // Only bites somebody who has *chosen* a device -- the `None` arms below
+  // leave the platform default alone and never call either -- which is why
+  // it survived the 2026-09-09 pass. The recording side is switched for the
+  // same reason rather than because it was seen to fail.
   match args.mic_device_id.as_deref() {
     Some(id) => {
       log::info!("voice: capture requested {id} ({})", name_of(id));
       audio
-        .set_recording_device(&RecordingDeviceId::from_unchecked_guid(id))
-        .map_err(|e| VoiceError::new("device", format!("set_recording_device: {e:?}")))?;
+        .switch_recording_device(&RecordingDeviceId::from_unchecked_guid(id))
+        .map_err(|e| VoiceError::new("device", format!("switch_recording_device: {e:?}")))?;
     }
     None => log::info!("voice: capture left at the platform default"),
   }
@@ -779,8 +799,8 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     Some(id) => {
       log::info!("voice: playout requested {id} ({})", name_of(id));
       audio
-        .set_playout_device(&PlayoutDeviceId::from_unchecked_guid(id))
-        .map_err(|e| VoiceError::new("device", format!("set_playout_device: {e:?}")))?;
+        .switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(id))
+        .map_err(|e| VoiceError::new("device", format!("switch_playout_device: {e:?}")))?;
     }
     None => log::info!("voice: playout left at the platform default"),
   }

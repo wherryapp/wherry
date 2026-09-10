@@ -82,11 +82,13 @@ export async function listAudioDevices(): Promise<AudioDevices> {
 /**
  * The cameras this browser will admit to.
  *
- * The shell's list where the native engine does video (macOS since
- * 2026-09-08, `voice_video_devices`): real labels, the same ids the native
- * publish takes, no permission needed. Everywhere else -- the web, the
- * phones, and a desktop shell whose probe answers `video: false` -- the
- * browser's, because that is the transport that will open the camera.
+ * The shell's list where the native engine opens the camera itself (macOS
+ * since 2026-09-08, `voice_video_devices`): real labels, the same ids the
+ * native publish takes, no permission needed. Everywhere else -- the web,
+ * the phones, and a desktop shell whose probe answers `video: false`,
+ * which since stage W3 includes a Windows shell that renders and shares
+ * but has no camera -- the browser's, because that is the transport that
+ * will open the camera.
  *
  * Labels there are empty until a camera permission has been granted once,
  * the same as microphones, so the picker says "Camera 1" until then.

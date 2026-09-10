@@ -11,8 +11,11 @@
 // Settings toggle both need a synchronous answer.
 //
 // The choice itself is a device-local preference (`nativeMedia` in
-// prefs.ts), off by default: the transport ships dark, exercised per device
-// by whoever turns it on, the way the plan says.
+// prefs.ts). It shipped dark and has been **on by default since
+// 2026-09-07 evening**, once the cryptor-thread leak and the hidden-page
+// stall both closed; a device that unticks the box in Settings keeps that
+// choice. The web and the phones have no shell and are untouched either
+// way.
 
 import { isTauriShell } from "../api/shell";
 import { loadVoicePrefs } from "./prefs";
@@ -27,15 +30,19 @@ export type NativeMediaProbe = {
   aec?: string;
   agc?: string;
   ns?: string;
-  /** The shell captures and renders video natively (macOS since
-   *  2026-09-08). Absent from an older shell, which reads as false. */
+  /** The shell does *all* of video natively — camera, screen and render.
+   *  macOS since 2026-09-08; no other platform, since Windows has no
+   *  camera capture. Absent from an older shell, which reads as false. */
   video?: boolean;
   /** The shell can capture a screen or window through a picker of its own
-   *  (Windows since 2026-09-09; stage W1). Split from `video` because
-   *  Windows captures a screen long before it can draw a received tile. */
+   *  (macOS, and Windows since 2026-09-09; stage W1). Split from `video`
+   *  because Windows came apart: it captured a screen months before it
+   *  could draw a received tile, and it still has no camera. */
   screenCapture?: boolean;
-  /** The shell can draw received tiles natively (macOS; Windows after the
-   *  child-HWND presenter). */
+  /** The shell can draw received tiles natively: macOS since 2026-09-08
+   *  (stage 3N), Windows since 2026-09-10 (stage W3, a child HWND over
+   *  WebView2). True on Windows while `video` stays false — the mixed
+   *  answer `rules.ts`'s `nativeEngine` exists to tell from a phone. */
   videoRender?: boolean;
 };
 
