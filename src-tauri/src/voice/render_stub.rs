@@ -1,12 +1,13 @@
-// The render module where there is no native view path yet (Windows,
-// Linux): the same surface as `render.rs`, every constructor answering
-// "unsupported", so `video.rs` compiles once and the probe tells the page
-// the truth (`video: false`) rather than a command failing later.
+// The render module where there is no native view path yet -- **Linux
+// only, since 2026-09-10**: the same surface as `render.rs`, every
+// constructor answering "unsupported", so `video.rs` compiles once and the
+// probe tells the page the truth (`videoRender: false`) rather than a
+// command failing later.
 //
-// Windows would need its own implementation -- a child HWND over WebView2
-// with a DirectX presenter -- and the same z-order question answered
-// again. Deferred with the Windows pass that has never yet run the audio
-// engine either (docs/prompts/windows-rebuild-plan.md).
+// macOS is `render.rs` (an `AVSampleBufferDisplayLayer` per tile, stage
+// 3N) and Windows is `render_win.rs` (a child `HWND` over WebView2 with a
+// GDI presenter, stage W3). Linux would need a third: the window under GTK
+// is not the same shape as either, and nobody has asked for it.
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;

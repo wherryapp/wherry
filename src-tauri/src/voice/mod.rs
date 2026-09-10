@@ -72,7 +72,14 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub mod capture;
 #[cfg(target_os = "macos")]
 pub mod render;
-#[cfg(not(target_os = "macos"))]
+// Windows since 2026-09-10 (stage W3): a child HWND per tile over
+// WebView2, GDI presenter. Split into its own file the way `screen_audio`
+// is, rather than two platform bodies in one -- the Win32 half and the
+// AppKit half share a surface and not a line of mechanism.
+#[cfg(target_os = "windows")]
+#[path = "render_win.rs"]
+pub mod render;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[path = "render_stub.rs"]
 pub mod render;
 // A share's own sound (docs/prompts/screen-audio-handoff.md §4). Split the
@@ -548,7 +555,7 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
     // `voice_set_screen` now refuses to start without a source the person
     // chose (video.rs), which is what makes offering it safe.
     screen_capture: cfg!(any(target_os = "macos", target_os = "windows")),
-    video_render: cfg!(target_os = "macos"),
+    video_render: cfg!(any(target_os = "macos", target_os = "windows")),
     recording_devices: audio.recording_devices().count(),
     playout_devices: audio.playout_devices().count(),
     aec: format!("{:?}", audio.active_aec_type()),

@@ -114,6 +114,16 @@ windows = { version = "0.61", features = [
   "Win32_System_Com",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
+  # Native video render (voice/render_win.rs; stage W3). Gdi is not only
+  # the blit: 57 items in WindowsAndMessaging are themselves gated on it,
+  # `WNDCLASSEXW` and `RegisterClassExW` among them, so a window class
+  # cannot be registered without it. All three are already on in the
+  # unified graph through tao and wry -- declared here anyway, because a
+  # feature we depend on and do not ask for is one their next release can
+  # take away without noticing us.
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_HiDpi",
 ] }
 windows-core = "0.61"
 # `NativeAudioSource::capture_frame` is async in signature and synchronous

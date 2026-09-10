@@ -250,6 +250,15 @@ pub fn run() {
           log::warn!("shell: window hidden at boot (WHERRY_HIDE=1)");
         }
       }
+      // `WHERRY_DEV_TILE=1`: one magenta child window over the page at
+      // boot, no call and no track (docs/prompts/w3-native-render-windows.md
+      // §3). It is how the five z-order, hit-test and DPI readings the
+      // Windows tile stands on were taken, and it is the production path
+      // apart from the picture.
+      #[cfg(all(target_os = "windows", debug_assertions))]
+      if std::env::var("WHERRY_DEV_TILE").is_ok() {
+        crate::voice::render::dev_tile(&app.handle().clone());
+      }
       Ok(())
     })
     .run(tauri::generate_context!())

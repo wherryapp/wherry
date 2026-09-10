@@ -8,10 +8,16 @@
 // `transport-native.ts` and the session's rules, and this file opens
 // devices, publishes tracks, subscribes, and puts frames on screen.
 //
-// **macOS first.** Capture and rendering are both Apple-framework code
-// today; on Windows the probe answers `video: false`, the transport reports
-// no video capability, and the call keeps the engine switch it has had
-// since stage 4. The Windows half is a separate piece of work (render_stub.rs).
+// **Capture and rendering are separate answers per platform, and nothing
+// here knows which.** macOS does both (AVFoundation and an
+// `AVSampleBufferDisplayLayer`, stage 3N). Windows shares a screen through
+// its own picker (W1), draws every received tile in a child `HWND` over
+// WebView2 (W3, `render_win.rs`), and still has no camera capture -- so the
+// probe answers `video: false, screenCapture: true, videoRender: true`
+// there and the camera button alone is the engine switch. Linux has
+// neither and takes `render_stub.rs`. This file is the same code on all
+// three; the `cfg` that picks a renderer is in `mod.rs` and the one that
+// picks a capture is in `capture.rs`.
 //
 // Three shapes worth knowing:
 //

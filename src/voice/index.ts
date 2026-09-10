@@ -23,8 +23,24 @@ import { WebviewTransport } from "./transport-webview";
  * touched, because the person did not change their mind about audio.
  */
 export function createTransport(override?: "webview" | null): VoiceTransport {
-  if (override === "webview") return new WebviewTransport();
-  return nativeMediaSelected() ? new NativeTransport() : new WebviewTransport();
+  return transportIsNative(override) ? new NativeTransport() : new WebviewTransport();
+}
+
+/**
+ * The same decision, asked rather than taken — so `switchEngineForThisCall`
+ * has a way to know it has somewhere to go.
+ *
+ * The session needs this because "this transport cannot open a camera" and
+ * "there is another engine that can" stopped being the same sentence on
+ * 2026-09-10: Windows renders a received tile natively and still has no
+ * camera capture (stage W3), so the camera button is the switch while the
+ * screen button shares in place. A phone webview that cannot share a
+ * screen has nothing to switch *to*, and offering it a switch would be a
+ * dead control. Nothing else may ask which implementation it got.
+ */
+export function transportIsNative(override?: "webview" | null): boolean {
+  if (override === "webview") return false;
+  return nativeMediaSelected();
 }
 
 export type { VoiceTransport } from "./transport";

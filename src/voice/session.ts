@@ -43,7 +43,7 @@ import { e2e } from "../crypto";
 import { sync, type SyncEvent } from "../sync/engine";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 import { mlsSync } from "../sync/mls";
-import { createTransport } from "./index";
+import { createTransport, transportIsNative } from "./index";
 import { deriveCallKey } from "./keys";
 import { listVideoDevices } from "./devices";
 import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
@@ -171,6 +171,12 @@ export type VoiceState = {
    *  for video on a shell that has none. Cleared on teardown; the
    *  `nativeMedia` preference is never touched. */
   engineOverride: "webview" | null;
+  /** This call is running on the shell's own media engine, so the switch
+   *  above has somewhere to go. `rules.ts`'s `videoNeedsSwitch` reads it:
+   *  since stage W3 a shell can render everybody else's video and still
+   *  be unable to open a camera, which no combination of `capabilities`
+   *  distinguishes from a phone. */
+  nativeEngine: boolean;
 };
 
 /** Who is asking for a video track: a tile on the call page, or the call
@@ -205,6 +211,7 @@ const IDLE: VoiceState = {
   screen: { on: false },
   pinned: null,
   engineOverride: null,
+  nativeEngine: false,
 };
 
 /** One peer's row in the call details: the SFU's view of their signal,
@@ -706,6 +713,7 @@ class VoiceSession {
       kind: plan.kind,
       e2ee,
       engineOverride,
+      nativeEngine: transportIsNative(engineOverride),
     });
 
     let result: JoinResult;

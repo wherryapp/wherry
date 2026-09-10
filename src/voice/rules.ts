@@ -712,6 +712,21 @@ export type VideoButtonState = {
   grant: { sources: readonly VideoSource[] } | null;
   /** The per-call engine switch, already taken or still available. */
   engineOverride: "webview" | null;
+  /**
+   * This call is running on the shell's own media engine, so there is a
+   * browser engine to rejoin through.
+   *
+   * Added 2026-09-10, and the reason is that the three capabilities stopped
+   * being able to tell two devices apart. A phone webview reads
+   * `{ camera: true, screen: false, renderVideo: true }` and a Windows
+   * shell after stage W3 reads `{ camera: false, screen: true,
+   * renderVideo: true }` — both with no override taken, and only one of
+   * them has anywhere to switch. Before W3 the difference was carried by
+   * `renderVideo`, because a shell that could not draw was the only shell
+   * that existed; a shell that draws and still cannot open a camera is the
+   * third shape those rules were never written for.
+   */
+  nativeEngine: boolean;
 };
 
 /**
@@ -723,12 +738,18 @@ export type VideoButtonState = {
  * beside a disabled camera -- two presses for one intention. Now the
  * camera button *is* the switch: the session rejoins and then turns the
  * camera on, and this predicate is how the button and the session agree
- * on when that applies. False once the switch has been taken, and false
- * on any transport that can render.
+ * on when that applies. False once the switch has been taken.
+ *
+ * Rendering stopped being the reason on 2026-09-10 (stage W3): Windows
+ * draws everybody else's tile natively and still cannot open a camera, so
+ * "this engine cannot show video" and "this engine cannot capture this
+ * source" came apart. Not being able to capture is the reason now, and
+ * being on the native engine is what makes the switch a real way out —
+ * which a browser that simply lacks the API does not have.
  */
 export function videoNeedsSwitch(state: VideoButtonState, source: VideoSource): boolean {
   if (state.capabilities[source]) return false;
-  return !state.capabilities.renderVideo && state.engineOverride === null;
+  return state.nativeEngine && state.engineOverride === null;
 }
 
 /** The button's hover text while `videoNeedsSwitch` is true. */
@@ -749,10 +770,11 @@ export function videoDisabledReason(
   source: VideoSource,
 ): string | null {
   if (state.capabilities[source]) return null;
+  // The press is the switch, so there is nothing to explain and nothing to
+  // disable. Asked first because a shell that renders can still be here.
+  if (videoNeedsSwitch(state, source)) return null;
   if (!state.capabilities.renderVideo) {
-    return videoNeedsSwitch(state, source)
-      ? null
-      : "Video runs through the browser engine on this device";
+    return "Video runs through the browser engine on this device";
   }
   return source === "camera"
     ? "This browser cannot open a camera"
@@ -766,12 +788,17 @@ export function videoDisabledReason(
  * and hidden again when the transport cannot do it and *nothing here can
  * fix that*: neither phone webview can share a screen and no web-side
  * switch changes it (the plan's §8), so offering a permanently dead
- * control is worse than offering none. It stays visible-but-disabled in
- * the one case that has a way out: a desktop shell on its own audio
- * engine, where the switch beside it is the fix.
+ * control is worse than offering none. It stays visible in the one case
+ * that has a way out: a desktop shell on its own media engine, where the
+ * press itself is the switch.
+ *
+ * "Has a way out" is `videoNeedsSwitch`, not `!renderVideo`, since
+ * 2026-09-10 — a Windows shell renders and still needs the switch for its
+ * camera, and reading the old condition there took the camera button off
+ * the bar entirely.
  */
 export function showsVideoButton(state: VideoButtonState, source: VideoSource): boolean {
   if (!state.grant?.sources.includes(source)) return false;
   if (state.capabilities[source]) return true;
-  return !state.capabilities.renderVideo;
+  return videoNeedsSwitch(state, source);
 }

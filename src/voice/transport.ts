@@ -34,13 +34,16 @@ export type { VideoQualityRequest, VideoSource } from "./rules";
 
 /**
  * What this transport can actually do with video, asked after connect and
- * never inferred from a platform name. Video in v1 publishes and renders
- * through the webview transport only: the Rust SDK the desktop shell links
- * has no camera capture and no path from a received frame to the webview
- * (docs/prompts/video-execution-handoff.md §0), so the native transport
- * answers false to all three and the bar offers to switch engine for the
- * call. Stage 3N fills the second implementation in and this answer flips
- * on its own.
+ * never inferred from a platform name.
+ *
+ * Three booleans rather than one because the native transport answers
+ * them differently per platform, and each answer moved on its own date:
+ * macOS captures and renders everything (stage 3N, 2026-09-08); Windows
+ * captures a screen but not a camera (W1, 2026-09-09) and draws received
+ * tiles (W3, 2026-09-10); Linux does none of it. A source this transport
+ * cannot capture is not a dead button — `rules.ts`'s `videoNeedsSwitch`
+ * turns the press into a rejoin through the browser engine, for the one
+ * call.
  */
 export type TransportCapabilities = {
   /** This transport can publish a camera. */

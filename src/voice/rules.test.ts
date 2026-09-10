@@ -553,13 +553,21 @@ test("a source the grant does not carry has no button at all", () => {
   // Nothing to explain: this call was never going to allow it.
   assert.equal(
     showsVideoButton(
-      { capabilities: caps(), grant: { sources: ["camera"] }, engineOverride: null },
+      {
+        capabilities: caps(),
+        grant: { sources: ["camera"] },
+        engineOverride: null,
+        nativeEngine: false,
+      },
       "screen",
     ),
     false,
   );
   assert.equal(
-    showsVideoButton({ capabilities: caps(), grant: null, engineOverride: null }, "camera"),
+    showsVideoButton(
+      { capabilities: caps(), grant: null, engineOverride: null, nativeEngine: false },
+      "camera",
+    ),
     false,
   );
 });
@@ -569,6 +577,8 @@ test("a phone's screen button is hidden, because nothing here can fix it", () =>
     capabilities: caps({ screen: false }),
     grant: { sources: ["camera", "screen"] as const },
     engineOverride: null,
+    // No shell, so no second engine to rejoin through.
+    nativeEngine: false,
   };
   assert.equal(showsVideoButton(phone, "screen"), false);
 });
@@ -578,15 +588,58 @@ test("the native engine's buttons are shown live, and press as the switch", () =
     capabilities: caps({ camera: false, screen: false, renderVideo: false }),
     grant: { sources: ["camera", "screen"] as const },
     engineOverride: null,
+    nativeEngine: true,
   };
   assert.equal(showsVideoButton(shell, "camera"), true);
   // One press, not two: the button is enabled and the press switches.
   assert.equal(videoDisabledReason(shell, "camera"), null);
   assert.equal(videoNeedsSwitch(shell, "camera"), true);
   assert.equal(videoNeedsSwitch(shell, "screen"), true);
-  // A transport that can render never needs the switch, whatever the
-  // override says.
+  // A transport that can do the source itself never needs the switch.
   assert.equal(videoNeedsSwitch({ ...shell, capabilities: caps() }, "camera"), false);
+});
+
+test("a shell that renders and cannot capture keeps the button, and the press still switches", () => {
+  // Windows after stage W3 (2026-09-10): it draws everybody else's tile
+  // natively, shares a screen through its own picker, and has no camera.
+  // Reading the old condition here -- shown only while it cannot render --
+  // took the camera button off the bar entirely, which is worse than the
+  // switch it replaced.
+  const windows = {
+    capabilities: caps({ camera: false, screen: true, renderVideo: true }),
+    grant: { sources: ["camera", "screen"] as const },
+    engineOverride: null,
+    nativeEngine: true,
+  };
+  assert.equal(showsVideoButton(windows, "camera"), true);
+  assert.equal(videoDisabledReason(windows, "camera"), null);
+  assert.equal(videoNeedsSwitch(windows, "camera"), true);
+  // The screen is captured in place: shown, enabled, and no switch.
+  assert.equal(showsVideoButton(windows, "screen"), true);
+  assert.equal(videoDisabledReason(windows, "screen"), null);
+  assert.equal(videoNeedsSwitch(windows, "screen"), false);
+});
+
+test("rendering is not what decides the switch, and a phone proves it", () => {
+  // The pair the three capabilities alone cannot tell apart: both render,
+  // both are missing one source, neither has taken the override. Only
+  // `nativeEngine` separates a way out from a permanently dead control.
+  const shape = { camera: false, screen: true, renderVideo: true };
+  const grant = { sources: ["camera", "screen"] as const };
+  assert.equal(
+    showsVideoButton(
+      { capabilities: shape, grant, engineOverride: null, nativeEngine: true },
+      "camera",
+    ),
+    true,
+  );
+  assert.equal(
+    showsVideoButton(
+      { capabilities: shape, grant, engineOverride: null, nativeEngine: false },
+      "camera",
+    ),
+    false,
+  );
 });
 
 test("once the switch has been taken, a still-incapable engine is disabled with the reason", () => {
@@ -596,6 +649,8 @@ test("once the switch has been taken, a still-incapable engine is disabled with 
     capabilities: caps({ camera: false, screen: false, renderVideo: false }),
     grant: { sources: ["camera"] as const },
     engineOverride: "webview" as const,
+    // The switch put this call on the browser engine; there is no third.
+    nativeEngine: false,
   };
   assert.equal(videoNeedsSwitch(switched, "camera"), false);
   assert.equal(
@@ -609,12 +664,29 @@ test("a browser that simply cannot is told so, and differently", () => {
     capabilities: caps({ screen: false }),
     grant: { sources: ["screen"] as const },
     engineOverride: null,
+    nativeEngine: false,
   };
   assert.equal(videoDisabledReason(browser, "screen"), "This browser cannot share a screen");
   assert.equal(videoNeedsSwitch(browser, "screen"), false);
   assert.equal(
-    videoDisabledReason({ capabilities: caps(), grant: null, engineOverride: null }, "camera"),
+    videoDisabledReason(
+      { capabilities: caps(), grant: null, engineOverride: null, nativeEngine: false },
+      "camera",
+    ),
     null,
+  );
+  // The camera half of the same sentence, which nothing pinned before.
+  assert.equal(
+    videoDisabledReason(
+      {
+        capabilities: caps({ camera: false }),
+        grant: { sources: ["camera"] as const },
+        engineOverride: null,
+        nativeEngine: false,
+      },
+      "camera",
+    ),
+    "This browser cannot open a camera",
   );
 });
 
