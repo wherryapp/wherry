@@ -14,6 +14,13 @@
 // Somebody on a metered connection turns this into a badge in
 // Settings → Voice; `prefs.videoPreview` is the switch and `CallBar`
 // decides which of the two to render.
+//
+// **It stops being a button where the shell draws over the page** (row
+// D-45). A native tile covers this whole 64x36 box and swallows the click,
+// so pressing it did nothing at all -- the one case in the app where the
+// covered thing *was* the control rather than sitting beside it. The bar's
+// title row is the other door and is labelled as one, so here the picture
+// becomes what it can honestly be: proof that somebody's video is on.
 
 import { useEffect, useRef } from "react";
 import { voice } from "../../voice/session";
@@ -23,11 +30,15 @@ export function CallPreview({
   identity,
   name,
   source,
+  above = false,
   onOpen,
 }: {
   identity: string;
   name: string;
   source: VideoSource;
+  /** The shell draws this thumbnail over the page, so it cannot be pressed
+   *  (`rules.ts`'s `tilesDrawAbovePage`). */
+  above?: boolean;
   onOpen: () => void;
 }) {
   const element = useRef<HTMLVideoElement | null>(null);
@@ -47,6 +58,27 @@ export function CallPreview({
     };
   }, [identity, source]);
 
+  const box =
+    "relative h-9 w-16 shrink-0 overflow-hidden rounded bg-neutral-900 ring-1 ring-accent-400/60";
+
+  if (above) {
+    return (
+      <div
+        className={box}
+        // A native tile is clipped to this box, the way `overflow-hidden`
+        // clips the `<video>` (transport-rules.ts's tileRect).
+        data-video-clip=""
+        // The name strip is gone rather than moved: in flow it would take a
+        // third of a 36px-tall box, and as an overlay it would be under the
+        // native window. The roster of avatars beside this in the bar says
+        // who is in the call, and the title row opens it.
+        aria-hidden="true"
+      >
+        <video ref={element} muted playsInline autoPlay className="h-full w-full object-cover" />
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -54,7 +86,7 @@ export function CallPreview({
       aria-label={`Open the call — ${name} is showing their ${
         source === "screen" ? "screen" : "camera"
       }`}
-      className="relative h-9 w-16 shrink-0 overflow-hidden rounded bg-neutral-900 ring-1 ring-accent-400/60 transition hover:ring-accent-500 focus-visible:ring-2 focus-visible:ring-accent-500"
+      className={`${box} transition hover:ring-accent-500 focus-visible:ring-2 focus-visible:ring-accent-500`}
       // A native tile is clipped to this button, the way `overflow-hidden`
       // clips the `<video>` (transport-rules.ts's tileRect).
       data-video-clip=""

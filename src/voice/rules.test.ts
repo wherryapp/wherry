@@ -24,6 +24,7 @@ import {
   previewTileOf,
   nativeVideoLine,
   showsVideoButton,
+  tilesDrawAbovePage,
   videoDisabledReason,
   videoNeedsSwitch,
   subscriptionFor,
@@ -702,5 +703,29 @@ test("the native tiles line says what was captured and what was drawn", () => {
   assert.equal(
     nativeVideoLine({ cameraFrames: null, screenFrames: 40, tiles: 1, bound: 0, drawn: 0, dropped: 3 }),
     "screen 40 frames · 0 of 1 tile bound · 0 drawn · 3 dropped",
+  );
+});
+
+test("a tile's chrome goes outside it only where the shell draws over the page", () => {
+  // The whole point of the predicate: both halves are needed, and each one
+  // alone names a device that must keep the overlay.
+  assert.equal(
+    tilesDrawAbovePage({ capabilities: { renderVideo: true }, nativeEngine: true }),
+    true,
+  );
+  // The browser engine renders *in* the page, so its chrome may overlay.
+  assert.equal(
+    tilesDrawAbovePage({ capabilities: { renderVideo: true }, nativeEngine: false }),
+    false,
+  );
+  // A Windows shell before stage W3: on its own engine and drawing
+  // nothing, so there is no tile to be covered by.
+  assert.equal(
+    tilesDrawAbovePage({ capabilities: { renderVideo: false }, nativeEngine: true }),
+    false,
+  );
+  assert.equal(
+    tilesDrawAbovePage({ capabilities: { renderVideo: false }, nativeEngine: false }),
+    false,
   );
 });

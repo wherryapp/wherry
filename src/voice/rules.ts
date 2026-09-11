@@ -802,3 +802,37 @@ export function showsVideoButton(state: VideoButtonState, source: VideoSource): 
   if (state.capabilities[source]) return true;
   return videoNeedsSwitch(state, source);
 }
+
+// -- where a tile's chrome may sit -------------------------------------------
+
+/**
+ * This transport draws its video tiles **above everything the page paints**,
+ * so nothing the page puts inside a tile's reported rect can be seen or
+ * pressed.
+ *
+ * The rule it exists to enforce, and the cost that established it (row
+ * D-45, measured on Windows 2026-09-10): a click over a native tile does
+ * not reach the page, and all three documented ways to make it pass
+ * through are spent — `HTTRANSPARENT` continues the hit test on the same
+ * *thread* and WebView2's windows belong to another process, and the
+ * `WS_EX_LAYERED` pair stops the picture drawing. macOS's `NSView` has no
+ * `hitTest:` override either, so it swallows a real pointer for the same
+ * practical effect; D-33 passed over it only because it was driven by
+ * `element.click()`. Forwarding mouse messages across a process boundary
+ * in two shells is the alternative, and it is not worth it.
+ *
+ * So the page keeps its own chrome out of the way instead: where this is
+ * true, a tile's name, badges and pin go **outside** the `<video>` rather
+ * than over it, and they do not wait for a hover the pointer can no longer
+ * deliver either.
+ *
+ * Both halves are load-bearing. `renderVideo` alone is true on the webview
+ * engine, which draws in the page and needs none of this; `nativeEngine`
+ * alone is true on a Windows shell before stage W3, which drew nothing.
+ */
+export function tilesDrawAbovePage(state: {
+  capabilities: { renderVideo: boolean };
+  nativeEngine: boolean;
+}): boolean {
+  return state.nativeEngine && state.capabilities.renderVideo;
+}

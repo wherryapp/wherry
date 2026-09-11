@@ -38,6 +38,7 @@ export function VideoTile({
   paused = false,
   pinned = false,
   large = false,
+  above = false,
   surface = "page",
   onPin,
 }: {
@@ -54,6 +55,10 @@ export function VideoTile({
   paused?: boolean;
   pinned?: boolean;
   large?: boolean;
+  /** The shell draws this tile *over* the page, so the chrome cannot be an
+   *  overlay (`rules.ts`'s `tilesDrawAbovePage`). The call page decides it
+   *  once and passes it down; nothing here asks which transport it got. */
+  above?: boolean;
   /** Which chrome this tile is in, for a transport that draws above the
    *  page (voice/transport.ts's `VideoSurface`). */
   surface?: VideoSurface;
@@ -97,6 +102,20 @@ export function VideoTile({
 
   const label = source === "screen" ? `${name} · screen` : name;
 
+  // Who this is, and the two things that must be read beside the name.
+  // Shared by both layouts below so they cannot drift apart.
+  const caption = (
+    <>
+      <span className="min-w-0 truncate">{label}</span>
+      {micMuted && <MicOffIcon className="h-3.5 w-3.5 shrink-0" />}
+      {!encrypted && (
+        <span className="shrink-0 rounded bg-amber-500/90 px-1 py-px text-[0.625rem] font-medium uppercase tracking-wide text-amber-950">
+          In the clear
+        </span>
+      )}
+    </>
+  );
+
   return (
     <div
       // `large` is the featured tile, and it *fills* the space the page
@@ -107,49 +126,74 @@ export function VideoTile({
       // `aspect-video : aspect-video` until 2026-09-08 -- `large` had no
       // effect at all.)
       className={`group relative overflow-hidden rounded-lg bg-neutral-900 ${
-        large ? "h-full w-full" : "aspect-video"
-      } ${speaking ? "ring-2 ring-emerald-500" : ""}`}
+        above ? "flex flex-col" : ""
+      } ${large ? "h-full w-full" : "aspect-video"} ${
+        speaking ? "ring-2 ring-emerald-500" : ""
+      }`}
     >
       <video
         ref={element}
         muted
         playsInline
         autoPlay
+        // **This element's own rect is what the page reports to the shell**
+        // (transport-native.ts measures exactly this node), so where the
+        // shell draws over the page it gives up the strip the chrome needs
+        // rather than letting the chrome sit under an opaque native window.
         // Mirrored for this device's own camera and never for the published
         // track: a preview that is not mirrored reads as somebody else's
         // face. A screen is never mirrored either way.
-        className={`h-full w-full object-contain ${
+        className={`${above ? "min-h-0 flex-1" : "h-full w-full"} object-contain ${
           self && source === "camera" ? "scale-x-[-1]" : ""
         }`}
       />
 
-      {paused && (
+      {paused && !above && (
         <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-neutral-900/80 text-xs text-neutral-300">
           <Avatar size="md" name={name} userId={userId} />
           camera paused
         </span>
       )}
 
-      <span className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 text-xs text-white">
-        <span className="min-w-0 truncate">{label}</span>
-        {micMuted && <MicOffIcon className="h-3.5 w-3.5 shrink-0" />}
-        {!encrypted && (
-          <span className="shrink-0 rounded bg-amber-500/90 px-1 py-px text-[0.625rem] font-medium uppercase tracking-wide text-amber-950">
-            In the clear
+      {above ? (
+        // In flow, under the picture, and never waiting on a hover: the
+        // pointer is over a native window here, so the page sees no
+        // `:hover` on this tile at all and `group-hover` would hide the pin
+        // for ever. Row D-45; the paused state is a word in the row for the
+        // same reason the avatar above cannot be seen.
+        <div className="flex shrink-0 items-center gap-1.5 bg-black/60 px-2 py-1 text-xs text-white">
+          {caption}
+          {paused && <span className="shrink-0 text-neutral-400">paused</span>}
+          {onPin && (
+            <button
+              type="button"
+              onClick={onPin}
+              aria-pressed={pinned}
+              aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
+              className="-my-0.5 ml-auto shrink-0 rounded p-1 text-white transition hover:bg-white/15 focus-visible:bg-white/15"
+            >
+              <PinnedIcon className={`h-4 w-4 ${pinned ? "text-accent-300" : ""}`} />
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <span className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 text-xs text-white">
+            {caption}
           </span>
-        )}
-      </span>
 
-      {onPin && (
-        <button
-          type="button"
-          onClick={onPin}
-          aria-pressed={pinned}
-          aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
-          className="absolute right-1.5 top-1.5 rounded bg-black/50 p-1 text-white opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-        >
-          <PinnedIcon className={`h-4 w-4 ${pinned ? "text-accent-300" : ""}`} />
-        </button>
+          {onPin && (
+            <button
+              type="button"
+              onClick={onPin}
+              aria-pressed={pinned}
+              aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
+              className="absolute right-1.5 top-1.5 rounded bg-black/50 p-1 text-white opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+            >
+              <PinnedIcon className={`h-4 w-4 ${pinned ? "text-accent-300" : ""}`} />
+            </button>
+          )}
+        </>
       )}
     </div>
   );

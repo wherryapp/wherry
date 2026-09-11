@@ -24,6 +24,7 @@ import { useIsDesktop } from "../viewport";
 import { Button, IconButton, LockIcon, XIcon } from "../kit";
 import { CallControls } from "./CallControls";
 import { voice, type VoiceState } from "../../voice/session";
+import { tilesDrawAbovePage } from "../../voice/rules";
 import { VideoTile } from "./VideoTile";
 
 /** One thing to draw: a person's camera, a person's screen, or our own. */
@@ -178,6 +179,11 @@ export function CallPage({
   const rest = featured ? tiles.filter((tile) => tile.key !== featured.key) : tiles;
   // `key` is React's, not a prop: spreading a Tile whole would set it twice.
   const featuredProps = featured ? withoutKey(featured) : null;
+  // Where the shell draws the picture over this page, every tile's chrome
+  // moves out from under it: a click there never reaches the page and no
+  // hover is ever seen (row D-45). Decided once, here, and passed down --
+  // no component asks which transport it got.
+  const above = tilesDrawAbovePage(state);
 
   // Auto-pin the first screen that arrives, once per screen. A ref rather
   // than state: this must not re-run when the pin changes, or unpinning a
@@ -281,6 +287,7 @@ export function CallPage({
               <VideoTile
                 {...featuredProps}
                 large
+                above={above}
                 pinned={state.pinned === featured.identity}
                 onPin={() =>
                   voice.pin(state.pinned === featured.identity ? null : featured.identity)
@@ -305,6 +312,7 @@ export function CallPage({
                 <VideoTile
                   key={tile.key}
                   {...withoutKey(tile)}
+                  above={above}
                   pinned={state.pinned === tile.identity}
                   onPin={() =>
                     voice.pin(state.pinned === tile.identity ? null : tile.identity)

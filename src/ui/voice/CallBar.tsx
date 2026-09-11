@@ -19,7 +19,7 @@ import { conversationTitle } from "../format";
 import { Avatar, Button, LockIcon, MicOffIcon, Select, VideoIcon } from "../kit";
 import { CallControls } from "./CallControls";
 import { CallPreview } from "./CallPreview";
-import { previewTileOf } from "../../voice/rules";
+import { previewTileOf, tilesDrawAbovePage } from "../../voice/rules";
 import { useIsDesktop } from "../viewport";
 import { listAudioDevices, onDeviceChange, supportsSpeakerSelection, type AudioDevices } from "../../voice/devices";
 import { useVoice, useVoicePrefs } from "../../voice/hooks";
@@ -189,6 +189,7 @@ export function CallBar({
             identity={preview.identity}
             name={preview.name}
             source={preview.source}
+            above={tilesDrawAbovePage(state)}
             onOpen={onOpenCall}
           />
         )}
