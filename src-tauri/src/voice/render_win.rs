@@ -233,32 +233,33 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     WM_ERASEBKGND => LRESULT(1),
     // A tile is a picture, not a control. The click belongs to the page.
     WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
-    // **Refuse activation explicitly, or a click wedges the whole window.**
+    // Refuse activation, because this window is created `WS_EX_NOACTIVATE`
+    // and must never become active. Without this arm `DefWindowProcW`
+    // answers `MA_ACTIVATE`, which asks the system to activate a window
+    // that will refuse — the correct pairing for a non-activating window
+    // is to say so here. `MA_NOACTIVATE` rather than
+    // `MA_NOACTIVATEANDEAT`: this window already answers `HTTRANSPARENT`,
+    // so the click should carry on to whatever is underneath rather than
+    // be eaten.
     //
-    // Measured 2026-09-11: clicking a tile left the desktop with *no*
-    // foreground window at all -- a sampler caught the active window
-    // dropping to none, twice -- after which the shell took no input of any
-    // kind. Buttons, title bar and keyboard all dead, while the process
-    // answered messages in single-digit milliseconds, reported itself
-    // unhung, held no capture and went on drawing at 30 fps. Alt+Tab
-    // restored it every time; clicking the window never did.
+    // **It was written to cure the click-wedge and it does not.** Read on
+    // Windows 2026-09-11 with this arm in the build: clicking a tile still
+    // wedged the whole window and still needed Alt+Tab. Worse for the
+    // theory that produced it — a sampler reading both GUI threads and the
+    // foreground five times a second saw *nothing abnormal at any point*:
+    // the Tauri window stayed the foreground window, stayed its thread's
+    // active window, focus stayed on the WebView2 host child, no capture,
+    // no modal flags. The earlier "foreground drops to none" readings were
+    // real samples but were not the cause, since the wedge happens with the
+    // app fully foreground and focused.
     //
-    // Both halves were already here. The window is created
-    // `WS_EX_NOACTIVATE`, so it must not become active; but without this
-    // arm `DefWindowProcW` answers `WM_MOUSEACTIVATE` with `MA_ACTIVATE`,
-    // so the click takes activation away from whatever held it and hands
-    // it to a window that refuses it. Nothing ends up active and the app
-    // cannot recover itself, because recovering would need a click it can
-    // no longer receive. `MA_NOACTIVATE` stops the attempt being made:
-    // the message is not passed up the parent chain, no activation is
-    // tried, and whatever was active stays active.
-    //
-    // Not `MA_NOACTIVATEANDEAT`, which would also swallow the mouse
-    // message. This window already answers `HTTRANSPARENT`, so the click
-    // should carry on to whatever is underneath rather than be eaten here.
-    //
-    // macOS cannot have this defect: `render.rs`'s tile is an `NSView`
-    // inside the app's own window, not a window with its own activation.
+    // So the arm stays because it is correct on its own terms, not because
+    // it fixes anything. **The wedge is invisible to every standard
+    // input-state query**, which is the most useful thing known about it:
+    // the next instrument is one that watches whether the click is
+    // dispatched to a window at all — a low-level mouse hook, or logging
+    // the mouse messages this very window proc receives — not another
+    // return value here.
     WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
     WM_PAINT => {
       let shared = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
