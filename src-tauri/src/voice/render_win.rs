@@ -64,9 +64,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
   CreateWindowExW, DefWindowProcW, DestroyWindow, EnumChildWindows, GetClassNameW, GetClientRect,
   GetParent, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-  GWLP_USERDATA, GWL_STYLE, HTTRANSPARENT, HWND_TOP, SWP_FRAMECHANGED, SWP_HIDEWINDOW,
-  SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA,
-  WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
+  GWLP_USERDATA, GWL_STYLE, HTTRANSPARENT, HWND_TOP, MA_NOACTIVATE, SWP_FRAMECHANGED,
+  SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
+  SW_SHOWNA, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_CHILD,
+  WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
 };
 use windows_core::PCWSTR;
 
@@ -232,6 +233,33 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     WM_ERASEBKGND => LRESULT(1),
     // A tile is a picture, not a control. The click belongs to the page.
     WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+    // **Refuse activation explicitly, or a click wedges the whole window.**
+    //
+    // Measured 2026-09-11: clicking a tile left the desktop with *no*
+    // foreground window at all -- a sampler caught the active window
+    // dropping to none, twice -- after which the shell took no input of any
+    // kind. Buttons, title bar and keyboard all dead, while the process
+    // answered messages in single-digit milliseconds, reported itself
+    // unhung, held no capture and went on drawing at 30 fps. Alt+Tab
+    // restored it every time; clicking the window never did.
+    //
+    // Both halves were already here. The window is created
+    // `WS_EX_NOACTIVATE`, so it must not become active; but without this
+    // arm `DefWindowProcW` answers `WM_MOUSEACTIVATE` with `MA_ACTIVATE`,
+    // so the click takes activation away from whatever held it and hands
+    // it to a window that refuses it. Nothing ends up active and the app
+    // cannot recover itself, because recovering would need a click it can
+    // no longer receive. `MA_NOACTIVATE` stops the attempt being made:
+    // the message is not passed up the parent chain, no activation is
+    // tried, and whatever was active stays active.
+    //
+    // Not `MA_NOACTIVATEANDEAT`, which would also swallow the mouse
+    // message. This window already answers `HTTRANSPARENT`, so the click
+    // should carry on to whatever is underneath rather than be eaten here.
+    //
+    // macOS cannot have this defect: `render.rs`'s tile is an `NSView`
+    // inside the app's own window, not a window with its own activation.
+    WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
     WM_PAINT => {
       let shared = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
       let mut ps = PAINTSTRUCT::default();
