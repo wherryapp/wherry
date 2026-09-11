@@ -221,6 +221,23 @@ impl Shared {
   }
 }
 
+/// `WHERRY_TILE_HITTEST=opaque` (debug builds): stop answering
+/// `HTTRANSPARENT` and let `DefWindowProcW` end the hit test instead.
+///
+/// The A/B for the storm above. False by default, so the shipped answer is
+/// unchanged; set it and the same build behaves the other way.
+#[cfg(debug_assertions)]
+fn hittest_opaque() -> bool {
+  static ON: OnceLock<bool> = OnceLock::new();
+  *ON.get_or_init(|| std::env::var("WHERRY_TILE_HITTEST").ok().as_deref() == Some("opaque"))
+}
+
+/// Always `false` in a release build: the knob is a debug instrument.
+#[cfg(not(debug_assertions))]
+fn hittest_opaque() -> bool {
+  false
+}
+
 /// `WHERRY_TILE_INPUT_LOG=1` (debug builds): report the mouse messages this
 /// window actually receives.
 ///
@@ -245,7 +262,7 @@ impl Shared {
 fn tile_input_log(msg: u32, lparam: LPARAM) {
   use windows::Win32::UI::WindowsAndMessaging::{
     WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCLBUTTONDOWN,
-    WM_NCLBUTTONUP, WM_RBUTTONDOWN,
+    WM_NCLBUTTONUP, WM_RBUTTONDOWN, WM_SETCURSOR,
   };
   static ON: OnceLock<bool> = OnceLock::new();
   if !*ON.get_or_init(|| std::env::var("WHERRY_TILE_INPUT_LOG").ok().as_deref() == Some("1")) {
@@ -261,11 +278,19 @@ fn tile_input_log(msg: u32, lparam: LPARAM) {
     // These two arrive on every pointer movement, so they are counted and
     // sampled: the first few say the window is being hit-tested at all,
     // and one in five hundred after that says it never stopped.
-    WM_NCHITTEST | WM_MOUSEMOVE => {
+    WM_NCHITTEST | WM_MOUSEMOVE | WM_SETCURSOR => {
       static N: AtomicU64 = AtomicU64::new(0);
       let n = N.fetch_add(1, Ordering::Relaxed);
       if n < 3 || n % 500 == 0 {
-        let name = if msg == WM_NCHITTEST { "WM_NCHITTEST" } else { "WM_MOUSEMOVE" };
+        // `WM_SETCURSOR` rides along because it is the other message the
+        // system asks on a stationary pointer, so which of the two is
+        // storming says who is asking. Its `lparam` is a hit-test code and
+        // a message rather than a point, so ignore the coordinates on it.
+        let name = match msg {
+          WM_NCHITTEST => "WM_NCHITTEST",
+          WM_MOUSEMOVE => "WM_MOUSEMOVE",
+          _ => "WM_SETCURSOR",
+        };
         log::info!("voice: tile input {name} #{n} at ({x},{y})");
       }
     }
@@ -300,8 +325,31 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     // Never erase: the paint below covers the whole client area, and an
     // erase is what makes a child flicker under a resizing parent.
     WM_ERASEBKGND => LRESULT(1),
-    // A tile is a picture, not a control. The click belongs to the page.
-    WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+    // A tile is a picture, not a control, so this answered `HTTRANSPARENT`
+    // to send the click to the page underneath.
+    //
+    // **It never delivered that and it is the prime suspect for the
+    // hit-test storm** (measured 2026-09-11): `WM_NCHITTEST` arrives here
+    // about 23,000 times a second for as long as the pointer merely rests
+    // on the tile, which saturates the GUI thread while every state query
+    // still reads normal — foreground, active, focused, no capture — and
+    // is why the window looks dead without ever losing anything.
+    // `HTTRANSPARENT` tells the system to keep searching beneath this
+    // window, so it is the one answer here that asks for more work rather
+    // than ending the search.
+    //
+    // And it buys nothing: no `WM_LBUTTONDOWN` ever reaches this window,
+    // clicks demonstrably do not reach the page (row D-45), and the page
+    // already keeps its chrome out of a tile's rect because of that. So
+    // the pass-through this was written for does not exist.
+    //
+    // `WHERRY_TILE_HITTEST=opaque` (debug builds) falls through to
+    // `DefWindowProcW` instead, which answers `HTCLIENT` and ends the
+    // search. One build then tests both: if the storm stops under
+    // `opaque`, this arm was the cause and removing it is the cure as well
+    // as the diagnosis. Default is unchanged, so nothing moves until
+    // somebody reads it.
+    WM_NCHITTEST if !hittest_opaque() => LRESULT(HTTRANSPARENT as isize),
     // Refuse activation, because this window is created `WS_EX_NOACTIVATE`
     // and must never become active. Without this arm `DefWindowProcW`
     // answers `MA_ACTIVATE`, which asks the system to activate a window
