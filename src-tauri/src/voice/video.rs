@@ -86,6 +86,9 @@ struct TileEntry {
   source: TrackSource,
   surface: String,
   tile: Tile,
+  /// When this tile's placement was last written to the log, for the rate
+  /// limit in `voice_set_video_rect`. `None` until the first line.
+  placement_logged: Option<std::time::Instant>,
 }
 
 #[derive(Default)]
@@ -677,7 +680,10 @@ pub fn voice_attach_video(
   let id = with_state(session, |state| {
     state.next_tile += 1;
     let id = state.next_tile;
-    state.tiles.insert(id, TileEntry { identity: identity.clone(), source, surface, tile });
+    state.tiles.insert(
+      id,
+      TileEntry { identity: identity.clone(), source, surface, tile, placement_logged: None },
+    );
     id
   });
   rebind_tiles(session, &room);
@@ -698,10 +704,27 @@ pub struct RectArgs {
 pub fn voice_set_video_rect(args: RectArgs) -> VoiceResult<()> {
   let session = super::session_id().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
   with_state(session, |state| {
-    if let Some(entry) = state.tiles.get(&args.tile) {
-      // The first few placements, so an unattended run can read where the
-      // view went without a screenshot.
-      if entry.tile.placements.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+    if let Some(entry) = state.tiles.get_mut(&args.tile) {
+      // Where the view went, so an unattended run can read it without a
+      // screenshot. The first three placements, and then **at most one
+      // line every five seconds** for as long as the tile keeps moving.
+      //
+      // It was the first three and nothing after, which made a tile
+      // geometrically invisible in the log the moment it had settled: a
+      // window resize, a sidebar collapse, a chrome relayout, or entering
+      // the featured slot all reported nothing, and the failure mode was
+      // silence rather than a wrong number — the kind that reads as
+      // "nothing happened". The cap existed to stop a drag-resize flooding
+      // the log, and a time limit does that job without giving up the
+      // capability. Note the page only calls this when the rect or the
+      // visibility actually *changed* (transport-native.ts dedupes against
+      // its last report), so a still tile writes nothing at all.
+      let n = entry.tile.placements.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      let due = entry
+        .placement_logged
+        .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(5));
+      if n < 3 || due {
+        entry.placement_logged = Some(std::time::Instant::now());
         log::info!(
           "voice: tile {} at ({:.0},{:.0}) {:.0}x{:.0} clipped to ({:.0},{:.0}) {:.0}x{:.0}, visible={}",
           args.tile, args.frame.x, args.frame.y, args.frame.width, args.frame.height,
