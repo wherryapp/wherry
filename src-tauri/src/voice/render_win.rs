@@ -27,9 +27,12 @@
 // and whether the surface it belongs to is *covered* (a Popover, the photo
 // viewer, the incoming-call sheet). Those are decisions in `ui/back.ts`
 // and the session; this file only hides and shows. A tile is also never a
-// control: `WM_NCHITTEST` answers `HTTRANSPARENT` so every click goes to
-// the page underneath, which is where the pin button and the tile's own
-// controls live.
+// control, but **a click on one does not reach the page either**, and this
+// window proc does not try to make it: it answered `HTTRANSPARENT` until
+// 2026-09-11, which delivered no pass-through and cost a hit-test storm
+// (see the `WM_NCHITTEST` note below). The page keeps its own chrome out
+// of a tile's reported rect instead -- `rules.ts`'s `tilesDrawAbovePage`
+// -- which is where the pin button and the tile's controls live.
 //
 // Threads: every `HWND` call goes through `run_on_main_thread`, because a
 // window belongs to the thread that created it and the tao event-loop
@@ -64,9 +67,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
   CreateWindowExW, DefWindowProcW, DestroyWindow, EnumChildWindows, GetClassNameW, GetClientRect,
   GetParent, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-  GWLP_USERDATA, GWL_STYLE, HTTRANSPARENT, HWND_TOP, MA_NOACTIVATE, SWP_FRAMECHANGED,
+  GWLP_USERDATA, GWL_STYLE, HWND_TOP, MA_NOACTIVATE, SWP_FRAMECHANGED,
   SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
-  SW_SHOWNA, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_CHILD,
+  SW_SHOWNA, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_PAINT, WNDCLASSEXW, WS_CHILD,
   WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
 };
 use windows_core::PCWSTR;
@@ -221,23 +224,6 @@ impl Shared {
   }
 }
 
-/// `WHERRY_TILE_HITTEST=opaque` (debug builds): stop answering
-/// `HTTRANSPARENT` and let `DefWindowProcW` end the hit test instead.
-///
-/// The A/B for the storm above. False by default, so the shipped answer is
-/// unchanged; set it and the same build behaves the other way.
-#[cfg(debug_assertions)]
-fn hittest_opaque() -> bool {
-  static ON: OnceLock<bool> = OnceLock::new();
-  *ON.get_or_init(|| std::env::var("WHERRY_TILE_HITTEST").ok().as_deref() == Some("opaque"))
-}
-
-/// Always `false` in a release build: the knob is a debug instrument.
-#[cfg(not(debug_assertions))]
-fn hittest_opaque() -> bool {
-  false
-}
-
 /// `WHERRY_TILE_INPUT_LOG=1` (debug builds): report the mouse messages this
 /// window actually receives.
 ///
@@ -251,18 +237,21 @@ fn hittest_opaque() -> bool {
 ///
 /// This answers the cheap half of that before anyone reaches for a
 /// low-level mouse hook. If this window logs `WM_LBUTTONDOWN` during a
-/// wedge, the hit test is resolving to the tile despite `HTTRANSPARENT`
-/// and that is a different defect entirely. If it logs nothing while the
-/// pointer is over it, the tile is not receiving the click and the hook is
-/// the right next instrument, with the cheap answer ruled out first.
+/// wedge, the hit test is resolving to the tile and that is a different
+/// defect entirely. If it logs nothing while the pointer is over it, the
+/// tile is not receiving the click at all.
+///
+/// It answered both on its first run, 2026-09-11: no button message ever,
+/// and a hit-test storm instead. Kept because it is how that was found and
+/// how a recurrence would be recognised.
 ///
 /// Off unless asked, because `WM_NCHITTEST` and `WM_MOUSEMOVE` arrive on
 /// every pointer movement across the window.
 #[cfg(debug_assertions)]
 fn tile_input_log(msg: u32, lparam: LPARAM) {
   use windows::Win32::UI::WindowsAndMessaging::{
-    WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCLBUTTONDOWN,
-    WM_NCLBUTTONUP, WM_RBUTTONDOWN, WM_SETCURSOR,
+    WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST,
+    WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_RBUTTONDOWN, WM_SETCURSOR,
   };
   static ON: OnceLock<bool> = OnceLock::new();
   if !*ON.get_or_init(|| std::env::var("WHERRY_TILE_INPUT_LOG").ok().as_deref() == Some("1")) {
@@ -325,58 +314,51 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     // Never erase: the paint below covers the whole client area, and an
     // erase is what makes a child flicker under a resizing parent.
     WM_ERASEBKGND => LRESULT(1),
-    // A tile is a picture, not a control, so this answered `HTTRANSPARENT`
-    // to send the click to the page underneath.
+    // **`WM_NCHITTEST` is deliberately not answered here.** It used to
+    // return `HTTRANSPARENT`, to send a click on to the page underneath.
+    // That never worked and it cost everything.
     //
-    // **It never delivered that and it is the prime suspect for the
-    // hit-test storm** (measured 2026-09-11): `WM_NCHITTEST` arrives here
-    // about 23,000 times a second for as long as the pointer merely rests
-    // on the tile, which saturates the GUI thread while every state query
-    // still reads normal — foreground, active, focused, no capture — and
-    // is why the window looks dead without ever losing anything.
-    // `HTTRANSPARENT` tells the system to keep searching beneath this
-    // window, so it is the one answer here that asks for more work rather
-    // than ending the search.
+    // Measured on Windows 2026-09-11, two runs of the same build over the
+    // same five-second hover, differing only in this return value.
+    // Answering `HTTRANSPARENT`: **254,000 `WM_NCHITTEST` in seven
+    // seconds**, about 36,000 a second, and **not one message of any other
+    // kind** -- no button, no activation, nothing. Letting
+    // `DefWindowProcW` answer instead: **three messages total**, one hit
+    // test, one `WM_SETCURSOR`, one `WM_MOUSEMOVE`. A click then produced
+    // four clean `WM_LBUTTONDOWN`/`WM_LBUTTONUP` pairs each preceded by
+    // `WM_MOUSEACTIVATE`, and **no wedge**.
     //
-    // And it buys nothing: no `WM_LBUTTONDOWN` ever reaches this window,
-    // clicks demonstrably do not reach the page (row D-45), and the page
-    // already keeps its chrome out of a tile's rect because of that. So
-    // the pass-through this was written for does not exist.
+    // `HTTRANSPARENT` asks the system to keep searching beneath this
+    // window rather than ending the hit test, and that search never
+    // settled: the GUI thread drowned answering the same question tens of
+    // thousands of times a second while no real input was dispatched to
+    // anything. It is why the window looked dead while every state query
+    // read normal -- foreground, active, focused, no capture -- and why it
+    // still answered `WM_NULL` in milliseconds and kept painting, since a
+    // sent message interleaves and a paint posts.
     //
-    // `WHERRY_TILE_HITTEST=opaque` (debug builds) falls through to
-    // `DefWindowProcW` instead, which answers `HTCLIENT` and ends the
-    // search. One build then tests both: if the storm stops under
-    // `opaque`, this arm was the cause and removing it is the cure as well
-    // as the diagnosis. Default is unchanged, so nothing moves until
-    // somebody reads it.
-    WM_NCHITTEST if !hittest_opaque() => LRESULT(HTTRANSPARENT as isize),
+    // The hover storm and the click wedge were one cause with two
+    // symptoms, told apart only by whether the pointer also clicked.
+    //
+    // So the pass-through this was written for never existed: clicks
+    // reached neither the tile nor the page. The page already keeps its
+    // chrome outside a tile's rect because of that, which is the real fix
+    // and is unaffected. Row D-45 records the swallow; its *cause* is now
+    // this, not `HTTRANSPARENT` continuing on the same thread.
     // Refuse activation, because this window is created `WS_EX_NOACTIVATE`
     // and must never become active. Without this arm `DefWindowProcW`
     // answers `MA_ACTIVATE`, which asks the system to activate a window
     // that will refuse — the correct pairing for a non-activating window
     // is to say so here. `MA_NOACTIVATE` rather than
-    // `MA_NOACTIVATEANDEAT`: this window already answers `HTTRANSPARENT`,
-    // so the click should carry on to whatever is underneath rather than
-    // be eaten.
+    // `MA_NOACTIVATEANDEAT`, so the click is not also swallowed.
     //
-    // **It was written to cure the click-wedge and it does not.** Read on
-    // Windows 2026-09-11 with this arm in the build: clicking a tile still
-    // wedged the whole window and still needed Alt+Tab. Worse for the
-    // theory that produced it — a sampler reading both GUI threads and the
-    // foreground five times a second saw *nothing abnormal at any point*:
-    // the Tauri window stayed the foreground window, stayed its thread's
-    // active window, focus stayed on the WebView2 host child, no capture,
-    // no modal flags. The earlier "foreground drops to none" readings were
-    // real samples but were not the cause, since the wedge happens with the
-    // app fully foreground and focused.
-    //
-    // So the arm stays because it is correct on its own terms, not because
-    // it fixes anything. **The wedge is invisible to every standard
-    // input-state query**, which is the most useful thing known about it:
-    // the next instrument is one that watches whether the click is
-    // dispatched to a window at all — a low-level mouse hook, or logging
-    // the mouse messages this very window proc receives — not another
-    // return value here.
+    // **This arm was written to cure the click-wedge, did not, and is now
+    // load-bearing for an unrelated reason.** It shipped while
+    // `WM_NCHITTEST` answered `HTTRANSPARENT`, under which this message
+    // was never sent at all, so it sat dead and the wedge was untouched.
+    // Once the hit test stopped being answered here the activation
+    // question began arriving for real -- four times in one click log --
+    // and this is what keeps a picture from stealing activation.
     WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
     WM_PAINT => {
       let shared = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -1011,7 +993,7 @@ pub fn dev_tile(app: &AppHandle) {
     tile.bound.store(true, Ordering::Relaxed);
     let rect = PageRect { x: 40.0, y: 120.0, width: w as f64, height: h as f64 };
     tile.set_rect(rect, rect, true);
-    log::info!("voice: dev tile -- magenta 320x180 at CSS (40,120), HWND_TOP, HTTRANSPARENT");
+    log::info!("voice: dev tile -- magenta 320x180 at CSS (40,120), HWND_TOP");
     // A second later, what actually happened: the placement, whether the
     // window is visible, and whether a paint has been served. Painting and
     // *appearing* are two different readings on this platform, which is
