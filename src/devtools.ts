@@ -52,6 +52,18 @@
 //                                    switches for this device as 0/1 in that
 //                                    order (e.g. 0,1,1 turns echo cancellation
 //                                    off). Settings → Voice, without a tap.
+//   ?devspeaker=<deviceId>           Chooses a playout device for this
+//   &devmic=<deviceId>               device, and a capture device, exactly as
+//                                    the two Settings → Voice pickers do.
+//                                    Added 2026-09-11 for row D-55: the
+//                                    second-call defect only bites a device
+//                                    that has *chosen* one, because the shell
+//                                    calls neither switch_ function while the
+//                                    preference is the platform default -- so
+//                                    an unattended leave-and-rejoin soak
+//                                    could not reach it at all. `default` is
+//                                    a real id on the native engine and not
+//                                    the same as leaving it unset.
 //   ?devvolume=<0..1>&devvolumeafter=<s>  With ?devcall: once connected,
 //                                    waits <s> seconds (default 20) and sets
 //                                    every peer's volume to the value -- the
@@ -353,6 +365,32 @@ function maybeDevNative(params: URLSearchParams): void {
   window.history.replaceState(null, "", `${window.location.pathname}${query}`);
 }
 
+/**
+ * `?devspeaker=` / `?devmic=`: the two device pickers, without a tap.
+ *
+ * Row D-55 is the reason this exists. The second call in a process failed on
+ * Windows with `set_playout_device: DeviceNotFound`, and only for somebody
+ * who had chosen a device -- the `None` arms in `voice/mod.rs` leave the
+ * platform default alone and call nothing. An unattended soak that never
+ * chooses one therefore exercises the *other* branch however many times it
+ * cycles, which is exactly why every pass before 2026-09-10 walked past the
+ * defect. The ids are the shell's own (`voice_audio_devices`), which on
+ * macOS are Core Audio device ids as strings and on Windows the 55-character
+ * endpoint guids.
+ */
+function maybeDevDevices(params: URLSearchParams): void {
+  const speaker = params.get("devspeaker");
+  const mic = params.get("devmic");
+  if (speaker === null && mic === null) return;
+  const prefs = loadVoicePrefs();
+  saveVoicePrefs({
+    ...prefs,
+    speakerDeviceId: speaker ?? prefs.speakerDeviceId,
+    micDeviceId: mic ?? prefs.micDeviceId,
+  });
+  console.error(`[devdevices] speaker=${speaker ?? "unchanged"} mic=${mic ?? "unchanged"}`);
+}
+
 function maybeDevProcessing(params: URLSearchParams): void {
   const value = params.get("devprocessing");
   if (value === null) return;
@@ -472,6 +510,17 @@ function maybeDevCamera(params: URLSearchParams): void {
   console.error("[devcamera] canvas source installed");
 }
 
+/** An element's box in CSS pixels, rounded -- the frame `tileRect` works in. */
+function boxOf(element: Element): { x: number; y: number; w: number; h: number } {
+  const rect = element.getBoundingClientRect();
+  return {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    w: Math.round(rect.width),
+    h: Math.round(rect.height),
+  };
+}
+
 /**
  * The call surface as it is actually rendered, for the collector.
  *
@@ -493,6 +542,16 @@ function snapshotCallUi(): Record<string, unknown> {
       disabled: button.disabled,
       title: button.getAttribute("title"),
       pressed: button.getAttribute("aria-pressed"),
+      // Added 2026-09-11 for row D-56. Where the shell draws tiles over the
+      // page a control inside a tile's reported rect cannot be pressed at
+      // all, so "is it there and enabled" stopped being the whole question:
+      // *where* it is, against the `<video>` rect the shell was given, is
+      // the reading. Opacity comes with it because the pin used to live
+      // behind `group-hover`, and a pointer over a native tile produces no
+      // hover -- so a pin at opacity 0 would be as unreachable as one under
+      // the window, and the two failures look identical in a label dump.
+      rect: boxOf(button),
+      opacity: Number(getComputedStyle(button).opacity),
     }))
     .filter((entry) => entry.label !== "");
   const videos = Array.from(document.querySelectorAll("video")).map((video) => ({
@@ -500,6 +559,9 @@ function snapshotCallUi(): Record<string, unknown> {
     height: video.videoHeight,
     paused: video.paused,
     source: video.srcObject === null ? null : "stream",
+    // This element's own box is what `transport-native.ts` reports to the
+    // shell, so it is the rect a native tile covers.
+    rect: boxOf(video),
   }));
   // The bar is the one region whose sentences are the reading (the reason
   // line beside the switch); its own element carries no test hook, so it is
@@ -735,6 +797,7 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   });
   maybeDevNative(params);
   maybeDevProcessing(params);
+  maybeDevDevices(params);
   // Before the call: the substitution has to be in place when the SDK
   // first asks for a track.
   maybeDevCamera(params);
