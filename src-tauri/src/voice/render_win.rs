@@ -221,12 +221,81 @@ impl Shared {
   }
 }
 
-/// The window proc. Four messages; everything else is the default.
+/// `WHERRY_TILE_INPUT_LOG=1` (debug builds): report the mouse messages this
+/// window actually receives.
+///
+/// Written 2026-09-11, after a click-wedge survived a `WM_MOUSEACTIVATE`
+/// fix and then survived the theory behind it. A sampler reading both GUI
+/// threads five times a second found nothing abnormal anywhere: the window
+/// stayed foreground, stayed its thread's active window, kept focus, held
+/// no capture. So the wedge is invisible to every standard input-state
+/// query, and the open question is no longer *what state is wrong* but
+/// **whether the click is dispatched to a window at all**.
+///
+/// This answers the cheap half of that before anyone reaches for a
+/// low-level mouse hook. If this window logs `WM_LBUTTONDOWN` during a
+/// wedge, the hit test is resolving to the tile despite `HTTRANSPARENT`
+/// and that is a different defect entirely. If it logs nothing while the
+/// pointer is over it, the tile is not receiving the click and the hook is
+/// the right next instrument, with the cheap answer ruled out first.
+///
+/// Off unless asked, because `WM_NCHITTEST` and `WM_MOUSEMOVE` arrive on
+/// every pointer movement across the window.
+#[cfg(debug_assertions)]
+fn tile_input_log(msg: u32, lparam: LPARAM) {
+  use windows::Win32::UI::WindowsAndMessaging::{
+    WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCLBUTTONDOWN,
+    WM_NCLBUTTONUP, WM_RBUTTONDOWN,
+  };
+  static ON: OnceLock<bool> = OnceLock::new();
+  if !*ON.get_or_init(|| std::env::var("WHERRY_TILE_INPUT_LOG").ok().as_deref() == Some("1")) {
+    return;
+  }
+  // `lparam`'s two halves are the cursor position for the messages below:
+  // screen coordinates for `WM_NCHITTEST` and the non-client buttons,
+  // client coordinates for the rest. The messages whose `lparam` is *not*
+  // a point are reported without one rather than printing nonsense.
+  let x = (lparam.0 & 0xffff) as u16 as i16;
+  let y = ((lparam.0 >> 16) & 0xffff) as u16 as i16;
+  match msg {
+    // These two arrive on every pointer movement, so they are counted and
+    // sampled: the first few say the window is being hit-tested at all,
+    // and one in five hundred after that says it never stopped.
+    WM_NCHITTEST | WM_MOUSEMOVE => {
+      static N: AtomicU64 = AtomicU64::new(0);
+      let n = N.fetch_add(1, Ordering::Relaxed);
+      if n < 3 || n % 500 == 0 {
+        let name = if msg == WM_NCHITTEST { "WM_NCHITTEST" } else { "WM_MOUSEMOVE" };
+        log::info!("voice: tile input {name} #{n} at ({x},{y})");
+      }
+    }
+    WM_LBUTTONDOWN => log::info!("voice: tile input WM_LBUTTONDOWN at ({x},{y})"),
+    WM_LBUTTONUP => log::info!("voice: tile input WM_LBUTTONUP at ({x},{y})"),
+    WM_RBUTTONDOWN => log::info!("voice: tile input WM_RBUTTONDOWN at ({x},{y})"),
+    WM_NCLBUTTONDOWN => log::info!("voice: tile input WM_NCLBUTTONDOWN at ({x},{y})"),
+    WM_NCLBUTTONUP => log::info!("voice: tile input WM_NCLBUTTONUP at ({x},{y})"),
+    // `lparam` here is a hit-test code and a message, not a point.
+    WM_MOUSEACTIVATE => log::info!("voice: tile input WM_MOUSEACTIVATE"),
+    // `lparam` here is the window gaining capture, not a point.
+    WM_CAPTURECHANGED => log::info!("voice: tile input WM_CAPTURECHANGED"),
+    _ => {}
+  }
+}
+
+/// Compiled out of a release build, so the call in `wnd_proc` costs
+/// nothing there and the constants above stay out of the import list.
+#[cfg(not(debug_assertions))]
+fn tile_input_log(_msg: u32, _lparam: LPARAM) {}
+
+/// The window proc. Four messages answered, one observer, and everything
+/// else to the default. The observer is `tile_input_log`, off unless
+/// `WHERRY_TILE_INPUT_LOG=1` and compiled out of a release build.
 ///
 /// SAFETY: called by the window manager on the thread that created the
 /// window. `GWLP_USERDATA` holds an `Arc<Shared>` pointer that outlives
 /// every message, because `destroy` reclaims it only after `DestroyWindow`.
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+  tile_input_log(msg, lparam);
   match msg {
     // Never erase: the paint below covers the whole client area, and an
     // erase is what makes a child flicker under a resizing parent.
