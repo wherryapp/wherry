@@ -43,10 +43,13 @@
 // exception: it sends `WM_PAINT` synchronously and would deadlock against
 // a main thread waiting on this tile's lock.
 //
-// Presenter: GDI (`StretchDIBits`) rather than D3D11, on purpose and with
-// a number attached -- see the plan's §5. If D-50 reads over the 1.5x bar
-// the D3D11 presenter is stage W3.2 and this path stays as the fallback
-// for a machine whose driver cannot create a device.
+// Presenter: D3D11 through `ID3D11VideoProcessor` since stage W3.2
+// (`render_win_d3d.rs`), because D-50 read this GDI path at 8.7x the
+// webview engine on 2026-09-11 against a 1.5x bar. GDI (`StretchDIBits`
+// from `WM_PAINT`) stays as the path for a machine whose driver cannot
+// create a device, and behind `WHERRY_TILE_PRESENTER=gdi` for an A/B on
+// one machine. The frame task decides once per binding, and `Shared::d3d`
+// tells the paint which of the two owns the picture.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -75,6 +78,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_core::PCWSTR;
 
 use super::VoiceError;
+
+// The D3D11 presenter, in its own file so the window and the GDI path stay
+// readable. Declared here rather than in mod.rs because nothing outside
+// this file may reach it: which presenter draws is this file's decision.
+#[path = "render_win_d3d.rs"]
+mod d3d;
 
 // -- a rect, as the page reports it -------------------------------------------
 
@@ -209,8 +218,24 @@ struct Shared {
   pending: AtomicBool,
   /// Frames blitted, shared with the `Tile` that owns this. Incremented by
   /// the paint rather than by the frame task, so it counts pictures that
-  /// reached the screen.
+  /// reached the screen. (The D3D11 path counts on a successful `Present`
+  /// instead, which is the same quantity: the frame is the compositor's
+  /// from then on, as macOS's is after `enqueueSampleBuffer:`.)
   frames: Arc<AtomicU64>,
+  /// The window's size, physical px, written with `video` on the main
+  /// thread. The D3D11 presenter sizes its swap chain to this from the
+  /// frame task rather than asking the window, so the size it draws into
+  /// is the one the letterbox was computed against.
+  size: Mutex<(i32, i32)>,
+  /// The D3D11 presenter for this window once a frame task has made one;
+  /// `None` is the GDI path. Per window rather than per frame task so a
+  /// rebind reuses the swap chain — DXGI allows one per `HWND`, and one
+  /// created before an aborted task has dropped the last is refused.
+  presenter: Mutex<Option<d3d::Presenter>>,
+  /// The presenter has put a frame on this window, so `WM_PAINT` must only
+  /// validate: a GDI fill over a flip-model swap chain is a black flash at
+  /// best.
+  d3d: AtomicBool,
 }
 
 impl Shared {
@@ -220,6 +245,9 @@ impl Shared {
       video: Mutex::new((0, 0, 0, 0)),
       pending: AtomicBool::new(false),
       frames,
+      size: Mutex::new((0, 0)),
+      presenter: Mutex::new(None),
+      d3d: AtomicBool::new(false),
     }
   }
 }
@@ -364,6 +392,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let shared = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
       let mut ps = PAINTSTRUCT::default();
       let hdc = BeginPaint(hwnd, &mut ps);
+      if shared != 0 && (*(shared as *const Shared)).d3d.load(Ordering::Relaxed) {
+        // The swap chain owns the picture; this paint only validates.
+        let _ = EndPaint(hwnd, &ps);
+        return LRESULT(0);
+      }
       let mut client = RECT::default();
       let _ = GetClientRect(hwnd, &mut client);
       let black = HBRUSH(GetStockObject(BLACK_BRUSH).0);
@@ -617,6 +650,13 @@ impl Tile {
       let mut logged_kind = false;
       let mut logged_render = false;
       let mut logged_rotation = false;
+      // Which presenter, decided once per binding: D3D11 unless the knob
+      // says GDI, and GDI after the first failure to create or present,
+      // with one warning line. The device itself is asked once per
+      // process (`d3d::gpu`), so a machine without one pays a cached
+      // answer per bind and nothing per frame.
+      let driver = d3d::driver();
+      let mut presenter_off = driver.is_none();
       while let Some(frame) = stream.next().await {
         if !alive.load(Ordering::Relaxed) || !mine.load(Ordering::Relaxed) {
           break;
@@ -643,6 +683,45 @@ impl Tile {
         if width == 0 || height == 0 {
           continue;
         }
+        if let (false, Some(driver)) = (presenter_off, driver) {
+          let size = *shared.size.lock().unwrap();
+          let video = *shared.video.lock().unwrap();
+          let mut slot = shared.presenter.lock().unwrap();
+          if slot.is_none() {
+            match d3d::Presenter::new(hwnd, size, driver) {
+              Ok(presenter) => *slot = Some(presenter),
+              Err(why) => {
+                log::warn!("voice: tile presenter falling back to GDI: {why}");
+                presenter_off = true;
+              }
+            }
+          }
+          if let Some(presenter) = slot.as_mut() {
+            match presenter.present(&frame.buffer, width, height, size, video) {
+              Ok(drawn) => {
+                if drawn {
+                  shared.d3d.store(true, Ordering::Relaxed);
+                  frames.fetch_add(1, Ordering::Relaxed);
+                  offered += 1;
+                  if !logged_render {
+                    logged_render = true;
+                    log::info!("voice: tile rendering {width}x{height} natively via d3d11");
+                  }
+                }
+                continue;
+              }
+              Err(why) => {
+                // A device lost mid-call (a driver reset, a remote session
+                // taking the display) lands here; the frame falls through
+                // to GDI and so does every later one on this window.
+                log::warn!("voice: tile presenter failed, GDI from here: {why}");
+                *slot = None;
+                shared.d3d.store(false, Ordering::Relaxed);
+                presenter_off = true;
+              }
+            }
+          }
+        }
         let stride = width as usize * 4;
         let mut bgra = vec![0u8; stride * height as usize];
         let converted = convert(&frame.buffer, width, height, &mut nv12, &mut bgra, stride as u32);
@@ -667,7 +746,7 @@ impl Tile {
         // for the same reason.
         if !logged_render && frames.load(Ordering::Relaxed) > 0 {
           logged_render = true;
-          log::info!("voice: tile rendering {width}x{height} natively");
+          log::info!("voice: tile rendering {width}x{height} natively via gdi");
         }
         if offered == 300 && !logged_render {
           log::warn!("voice: tile has offered {offered} frame(s) and none has been drawn; the window is not being served");
@@ -746,6 +825,7 @@ impl Tile {
       // The picture's origin relative to the window: zero unless the tile
       // pokes out of its scroller, in which case it starts off the window.
       *shared.video.lock().unwrap() = (fx - left, fy - top, fw, fh);
+      *shared.size.lock().unwrap() = (width.max(0), height.max(0));
       // Read the three reasons *here*, not on the calling thread: a hide
       // decided on the main thread can otherwise be overwritten by an
       // older show a tokio worker queued before it.
@@ -811,10 +891,14 @@ impl Tile {
       task.abort();
     }
     let views = self.views.clone();
+    let shared = self.shared.clone();
     let _ = self.app.run_on_main_thread(move || {
       let Some(views) = views.lock().unwrap().take() else {
         return;
       };
+      // The swap chain goes before its window. The frame task was aborted
+      // above, so the lock is at most one in-flight present away.
+      drop(shared.presenter.lock().unwrap().take());
       // SAFETY: destroyed by the thread that created it, which is the only
       // thread that can. The shared pointer is reclaimed *after* the
       // window is gone, so no window proc can be running against it.
