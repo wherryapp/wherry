@@ -59,7 +59,7 @@ import {
   connectionFromWord,
   isEncryptionFailure,
   knownDeviceId,
-  micErrorName,
+  nativeErrorName,
   nativeGainFor,
   playbackEnabledFor,
   qualityFromWord,
@@ -109,12 +109,19 @@ type ConnectResult = { session: number; connectMs: number; roster: NativeRoster 
 /** How often a tile's rect is re-read when nothing observable moved it. */
 const RECT_POLL_MS = 500;
 
-/** A command's rejection: the shell's `VoiceError`, or something else. */
-function nativeError(error: unknown, mic = false): Error {
+/**
+ * A command's rejection: the shell's `VoiceError`, or something else.
+ *
+ * `shown` means this rejection reaches a person as a sentence, so its code
+ * is translated into the DOM error name the two message functions switch
+ * on. It is passed by the microphone, the camera and the screen, and not by
+ * the commands whose failures only reach the log.
+ */
+function nativeError(error: unknown, shown = false): Error {
   if (error && typeof error === "object" && "code" in error) {
     const { code, message } = error as { code?: unknown; message?: unknown };
     const out = new Error(typeof message === "string" ? message : String(code));
-    if (mic) out.name = micErrorName(typeof code === "string" ? code : "");
+    if (shown) out.name = nativeErrorName(typeof code === "string" ? code : "");
     return out;
   }
   return error instanceof Error ? error : new Error(String(error));

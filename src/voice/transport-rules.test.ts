@@ -5,7 +5,7 @@ import {
   connectionFromWord,
   isEncryptionFailure,
   knownDeviceId,
-  micErrorName,
+  nativeErrorName,
   nativeGainFor,
   playbackEnabledFor,
   publishErrorMessage,
@@ -37,12 +37,42 @@ describe("userIdFromMetadata", () => {
   });
 });
 
-describe("micErrorName", () => {
+describe("nativeErrorName", () => {
   it("maps the shell's codes onto the browser names session.ts already reads", () => {
-    assert.equal(micErrorName("no_microphone"), "NotFoundError");
-    assert.equal(micErrorName("permission"), "NotAllowedError");
-    assert.equal(micErrorName("mic_failed"), "UnknownError");
-    assert.equal(micErrorName(""), "UnknownError");
+    assert.equal(nativeErrorName("no_microphone"), "NotFoundError");
+    assert.equal(nativeErrorName("permission"), "NotAllowedError");
+    assert.equal(nativeErrorName("mic_failed"), "UnknownError");
+    assert.equal(nativeErrorName(""), "UnknownError");
+  });
+
+  it("knows the camera's and the screen's codes, not only the microphone's", () => {
+    assert.equal(nativeErrorName("no_camera"), "NotFoundError");
+    assert.equal(nativeErrorName("camera_denied"), "NotAllowedError");
+    assert.equal(nativeErrorName("screen_cancelled"), "NotAllowedError");
+    // Not every native failure has a sentence of its own; these fall to the
+    // generic one on purpose.
+    assert.equal(nativeErrorName("camera_failed"), "UnknownError");
+    assert.equal(nativeErrorName("screen_failed"), "UnknownError");
+  });
+
+  // The name is the middle of the path, not the point of it. What broke was
+  // the sentence, so the sentence is what this asserts.
+  it("carries a denied camera all the way to the words a person reads", () => {
+    const denied = Object.assign(new Error("camera access is not allowed"), {
+      name: nativeErrorName("camera_denied"),
+    });
+    assert.equal(publishErrorMessage(denied, "camera"), "Camera access was refused.");
+    const missing = Object.assign(new Error("no camera on this device"), {
+      name: nativeErrorName("no_camera"),
+    });
+    assert.equal(publishErrorMessage(missing, "camera"), "No camera was found.");
+    const cancelled = Object.assign(new Error("the picker was dismissed"), {
+      name: nativeErrorName("screen_cancelled"),
+    });
+    assert.equal(
+      publishErrorMessage(cancelled, "screen"),
+      "Screen sharing was refused or cancelled.",
+    );
   });
 });
 

@@ -22,16 +22,38 @@ export function userIdFromMetadata(metadata: string | undefined, identity: strin
 }
 
 /**
- * The browser error name `session.ts`'s `micFailure` understands, for a
- * code the shell's `voice_set_mic` reports. "refused" has no native
- * source yet: macOS does not fail a capture it has denied, it delivers
- * silence, so a refusal cannot be told apart from a quiet room here.
+ * The browser error name for a `VoiceError` code the shell reports, so that
+ * `publishErrorMessage` and `session.ts`'s `micFailure` -- both of which
+ * switch on a DOM error name -- say the same sentence whichever engine
+ * produced the failure. Every native path that surfaces to a person goes
+ * through here: the microphone, the camera and the screen.
+ *
+ * **A code with no case lands on the generic sentence**, which is how the
+ * camera's two real refusals went unheard until 2026-09-13: the shell has
+ * raised `camera_denied` and `no_camera` since macOS capture shipped, this
+ * knew only the microphone's two codes, and a denied camera therefore told
+ * the person "The camera could not be started." A new code in the shell
+ * needs a case here, or it says nothing it knows.
+ *
+ * The microphone still has no "refused": macOS does not fail a capture it
+ * has denied, it delivers silence, so a refusal cannot be told apart from a
+ * quiet room. The camera is not like that -- AVFoundation reports the
+ * authorization status before a session starts, and Windows will fail the
+ * source outright (there is no prompt there, only a privacy setting), which
+ * is why `camera_denied` is a code and `permission` covers only the mic.
  */
-export function micErrorName(code: string): "NotFoundError" | "NotAllowedError" | "UnknownError" {
+export function nativeErrorName(
+  code: string,
+): "NotFoundError" | "NotAllowedError" | "UnknownError" {
   switch (code) {
     case "no_microphone":
+    case "no_camera":
       return "NotFoundError";
     case "permission":
+    case "camera_denied":
+    // Cancelling the picker is a decision, not a fault, and
+    // `publishErrorMessage` already words it as "refused or cancelled".
+    case "screen_cancelled":
       return "NotAllowedError";
     default:
       return "UnknownError";
