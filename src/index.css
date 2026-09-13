@@ -13,7 +13,22 @@
    product -- and a hand-tuned, less-saturated, slightly darker periwinkle
    from 2026-08-31 (2nd): indigo's full chroma at 600 read as Facebook
    Messenger blue, the other wrong product. Changing the app's accent is
-   editing these seven lines, not a find-and-replace.
+   editing these eleven lines, not a find-and-replace.
+
+   200, 300, 400 and 800 were missing until 2026-09-13, and Tailwind v4
+   generates no rule at all for a shade that is not declared here -- so
+   `bg-accent-300` was a transparent background and `dark:text-accent-400`
+   was `currentColor`, silently, in 27 places across 14 files. Two of them
+   were visible defects: the unread divider's two hairlines drew nothing in
+   either theme, and a pinned video tile's pin icon stayed white, so the
+   pinned state had no colour at all (the D-33 and D-56 readings confirmed
+   the pin by the featured tile changing and the layer climbing, which is
+   why it survived them). The four values are interpolated in the same
+   space as the hand-tuned ones rather than taken from a stock scale, so
+   the ramp stays this periwinkle rather than reverting to indigo in four
+   places. Read from a real build, not from reasoning: before the change
+   `pnpm build`'s CSS contained the strings accent-500 and accent-600 and
+   none of these four.
 
    The neutral scale is deliberately NOT re-tokenised: ui/kit.tsx constrains
    how neutrals are used by owning the components that use them, which is
@@ -22,9 +37,13 @@
 @theme {
   --color-accent-50: oklch(0.965 0.014 284);
   --color-accent-100: oklch(0.93 0.03 284);
+  --color-accent-200: oklch(0.878 0.059 284);
+  --color-accent-300: oklch(0.825 0.088 284);
+  --color-accent-400: oklch(0.773 0.116 283);
   --color-accent-500: oklch(0.72 0.145 283);
   --color-accent-600: oklch(0.64 0.16 284);
   --color-accent-700: oklch(0.56 0.16 284);
+  --color-accent-800: oklch(0.465 0.135 285);
   --color-accent-900: oklch(0.37 0.11 285);
   --color-accent-950: oklch(0.27 0.07 286);
 
