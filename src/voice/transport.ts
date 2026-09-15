@@ -129,8 +129,10 @@ export type TransportParticipant = {
   micMuted: boolean;
   /** Whether their tracks arrive frame-encrypted. */
   encrypted: boolean;
-  /** Their screen share carries audio as well as picture. Never folded
-   *  into `micMuted`; it has its own volume. */
+  /** Their screen share carries audio as well as picture: a screen-audio
+   *  publication that is not muted, since the native engine mutes rather
+   *  than unpublishes one when a share stops (row S-18). Never folded into
+   *  `micMuted`; it has its own volume. */
   screenAudio: boolean;
   /** 0..1, the SFU's reading of their signal — the microphone's. */
   audioLevel: number;

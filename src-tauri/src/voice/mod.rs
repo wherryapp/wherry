@@ -248,8 +248,10 @@ pub struct RosterEntry {
   /// rather than shown nothing at all.
   has_camera: bool,
   has_screen: bool,
-  /// Their screen share carries a second audio track. A separate volume
-  /// from their voice, never folded into `mic_muted`.
+  /// Their screen share carries a second audio track, unmuted. A separate
+  /// volume from their voice, never folded into `mic_muted`. Unmuted because
+  /// this engine keeps a share's sound published but muted after the share
+  /// stops (video.rs, row S-18), and a muted one has nothing to turn down.
   has_screen_audio: bool,
   /// Their camera publication is muted -- camera off, or their app in the
   /// background. Read the same way the webview reads `isMuted`, since
@@ -335,8 +337,9 @@ fn roster(room: &Room) -> Roster {
         playing,
         has_camera: has_video_source(&participant, TrackSource::Camera),
         has_screen: has_video_source(&participant, TrackSource::Screenshare),
-        has_screen_audio: !audio_publications_of(&participant, TrackSource::ScreenshareAudio)
-          .is_empty(),
+        has_screen_audio: audio_publications_of(&participant, TrackSource::ScreenshareAudio)
+          .iter()
+          .any(|publication| !publication.is_muted()),
         camera_muted: video::camera_muted(&participant),
       }
     })

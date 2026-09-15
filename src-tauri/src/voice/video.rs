@@ -28,6 +28,9 @@
 // - The screen is **unpublished** when it stops, also matching the webview.
 //   Its size is not known until the person has picked one in the OS's
 //   sheet, so the publish waits on the first frame.
+// - A share's **sound** is published once per call and then muted when a
+//   share stops, never unpublished, whatever the webview does (row S-18;
+//   `ScreenAudioPublication` says why).
 // - A tile is a native view bound to a track by (identity, source). It is
 //   created by the page before the track may exist -- a tile for somebody
 //   whose camera is still being subscribed -- and bound when the pump sees
@@ -67,18 +70,32 @@ struct Published {
   /// the publication exists.
   slot: Option<SourceSlot>,
   device_id: Option<String>,
-  /// The share's own sound, where one was asked for and the platform has
-  /// it: a second publication of its own, on purpose. Two tracks and two
-  /// volumes is requirement 1 of video-plan.md §10.2 — turning a colleague
-  /// down must not turn down the film they are showing you — and it is
-  /// also what keeps "muted" meaning the microphone, since mute reads the
-  /// microphone publication and this is not one.
-  audio: Option<PublishedAudio>,
 }
 
-struct PublishedAudio {
+/// A share's own sound, where one was asked for and the platform has it: a
+/// second publication of its own, on purpose. Two tracks and two volumes is
+/// requirement 1 of video-plan.md §10.2 — turning a colleague down must not
+/// turn down the film they are showing you — and it is also what keeps
+/// "muted" meaning the microphone, since mute reads the microphone
+/// publication and this is not one.
+///
+/// **Published once per call, muted when a share stops and unmuted by the
+/// next — never unpublished before the room closes** (row S-18). LiveKit's
+/// prebuilt libwebrtc carries a patch for pushed audio sources
+/// (`external_audio_source.patch`) whose `AudioSendStream::Stop()` never
+/// clears `sending_`. After a mid-call unpublish, the codec setup that the
+/// renegotiation brings finds the stopped stream still "sending" and
+/// registers it for microphone frames. Nothing removes it, the room's close
+/// frees it, and the next call's first microphone frame goes to freed
+/// memory. A muted publication is never stopped, so it never gets there.
+/// `client/src-tauri/patches/libwebrtc-external-audio-source-stop.md` has
+/// the evidence.
+struct ScreenAudioPublication {
   publication: LocalTrackPublication,
-  capture: ScreenAudio,
+  source: NativeAudioSource,
+  /// The loopback capture pushing into `source`; `None` while no share
+  /// carries sound.
+  capture: Option<ScreenAudio>,
 }
 
 struct TileEntry {
@@ -97,6 +114,8 @@ struct VideoState {
   session: u64,
   camera: Option<Published>,
   screen: Option<Published>,
+  /// Outlives `screen` for the rest of the call: see `ScreenAudioPublication`.
+  screen_audio: Option<ScreenAudioPublication>,
   tiles: HashMap<u64, TileEntry>,
   next_tile: u64,
   covered: HashSet<String>,
@@ -402,7 +421,6 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
       capture: Some(capture),
       slot: None,
       device_id: args.device_id,
-      audio: None,
     });
   });
   rebind_tiles(session, &room);
@@ -459,20 +477,25 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   };
 
   let (session, room, shared) = current()?;
+  // Sound first on the way out, so the last thing a viewer loses is the
+  // sound of a picture that has already stopped rather than the reverse.
+  // Muted with its capture stopped, and kept (`ScreenAudioPublication`).
+  let sound = with_state(session, |state| {
+    state.screen_audio.as_mut().and_then(|audio| {
+      let capture = audio.capture.take();
+      if capture.is_some() {
+        audio.publication.mute();
+      }
+      capture
+    })
+  });
+  if let Some(capture) = sound {
+    let frames = capture.frames();
+    tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+    log::info!("voice: screen audio muted after {frames} frame(s), kept published");
+  }
   let existing = with_state(session, |state| state.screen.take());
   if let Some(published) = existing {
-    // Audio first on the way out, so the last thing a viewer loses is the
-    // sound of a picture that has already stopped rather than the reverse.
-    if let Some(audio) = published.audio {
-      if let Err(error) =
-        room.local_participant().unpublish_track(&audio.publication.sid()).await
-      {
-        log::warn!("voice: unpublish screen audio: {error}");
-      }
-      let capture = audio.capture;
-      tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
-      log::info!("voice: screen audio unpublished");
-    }
     if let Err(error) = room.local_participant().unpublish_track(&published.publication.sid()).await {
       log::warn!("voice: unpublish screen: {error}");
     }
@@ -548,10 +571,10 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   // pick and the publish) is a line in the log rather than a share that
   // did not happen.
   let audio = if args.audio {
-    match publish_screen_audio(&room, &args, picked).await {
-      Ok(audio) => Some(audio),
+    match start_screen_audio(session, &room, &args, picked).await {
+      Ok(sid) => Some(sid),
       Err(error) => {
-        log::warn!("voice: screen audio not published: {}", error.message);
+        log::warn!("voice: screen audio not started: {}", error.message);
         None
       }
     }
@@ -572,7 +595,7 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
     captured.0,
     captured.1,
     match &audio {
-      Some(audio) => format!(" with audio as {}", audio.publication.sid()),
+      Some(sid) => format!(" with audio as {sid}"),
       None => String::new(),
     }
   );
@@ -584,7 +607,6 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
       capture: Some(Source::Screen(screen)),
       slot: Some(slot),
       device_id: None,
-      audio,
     });
   });
   let _ = &app;
@@ -592,7 +614,9 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   Ok(())
 }
 
-/// The share's own sound as a second publication.
+/// The share's own sound: a fresh capture into the call's screen-audio
+/// publication, unmuting the one an earlier share this call left, or
+/// publishing it the first time. Returns the publication's sid.
 ///
 /// The three publish numbers are `transport-rules.ts`'s `screenAudioPublish`
 /// mirrored by hand, the way `rules.ts` mirrors the SDK's audio presets: no
@@ -602,11 +626,12 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
 /// is four times a speech bitrate because music needs it. They are
 /// **copied**, not derived — this file must not become a second place the
 /// webview's numbers live — and they have to be changed together.
-async fn publish_screen_audio(
+async fn start_screen_audio(
+  session: u64,
   room: &Room,
   args: &ScreenArgs,
   picked: Option<capture::PickedSource>,
-) -> VoiceResult<PublishedAudio> {
+) -> VoiceResult<TrackSid> {
   let mode = args
     .audio_mode
     .as_deref()
@@ -617,6 +642,28 @@ async fn publish_screen_audio(
   let window = picked
     .filter(|p| p.kind == capture::ScreenKind::Window)
     .map(|p| p.id);
+
+  // An earlier share this call: the same source and publication, and a
+  // fresh capture, since the mode and the window can differ from last time.
+  let parked = with_state(session, |state| state.screen_audio.as_ref().map(|audio| audio.source.clone()));
+  if let Some(source) = parked {
+    let capture = ScreenAudio::start(mode, window, source)?;
+    let resumed = with_state(session, |state| match state.screen_audio.as_mut() {
+      Some(audio) => {
+        audio.capture = Some(capture);
+        audio.publication.unmute();
+        Ok(audio.publication.sid())
+      }
+      None => Err(capture),
+    });
+    return match resumed {
+      Ok(sid) => Ok(sid),
+      Err(capture) => {
+        tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+        Err(VoiceError::new("screen_audio_failed", "the call ended while the sound was starting"))
+      }
+    };
+  }
 
   // Requirement 2 is met by construction: a pushed source never passes
   // through the ADM's processing path, so there is no canceller,
@@ -633,7 +680,7 @@ async fn publish_screen_audio(
   );
   let capture = ScreenAudio::start(mode, window, source.clone())?;
   let track =
-    LocalAudioTrack::create_audio_track("screen-audio", RtcAudioSource::Native(source));
+    LocalAudioTrack::create_audio_track("screen-audio", RtcAudioSource::Native(source.clone()));
   let options = TrackPublishOptions {
     source: TrackSource::ScreenshareAudio,
     dtx: false,
@@ -642,7 +689,13 @@ async fn publish_screen_audio(
     ..Default::default()
   };
   match room.local_participant().publish_track(LocalTrack::Audio(track), options).await {
-    Ok(publication) => Ok(PublishedAudio { publication, capture }),
+    Ok(publication) => {
+      let sid = publication.sid();
+      with_state(session, |state| {
+        state.screen_audio = Some(ScreenAudioPublication { publication, source, capture: Some(capture) });
+      });
+      Ok(sid)
+    }
     Err(error) => {
       tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
       Err(VoiceError::new("screen_audio_failed", format!("publish: {error}")))
@@ -943,10 +996,10 @@ pub fn native_summary() -> Value {
     "cameraFrames": frames(&state.camera),
     "screenFrames": frames(&state.screen),
     // 10 ms frames pushed into the share's audio source. Null where no
-    // audio was published, and **zero is the reading that matters**: the
+    // share is carrying sound, and **zero is the reading that matters**: the
     // capture activated and initialised but nothing is flowing, which is
     // exactly what a machine with no active render endpoint does (D-27b).
-    "screenAudioFrames": state.screen.as_ref().and_then(|s| s.audio.as_ref()).map(|a| a.capture.frames()),
+    "screenAudioFrames": state.screen_audio.as_ref().and_then(|a| a.capture.as_ref()).map(|c| c.frames()),
     "tiles": state.tiles.len(),
     "bound": bound,
     "drawn": drawn,
@@ -998,8 +1051,18 @@ pub async fn teardown() {
       captures.push(capture);
     }
   }
-  if !captures.is_empty() {
+  // The share's sound is stopped here as well as on the way out of a share:
+  // `ScreenAudio` has no `Drop`, so one dropped while running would leave its
+  // loopback thread going for the life of the process. The publication goes
+  // with the room's close and never before it (`ScreenAudioPublication`).
+  let sound = state.screen_audio.and_then(|audio| audio.capture);
+  if !captures.is_empty() || sound.is_some() {
     let _ = tauri::async_runtime::spawn_blocking(move || {
+      if let Some(sound) = sound {
+        let frames = sound.frames();
+        sound.stop();
+        log::info!("voice: screen audio stopped at teardown after {frames} frame(s)");
+      }
       for capture in captures {
         capture.stop();
       }

@@ -510,6 +510,10 @@ export class WebviewTransport implements VoiceTransport {
       // an audio publication too, and counting it here would report
       // somebody as unmuted because a video they are sharing has sound.
       const mic = participant.getTrackPublication(Track.Source.Microphone);
+      // Published *and* unmuted: the native engine keeps a share's sound
+      // published but muted once the share stops (video.rs, row S-18), and a
+      // muted one is nothing to offer a slider for.
+      const shareSound = participant.getTrackPublication(Track.Source.ScreenShareAudio);
       list.push({
         identity: participant.identity,
         userId: userIdOf(participant),
@@ -517,8 +521,7 @@ export class WebviewTransport implements VoiceTransport {
         speaking: speaking.has(participant.identity),
         micMuted: mic === undefined || mic.isMuted,
         encrypted: participant.isEncrypted,
-        screenAudio:
-          participant.getTrackPublication(Track.Source.ScreenShareAudio) !== undefined,
+        screenAudio: shareSound !== undefined && !shareSound.isMuted,
         audioLevel: participant.audioLevel,
         camera: participant.getTrackPublication(Track.Source.Camera) !== undefined,
         screen: participant.getTrackPublication(Track.Source.ScreenShare) !== undefined,
