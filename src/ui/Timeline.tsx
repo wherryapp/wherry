@@ -1320,11 +1320,32 @@ export function Timeline({
       jumpTries.current = 0;
       return;
     }
+    // Wait for this conversation's first page before deciding anything. A
+    // jump usually arrives with a freshly mounted timeline -- the search,
+    // pins and hub panels replace the thread while they are open -- and on
+    // that first run `items` is empty and `hasMore` false, which read as
+    // "the target is not here and there is nothing older" and ended the jump
+    // before a single page had loaded. It worked only for a target already
+    // on the newest page (found by W-19's pass, 2026-09-15). Bounded, so a
+    // conversation whose page never becomes current cannot hold the jump
+    // (and the open anchor behind it) forever.
+    if (!itemsAreCurrent) {
+      const giveUp = window.setTimeout(() => onJumped?.(), 5000);
+      return () => window.clearTimeout(giveUp);
+    }
     const el = document.getElementById(`msg-${jumpTo}`);
     if (el) {
       el.scrollIntoView({ block: "center" });
       el.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 800 });
       jumpTries.current = 0;
+      // A landed jump is a hand-over: the reader asked to be exactly here.
+      // Without it, clearing `jumpTo` releases the open anchor this jump was
+      // holding off, and a timeline that has not settled yet pins straight
+      // back to the bottom -- the target sat 2,000 px above the viewport on
+      // the rig. Settled and not near the bottom, a later commit does nothing
+      // and a height change holds this row where it is (`anchor.ts`).
+      dispatchAnchor({ kind: "handover" });
+      sampleNearBottom(true);
       onJumped?.();
     } else if (hasMore && jumpTries.current < 40) {
       jumpTries.current += 1;
@@ -1333,7 +1354,7 @@ export function Timeline({
       jumpTries.current = 0;
       onJumped?.();
     }
-  }, [jumpTo, items, hasMore, loadOlder, onJumped]);
+  }, [jumpTo, items, itemsAreCurrent, hasMore, loadOlder, onJumped, dispatchAnchor, sampleNearBottom]);
 
   // The keyboard opening makes this pane shorter without moving what is
   // scrolled, so the newest message ends up hidden behind the composer at the

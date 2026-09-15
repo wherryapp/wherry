@@ -152,6 +152,18 @@ test("hand-over before the one shot leaves the scroll alone", () => {
   );
 });
 
+test("a landed jump hands over, so nothing pins the reader back to the bottom", () => {
+  // Timeline.tsx dispatches a hand-over when a search or pin jump lands,
+  // before the anchor it held off is released. Found on the rig 2026-09-15:
+  // without it, the first render after the jump pinned to the bottom and
+  // the target sat 2,000 px out of view.
+  const jumped = planAnchor(freshAnchor(), { kind: "handover" }).state;
+  const readerAtTarget: AnchorState = { ...jumped, nearBottom: false };
+  assert.equal(planAnchor(readerAtTarget, render(-1)).action, "none");
+  assert.equal(planAnchor(readerAtTarget, render(3, true)).action, "none");
+  assert.equal(planAnchor(readerAtTarget, { kind: "resize" }).action, "hold-position");
+});
+
 test("planAnchor never mutates the state it is given", () => {
   const state = freshAnchor();
   const before = JSON.stringify(state);
