@@ -528,10 +528,11 @@ pub struct Probe {
   agc: String,
   ns: String,
   /// Whether this shell both captures **and** renders video natively
-  /// (video.rs): macOS since 2026-09-08. Kept as one boolean because a
-  /// shell older than the split answers only this, and a page reading it
-  /// alone still gets a true answer for macOS. Feature-detected by the
-  /// page, never derived from a platform name.
+  /// (video.rs): macOS since 2026-09-08, Windows since stage W4 opened its
+  /// camera (capture.rs's `win`). Kept as one boolean because a shell older
+  /// than the split answers only this, and a page reading it alone still
+  /// gets a true answer. Feature-detected by the page, never derived from a
+  /// platform name.
   video: bool,
   /// The shell can capture a screen or window with a picker of its own
   /// (Windows since 2026-09-09; stage W1). Split from `video` because
@@ -550,7 +551,7 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   start_device_poller(app);
   let probe = Probe {
     livekit_rev: LIVEKIT_REV,
-    video: cfg!(target_os = "macos"),
+    video: cfg!(any(target_os = "macos", target_os = "windows")),
     // libwebrtc's `DesktopCapturer` is implemented on both, and off macOS
     // `voice_set_screen` now refuses to start without a source the person
     // chose (video.rs), which is what makes offering it safe.
@@ -587,6 +588,28 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
     log::info!("voice: screen sources ({} found)", sources.len());
     for source in &sources {
       log::info!("voice:   {:?} {} = {:?}", source.kind, source.id, source.title);
+    }
+  }
+  // `WHERRY_DEV_CAMERAS=1`, debug builds only: log what the camera picker
+  // would list, at boot, so row D-58 can be read without opening Settings.
+  // `=open` (or `=open:<height>`) goes on to open the first camera for five
+  // seconds and close it, so D-61's log half, D-63's pitch and D-64's branch
+  // can be read without a call. The same two calls the picker and a call
+  // make, for the same reason as the knob above.
+  #[cfg(debug_assertions)]
+  if let Ok(knob) = std::env::var("WHERRY_DEV_CAMERAS") {
+    let cameras = video::voice_video_devices().unwrap_or_default();
+    log::info!("voice: cameras ({} found)", cameras.len());
+    for camera in &cameras {
+      log::info!("voice:   {:?} = {:?}", camera.label, camera.device_id);
+    }
+    if let Some(rest) = knob.strip_prefix("open") {
+      let height = rest.strip_prefix(':').and_then(|h| h.parse().ok()).unwrap_or(720);
+      // A blocking task on Tauri's runtime, never a bare thread:
+      // `NativeVideoSource::new` calls `tokio::spawn` and panics without one
+      // (render_win.rs's dev tile says the same), and a call's camera is
+      // opened from exactly this kind of task.
+      tauri::async_runtime::spawn_blocking(move || video::dev_open_camera(height));
     }
   }
   Ok(probe)

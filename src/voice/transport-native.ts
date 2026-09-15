@@ -273,15 +273,16 @@ export class NativeTransport implements VoiceTransport {
 
   /**
    * The three answers came from one probe field until 2026-09-09, when
-   * Windows made them come apart: a shell there captures a screen (stage
-   * W1) long before it can draw a received tile (W3), and there is no
-   * camera capture at all. So `video` stays the shell that does
-   * everything -- macOS, and any shell older than the split -- and the two
-   * narrower fields raise the ones that platform has.
+   * Windows made them come apart: a shell there captured a screen (stage
+   * W1) before it could draw a received tile (W3), and opened no camera
+   * until W4. So `video` stays the shell that does everything -- macOS,
+   * Windows since W4, and any shell older than the split -- and the two
+   * narrower fields raise the ones a shell has short of that.
    *
-   * The camera keeps the engine switch on Windows while the screen button
-   * shares for real, which `rules.ts`'s `videoNeedsSwitch` already handles:
-   * it reads the per-source capability, not one flag for video.
+   * A Windows shell built between W3 and W4 keeps the engine switch on the
+   * camera while the screen button shares for real, which `rules.ts`'s
+   * `videoNeedsSwitch` already handles: it reads the per-source capability,
+   * not one flag for video.
    *
    * Never a platform name; an older shell without the fields reads as the
    * old all-or-nothing answer.

@@ -12,12 +12,12 @@
 // here knows which.** macOS does both (AVFoundation and an
 // `AVSampleBufferDisplayLayer`, stage 3N). Windows shares a screen through
 // its own picker (W1), draws every received tile in a child `HWND` over
-// WebView2 (W3, `render_win.rs`), and still has no camera capture -- so the
-// probe answers `video: false, screenCapture: true, videoRender: true`
-// there and the camera button alone is the engine switch. Linux has
-// neither and takes `render_stub.rs`. This file is the same code on all
-// three; the `cfg` that picks a renderer is in `mod.rs` and the one that
-// picks a capture is in `capture.rs`.
+// WebView2 (W3, `render_win.rs`), and opens a camera through Media
+// Foundation (W4, capture.rs's `win`) -- so the probe answers `video: true`
+// there as well, and the camera button stopped being the engine switch.
+// Linux has neither and takes `render_stub.rs`. This file is the same code
+// on all three; the `cfg` that picks a renderer is in `mod.rs` and the one
+// that picks a capture is in `capture.rs`.
 //
 // Three shapes worth knowing:
 //
@@ -163,7 +163,11 @@ pub fn voice_video_devices() -> VoiceResult<Vec<VideoDevice>> {
   {
     Ok(capture::mac::devices())
   }
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(target_os = "windows")]
+  {
+    Ok(capture::win::devices())
+  }
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
   {
     Ok(Vec::new())
   }
@@ -256,10 +260,35 @@ fn open_camera(
   {
     capture::mac::Camera::open(device_id, max_height, source).map(Source::Camera)
   }
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(target_os = "windows")]
+  {
+    capture::win::Camera::open(device_id, max_height, source).map(Source::Camera)
+  }
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
   {
     let _ = (device_id, max_height);
     Err(VoiceError::new("unsupported", "no native camera on this platform yet"))
+  }
+}
+
+/// `WHERRY_DEV_CAMERAS=open` (mod.rs's probe), debug builds only: the same
+/// `open_camera` a call uses, into a source nothing publishes, for five
+/// seconds. It proves the capture half alone -- a device opened, a mode
+/// chosen, frames copied, the device released -- which is D-61's log line,
+/// D-63's pitch and D-64's branch. A peer decoding the picture is still
+/// D-59's, and needs a call.
+#[cfg(debug_assertions)]
+pub fn dev_open_camera(max_height: u32) {
+  let size = landscape(max_height);
+  let source = NativeVideoSource::new(VideoResolution { width: size.0, height: size.1 }, false);
+  log::info!("voice: dev camera opening for 5 s at a {max_height}p ceiling");
+  match open_camera(None, max_height, 30, size, source) {
+    Ok(capture) => {
+      std::thread::sleep(std::time::Duration::from_secs(5));
+      log::info!("voice: dev camera delivered {} frame(s) in 5 s", capture.frames());
+      capture.stop();
+    }
+    Err(error) => log::warn!("voice: dev camera did not open: {} ({})", error.code, error.message),
   }
 }
 

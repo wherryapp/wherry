@@ -17,15 +17,22 @@
 // -- the prompt needs a person -- must at least be one whose every step is
 // read and understood, and eighty lines of `msg_send!` against a framework
 // whose behaviour is documented is that; a backend whose format table is
-// wrong on the platform in hand is not. **A Windows camera is stage W4 and
-// is the only part of native video still missing there** -- that platform
-// shares a screen (W1, 2026-09-09) and draws received tiles (W3,
-// 2026-09-10, render_win.rs), which is why its camera button alone is the
-// per-call engine switch.
+// wrong on the platform in hand is not.
 //
-// The camera delivers NV12 (`420v`), and NV12 goes straight into the
-// source: VideoToolbox encodes it without a conversion, which is the
-// format the handoff's §3.2 hoped for.
+// **The Windows camera is Media Foundation directly, for the same reason**
+// (stage W4, 2026-09-14; docs/prompts/w4-native-camera-windows.md §2):
+// `windows` is already in the graph, and what nokhwa would have added is
+// exactly the stride and format handling this file most needs to be able to
+// read. It is a source reader on one thread with a synchronous `ReadSample`
+// loop, copying each NV12 frame row by row at the pitch `Lock2D` reports.
+// Until it existed that platform's camera button was the per-call engine
+// switch.
+//
+// Both deliver NV12, and NV12 goes straight into the source, which is the
+// format the handoff's §3.2 hoped for: on macOS the camera's own `420v`,
+// which VideoToolbox encodes without a conversion; on Windows a native NV12
+// mode where the device has one, and the source reader's conversion where it
+// has not -- which the open logs, so a reading can say which it got.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,6 +60,8 @@ pub struct VideoDevice {
 pub enum Source {
   #[cfg(target_os = "macos")]
   Camera(mac::Camera),
+  #[cfg(target_os = "windows")]
+  Camera(win::Camera),
   Sweep(Sweep),
   Screen(Screen),
 }
@@ -60,7 +69,7 @@ pub enum Source {
 impl Source {
   pub fn stop(self) {
     match self {
-      #[cfg(target_os = "macos")]
+      #[cfg(any(target_os = "macos", target_os = "windows"))]
       Source::Camera(camera) => camera.close(),
       Source::Sweep(sweep) => sweep.stop(),
       Source::Screen(screen) => screen.stop(),
@@ -70,7 +79,7 @@ impl Source {
   /// Frames delivered so far, for the log and the stats readout.
   pub fn frames(&self) -> u64 {
     match self {
-      #[cfg(target_os = "macos")]
+      #[cfg(any(target_os = "macos", target_os = "windows"))]
       Source::Camera(camera) => camera.frames(),
       Source::Sweep(sweep) => sweep.frames.load(Ordering::Relaxed),
       Source::Screen(screen) => screen.frames.load(Ordering::Relaxed),
@@ -776,5 +785,639 @@ pub mod mac {
       }
       log::info!("voice: camera closed after {} frame(s)", self.frames());
     }
+  }
+}
+
+// -- the camera (Windows) -----------------------------------------------------
+
+#[cfg(target_os = "windows")]
+pub mod win {
+  use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+  use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+  use std::sync::Arc;
+  use std::time::{Duration, Instant};
+
+  use livekit::webrtc::video_frame::{NV12Buffer, VideoFrame, VideoRotation};
+  use livekit::webrtc::video_source::native::NativeVideoSource;
+  use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
+  use windows::Win32::Media::MediaFoundation::*;
+  use windows::Win32::System::Com::{
+    CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED,
+  };
+  use windows_core::{Interface, GUID, PWSTR};
+
+  use super::{fit_height, VideoDevice};
+  use crate::voice::VoiceError;
+
+  /// Every reader method's index for "the first video stream".
+  const VIDEO_STREAM: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+  /// How long `open` waits for the first read to answer; a camera takes a
+  /// second or two to settle its exposure before the first frame.
+  const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+  /// How long `close` waits for the device to be released.
+  const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
+  /// The frame rate a mode is chosen towards: what the macOS presets deliver
+  /// and what the camera tiers ask the encoder for, with room for 30000/1001.
+  /// A faster device mode would only be encoded down again.
+  const PREFERRED_FPS: f64 = 30.5;
+
+  /// Media Foundation on the current thread, for as long as this lives.
+  ///
+  /// COM first and MF inside it, released in reverse by `Drop`. So every MF
+  /// object a function holds must be a local declared **after** the guard,
+  /// which Rust drops before it -- and never a temporary in a block's tail
+  /// expression, which in this edition outlives the block's locals.
+  /// Multithreaded, as screen_audio.rs is: COM pointers are `!Send`, so
+  /// everything is made and used on the thread that initialised it.
+  struct MediaFoundation;
+
+  impl MediaFoundation {
+    fn start() -> windows_core::Result<MediaFoundation> {
+      // SAFETY: paired by `Drop`, on a thread this module created.
+      unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        if let Err(error) = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET) {
+          CoUninitialize();
+          return Err(error);
+        }
+      }
+      Ok(MediaFoundation)
+    }
+  }
+
+  impl Drop for MediaFoundation {
+    fn drop(&mut self) {
+      // SAFETY: `start` succeeded on this thread, and what was made under it
+      // has already been dropped (see the struct comment).
+      unsafe {
+        let _ = MFShutdown();
+        CoUninitialize();
+      }
+    }
+  }
+
+  fn describe(error: &windows_core::Error) -> String {
+    format!("0x{:08X} {}", error.code().0, error.message())
+  }
+
+  /// A failure as the page will read it.
+  ///
+  /// **Windows has no camera prompt.** A desktop app the privacy setting
+  /// refuses gets a failure from the source instead, and `E_ACCESSDENIED` is
+  /// its usual shape. That has to arrive as `camera_denied` -- "Camera access
+  /// was refused." -- rather than as the generic sentence, because on a
+  /// machine with the setting off it is not the rare path but the only one
+  /// (the work order's §4; row D-62).
+  fn camera_error(stage: &str, error: &windows_core::Error) -> VoiceError {
+    if error.code() == E_ACCESSDENIED {
+      return VoiceError::new("camera_denied", format!("camera access is not allowed ({stage})"));
+    }
+    VoiceError::new("camera_failed", format!("{stage}: {}", describe(error)))
+  }
+
+  /// Every video capture device Media Foundation knows, as owned activation
+  /// objects: each is moved out of the array the call allocated, and the
+  /// array is then freed.
+  fn enumerate() -> windows_core::Result<Vec<IMFActivate>> {
+    // SAFETY: the out-pointers are valid, a successful call initialises
+    // `count` elements of `array`, and each is read exactly once.
+    unsafe {
+      let mut attributes: Option<IMFAttributes> = None;
+      MFCreateAttributes(&mut attributes, 1)?;
+      let attributes = attributes.ok_or_else(|| windows_core::Error::from(E_FAIL))?;
+      attributes.SetGUID(
+        &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+      )?;
+      let mut array: *mut Option<IMFActivate> = std::ptr::null_mut();
+      let mut count = 0u32;
+      MFEnumDeviceSources(&attributes, &mut array, &mut count)?;
+      let mut devices = Vec::with_capacity(count as usize);
+      if !array.is_null() {
+        for index in 0..count as usize {
+          if let Some(activate) = std::ptr::read(array.add(index)) {
+            devices.push(activate);
+          }
+        }
+        CoTaskMemFree(Some(array as *const _));
+      }
+      Ok(devices)
+    }
+  }
+
+  fn string_attribute(attributes: &IMFAttributes, key: &GUID) -> Option<String> {
+    // SAFETY: a successful call hands back a CoTaskMem string we own.
+    unsafe {
+      let mut value = PWSTR::null();
+      let mut length = 0u32;
+      attributes.GetAllocatedString(key, &mut value, &mut length).ok()?;
+      let text = value.to_string().ok();
+      CoTaskMemFree(Some(value.0 as *const _));
+      text
+    }
+  }
+
+  /// What the picker lists: every camera, by its symbolic link.
+  ///
+  /// The link and not the enumeration index, because the page keeps the
+  /// chosen id in its prefs and an index moves when a camera is plugged in;
+  /// the macOS side keys on `uniqueID` for the same reason. On a thread of
+  /// its own because the command arrives on Tauri's main thread, which tao
+  /// has already made a single-threaded apartment.
+  pub fn devices() -> Vec<VideoDevice> {
+    let listed = std::thread::Builder::new()
+      .name("wherry-camera-list".into())
+      .spawn(|| -> windows_core::Result<Vec<VideoDevice>> {
+        let _mf = MediaFoundation::start()?;
+        let activates = enumerate()?;
+        let devices: Vec<VideoDevice> = activates
+          .iter()
+          .filter_map(|activate| {
+            Some(VideoDevice {
+              device_id: string_attribute(
+                activate,
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+              )?,
+              label: string_attribute(activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
+                .unwrap_or_default(),
+            })
+          })
+          .collect();
+        Ok(devices)
+      })
+      .map(|thread| thread.join());
+    match listed {
+      Ok(Ok(Ok(devices))) => devices,
+      Ok(Ok(Err(error))) => {
+        log::warn!("voice: camera list could not be read: {}", describe(&error));
+        Vec::new()
+      }
+      _ => {
+        log::warn!("voice: camera list thread failed");
+        Vec::new()
+      }
+    }
+  }
+
+  /// One of the device's own modes, as `GetNativeMediaType` lists it.
+  #[derive(Clone, Copy)]
+  struct Mode {
+    index: u32,
+    subtype: GUID,
+    width: u32,
+    height: u32,
+    fps: f64,
+  }
+
+  fn frame_size(media_type: &IMFMediaType) -> Option<(u32, u32)> {
+    // SAFETY: an attribute read.
+    let size = unsafe { media_type.GetUINT64(&MF_MT_FRAME_SIZE) }.ok()?;
+    Some(((size >> 32) as u32, size as u32))
+  }
+
+  /// The stride a media type states, for a buffer that cannot report its own;
+  /// the width where it states none.
+  fn default_stride(media_type: &IMFMediaType, width: u32) -> u32 {
+    // SAFETY: an attribute read.
+    unsafe { media_type.GetUINT32(&MF_MT_DEFAULT_STRIDE) }
+      .map(|stride| (stride as i32).unsigned_abs())
+      .unwrap_or(width)
+      .max(width)
+  }
+
+  fn native_modes(reader: &IMFSourceReader) -> windows_core::Result<Vec<Mode>> {
+    let mut modes = Vec::new();
+    for index in 0u32.. {
+      // SAFETY: plain reader calls; the index runs until the reader says
+      // there are no more types.
+      let media_type = match unsafe { reader.GetNativeMediaType(VIDEO_STREAM, index) } {
+        Ok(media_type) => media_type,
+        Err(error) if error.code() == MF_E_NO_MORE_TYPES => break,
+        Err(error) => return Err(error),
+      };
+      let Ok(subtype) = (unsafe { media_type.GetGUID(&MF_MT_SUBTYPE) }) else { continue };
+      let Some((width, height)) = frame_size(&media_type) else { continue };
+      let rate = unsafe { media_type.GetUINT64(&MF_MT_FRAME_RATE) }.unwrap_or(0);
+      let (numerator, denominator) = ((rate >> 32) as u32, rate as u32);
+      let fps = if denominator == 0 { 0.0 } else { numerator as f64 / denominator as f64 };
+      modes.push(Mode { index, subtype, width, height, fps });
+    }
+    Ok(modes)
+  }
+
+  /// The mode to open, and whether the reader has to convert it.
+  ///
+  /// A native NV12 mode wins whenever one exists, as the work order's §3
+  /// asks; one taller than the ceiling is scaled on the way out (`deliver`).
+  /// Among the candidates: the tallest at or under the ceiling, else the
+  /// shortest over it; then the fastest at or under thirty frames a second,
+  /// else the slowest over; then the widest.
+  fn choose(modes: &[Mode], max_height: u32) -> Option<(Mode, bool)> {
+    let fit = |mode: &&Mode| {
+      let tall_enough = mode.height <= max_height;
+      let slow_enough = mode.fps <= PREFERRED_FPS;
+      let millis = (mode.fps * 1000.0) as i64;
+      (
+        tall_enough,
+        if tall_enough { mode.height as i64 } else { -(mode.height as i64) },
+        slow_enough,
+        if slow_enough { millis } else { -millis },
+        mode.width,
+      )
+    };
+    if let Some(mode) = modes.iter().filter(|m| m.subtype == MFVideoFormat_NV12).max_by_key(fit) {
+      return Some((*mode, false));
+    }
+    modes.iter().max_by_key(fit).map(|mode| (*mode, true))
+  }
+
+  /// The source reader, allowed to convert.
+  ///
+  /// Permission to convert is given when the reader is created or not at
+  /// all, so it is given here before anyone knows whether the device needs
+  /// it; with a native NV12 mode selected there is nothing for it to insert.
+  /// **`ENABLE_ADVANCED_VIDEO_PROCESSING`, not `ENABLE_VIDEO_PROCESSING`**:
+  /// the plain one converts YUV to RGB-32 and deinterlaces, and nothing else,
+  /// so it could never produce NV12.
+  fn open_reader(media_source: &IMFMediaSource) -> windows_core::Result<IMFSourceReader> {
+    // SAFETY: plain calls on objects we own.
+    unsafe {
+      let mut attributes: Option<IMFAttributes> = None;
+      MFCreateAttributes(&mut attributes, 1)?;
+      let attributes = attributes.ok_or_else(|| windows_core::Error::from(E_FAIL))?;
+      attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;
+      let reader = MFCreateSourceReaderFromMediaSource(media_source, &attributes)?;
+      reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
+      reader.SetStreamSelection(VIDEO_STREAM, true)?;
+      Ok(reader)
+    }
+  }
+
+  /// Selects `mode` on the device and, where it is not NV12, asks the reader
+  /// for NV12 at the same size and rate.
+  ///
+  /// The native mode is selected first on purpose: an output type set on its
+  /// own leaves the reader free to pick whichever native mode it can convert
+  /// from, a larger one included, and the size chosen here would be lost.
+  fn set_mode(reader: &IMFSourceReader, mode: Mode, converted: bool) -> windows_core::Result<()> {
+    // SAFETY: plain reader and attribute calls on objects we own.
+    unsafe {
+      let native = reader.GetNativeMediaType(VIDEO_STREAM, mode.index)?;
+      reader.SetCurrentMediaType(VIDEO_STREAM, None, &native)?;
+      if converted {
+        let output = MFCreateMediaType()?;
+        output.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+        output.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+        output.SetUINT64(&MF_MT_FRAME_SIZE, native.GetUINT64(&MF_MT_FRAME_SIZE)?)?;
+        if let Ok(rate) = native.GetUINT64(&MF_MT_FRAME_RATE) {
+          output.SetUINT64(&MF_MT_FRAME_RATE, rate)?;
+        }
+        reader.SetCurrentMediaType(VIDEO_STREAM, None, &output)?;
+      }
+      Ok(())
+    }
+  }
+
+  /// A subtype's FOURCC (`YUY2`, `MJPG`) where it has one -- the first field
+  /// of every FOURCC-based subtype GUID -- and the number otherwise.
+  fn fourcc(subtype: &GUID) -> String {
+    let bytes = subtype.data1.to_le_bytes();
+    if bytes.iter().all(|b| b.is_ascii_graphic()) {
+      bytes.iter().map(|b| *b as char).collect()
+    } else {
+      format!("{:#010x}", subtype.data1)
+    }
+  }
+
+  /// NV12 from a first scanline and a signed pitch: the luma rows, then the
+  /// interleaved chroma rows, each `pitch` bytes on from the row above it. A
+  /// negative pitch is a bottom-up buffer whose first scanline is still the
+  /// top row, and the same arithmetic walks it -- handled at the copy, as the
+  /// work order's §4 asks, rather than flipped downstream.
+  ///
+  /// # Safety
+  /// `scanline0` must address a locked `width`x`height` NV12 frame laid out
+  /// at `pitch`.
+  unsafe fn copy_nv12(scanline0: *const u8, pitch: isize, width: u32, height: u32, buffer: &mut NV12Buffer) {
+    let (width, height) = (width as usize, height as usize);
+    let (stride_y, stride_uv) = buffer.strides();
+    let (dst_y, dst_uv) = buffer.data_mut();
+    for row in 0..height {
+      let src = std::slice::from_raw_parts(scanline0.offset(row as isize * pitch), width);
+      dst_y[row * stride_y as usize..][..width].copy_from_slice(src);
+    }
+    let chroma_bytes = width.div_ceil(2) * 2;
+    for row in 0..height.div_ceil(2) {
+      let src = std::slice::from_raw_parts(scanline0.offset((height + row) as isize * pitch), chroma_bytes);
+      dst_uv[row * stride_uv as usize..][..chroma_bytes].copy_from_slice(src);
+    }
+  }
+
+  /// One sample into an NV12 buffer at the real pitch, scaled under the
+  /// ceiling where the mode is taller than it, and into the source. False
+  /// when there was nothing to deliver.
+  fn deliver(
+    sample: &IMFSample,
+    (width, height): (u32, u32),
+    stride: u32,
+    max_height: u32,
+    source: &NativeVideoSource,
+    announced: &mut bool,
+  ) -> bool {
+    let mut buffer = NV12Buffer::new(width, height);
+    // SAFETY: every lock is paired with its unlock before the block ends, and
+    // the copy reads only rows inside the locked frame.
+    let (via, pitch) = unsafe {
+      let Ok(media) = sample.GetBufferByIndex(0) else { return false };
+      // `Lock2D` wherever the buffer has it, because it is the one call that
+      // states the pitch. `ConvertToContiguousBuffer` hands back a packed
+      // copy with no stride at all, and a frame copied at the wrong stride is
+      // a sheared picture rather than an error (row D-63).
+      if let Ok(two_d) = media.cast::<IMF2DBuffer>() {
+        let mut scanline0 = std::ptr::null_mut();
+        let mut pitch = 0i32;
+        if two_d.Lock2D(&mut scanline0, &mut pitch).is_err() || scanline0.is_null() {
+          return false;
+        }
+        copy_nv12(scanline0, pitch as isize, width, height, &mut buffer);
+        let _ = two_d.Unlock2D();
+        ("Lock2D", pitch as i64)
+      } else {
+        // No 2D interface: a plain lock at the stride the media type states,
+        // and only when the buffer is long enough to hold the frame at it.
+        let mut data = std::ptr::null_mut();
+        let mut length = 0u32;
+        if media.Lock(&mut data, None, Some(&mut length as *mut u32)).is_err() || data.is_null() {
+          return false;
+        }
+        let rows = height as usize + (height as usize).div_ceil(2);
+        let needed = stride as usize * (rows - 1) + (width as usize).div_ceil(2) * 2;
+        if (length as usize) < needed {
+          let _ = media.Unlock();
+          if !*announced {
+            *announced = true;
+            log::warn!(
+              "voice: camera buffer of {length} bytes is short of {needed} for {width}x{height} at stride {stride}; frames dropped"
+            );
+          }
+          return false;
+        }
+        copy_nv12(data, stride as isize, width, height, &mut buffer);
+        let _ = media.Unlock();
+        ("a plain lock", stride as i64)
+      }
+    };
+    let scaled = (height > max_height).then(|| fit_height(width, height, max_height));
+    if !*announced {
+      *announced = true;
+      log::info!(
+        "voice: camera delivering {width}x{height} NV12 at pitch {pitch} via {via}{}",
+        match scaled {
+          Some((w, h)) => format!(", scaled to {w}x{h} for the {max_height}p ceiling"),
+          None => String::new(),
+        }
+      );
+    }
+    let buffer = match scaled {
+      Some((w, h)) => buffer.scale(w as i32, h as i32),
+      None => buffer,
+    };
+    source.capture_frame(&VideoFrame {
+      rotation: VideoRotation::VideoRotation0,
+      timestamp_us: 0,
+      frame_metadata: None,
+      buffer,
+    });
+    true
+  }
+
+  /// An open camera: the thread reading it, and how to stop it.
+  pub struct Camera {
+    stop: Arc<AtomicBool>,
+    frames: Arc<AtomicU64>,
+    /// Disconnected when the capture thread exits, so `close` can wait for
+    /// the source to be shut down without trusting a join to return.
+    done: Receiver<()>,
+  }
+
+  impl Camera {
+    /// Opens `device_id` (or the first camera) into `source`, in the mode
+    /// `choose` picks for `max_height`. Blocks until the first read has
+    /// answered -- on Windows a refusal can arrive there as well as at
+    /// activation -- so call it from a blocking task.
+    pub fn open(
+      device_id: Option<&str>,
+      max_height: u32,
+      source: NativeVideoSource,
+    ) -> Result<Camera, VoiceError> {
+      let stop = Arc::new(AtomicBool::new(false));
+      let frames = Arc::new(AtomicU64::new(0));
+      let (ready_tx, ready_rx) = channel::<Result<(), VoiceError>>();
+      let (done_tx, done_rx) = channel::<()>();
+      let wanted = device_id.map(str::to_owned);
+      {
+        let stop = stop.clone();
+        let frames = frames.clone();
+        std::thread::Builder::new()
+          .name("wherry-camera".into())
+          .spawn(move || {
+            let _done = done_tx;
+            if let Err(error) = run(wanted.as_deref(), max_height, source, &stop, &frames, &ready_tx) {
+              let _ = ready_tx.send(Err(error));
+            }
+          })
+          .map_err(|error| VoiceError::new("camera_failed", error.to_string()))?;
+      }
+      match ready_rx.recv_timeout(OPEN_TIMEOUT) {
+        Ok(Ok(())) => Ok(Camera { stop, frames, done: done_rx }),
+        Ok(Err(error)) => Err(error),
+        Err(_) => {
+          stop.store(true, Ordering::Relaxed);
+          Err(VoiceError::new("camera_failed", "the camera did not answer its first read"))
+        }
+      }
+    }
+
+    pub fn frames(&self) -> u64 {
+      self.frames.load(Ordering::Relaxed)
+    }
+
+    /// Stops the read loop and waits for the thread to shut the source down,
+    /// which is what turns the camera light off. The wait is bounded: a
+    /// `ReadSample` that never returns -- a device that hung rather than
+    /// failed -- would otherwise hold a call's teardown forever, and a loud
+    /// line saying the device may still be open is the better failure.
+    pub fn close(self) {
+      self.stop.store(true, Ordering::Relaxed);
+      if let Err(RecvTimeoutError::Timeout) = self.done.recv_timeout(CLOSE_TIMEOUT) {
+        log::warn!(
+          "voice: camera did not release within {} s; its read is still blocked and the device may still be open",
+          CLOSE_TIMEOUT.as_secs()
+        );
+      }
+      log::info!("voice: camera closed after {} frame(s)", self.frames());
+    }
+  }
+
+  /// The capture thread's whole life. An error is returned only before the
+  /// first read has answered, which is what `open` waits on; after that a
+  /// failure is a log line and the loop ends.
+  fn run(
+    device_id: Option<&str>,
+    max_height: u32,
+    source: NativeVideoSource,
+    stop: &AtomicBool,
+    frames: &AtomicU64,
+    ready: &Sender<Result<(), VoiceError>>,
+  ) -> Result<(), VoiceError> {
+    let _mf = MediaFoundation::start().map_err(|error| camera_error("starting Media Foundation", &error))?;
+    let activates = enumerate().map_err(|error| camera_error("listing cameras", &error))?;
+    let Some(first) = activates.first() else {
+      return Err(VoiceError::new("no_camera", "no camera on this device"));
+    };
+    // The stored id, or the first camera when it has gone -- unplugged since
+    // it was chosen -- which is what the macOS side does with a `uniqueID` it
+    // no longer finds.
+    let activate = device_id
+      .and_then(|id| {
+        activates.iter().find(|activate| {
+          string_attribute(activate, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK).as_deref()
+            == Some(id)
+        })
+      })
+      .unwrap_or(first);
+    let label = string_attribute(activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME).unwrap_or_default();
+    // SAFETY: activating an object the enumeration handed us.
+    let media_source: IMFMediaSource = unsafe { activate.ActivateObject() }
+      .map_err(|error| camera_error("opening the camera", &error))?;
+    let result = read(&media_source, &label, max_height, source, stop, frames, ready);
+    // Every way out shuts the source down, success or failure, because that
+    // is the light going off (row D-61). Releasing the reader inside `read`
+    // has normally done it already, and a second `Shutdown` only answers
+    // MF_E_SHUTDOWN.
+    // SAFETY: a plain call on an object we own.
+    unsafe {
+      let _ = media_source.Shutdown();
+    }
+    result
+  }
+
+  fn read(
+    media_source: &IMFMediaSource,
+    label: &str,
+    max_height: u32,
+    source: NativeVideoSource,
+    stop: &AtomicBool,
+    frames: &AtomicU64,
+    ready: &Sender<Result<(), VoiceError>>,
+  ) -> Result<(), VoiceError> {
+    let reader =
+      open_reader(media_source).map_err(|error| camera_error("creating the source reader", &error))?;
+    let modes = native_modes(&reader).map_err(|error| camera_error("listing the camera's modes", &error))?;
+    let Some((mode, converted)) = choose(&modes, max_height) else {
+      return Err(VoiceError::new("camera_failed", "the camera offers no video mode"));
+    };
+    set_mode(&reader, mode, converted).map_err(|error| camera_error("setting the camera's mode", &error))?;
+    // What the reader will actually deliver, which is what every copy is
+    // sized from.
+    // SAFETY: a plain reader call.
+    let current = unsafe { reader.GetCurrentMediaType(VIDEO_STREAM) }
+      .map_err(|error| camera_error("reading the mode back", &error))?;
+    let Some((mut width, mut height)) = frame_size(&current) else {
+      return Err(VoiceError::new("camera_failed", "the camera's mode has no frame size"));
+    };
+    let mut stride = default_stride(&current, width);
+    drop(current);
+    // The line row D-64 reads: which branch, once per open.
+    log::info!(
+      "voice: camera opened ({label}), {width}x{height} at {:.1} fps, {}",
+      mode.fps,
+      if converted {
+        format!("{} converted to NV12 by the source reader", fourcc(&mode.subtype))
+      } else {
+        "native NV12".to_string()
+      }
+    );
+
+    // **A software camera may not pace itself.** A hardware camera blocks each
+    // read until its next frame; VCamSample generates one whenever it is asked
+    // and read 842 frames in five seconds from a 30 fps mode (2026-09-15),
+    // every one of them copied, scaled and handed to an encoder that keeps
+    // thirty. So reads are held to the mode's rate: the wait lands between
+    // reads, where a paced device would have blocked anyway, and a device that
+    // is already on time never waits at all.
+    let interval = (mode.fps > 0.0).then(|| Duration::from_secs_f64(1.0 / mode.fps));
+    let mut next = Instant::now();
+    let mut answered = false;
+    let mut announced = false;
+    while !stop.load(Ordering::Relaxed) {
+      let mut flags = 0u32;
+      let mut sample: Option<IMFSample> = None;
+      // SAFETY: synchronous mode -- this blocks until a sample, a tick or a
+      // failure, which is why `stop` is only seen between reads.
+      let result = unsafe {
+        reader.ReadSample(
+          VIDEO_STREAM,
+          0,
+          None,
+          Some(&mut flags as *mut u32),
+          None,
+          Some(&mut sample as *mut Option<IMFSample>),
+        )
+      };
+      let ended =
+        flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) as u32 != 0;
+      if !answered {
+        if let Err(error) = &result {
+          return Err(camera_error("the first read", error));
+        }
+        if ended {
+          return Err(VoiceError::new(
+            "camera_failed",
+            format!("the first read ended the stream (flags 0x{flags:X})"),
+          ));
+        }
+        answered = true;
+        let _ = ready.send(Ok(()));
+      }
+      if let Err(error) = &result {
+        log::warn!(
+          "voice: camera read failed after {} frame(s): {}",
+          frames.load(Ordering::Relaxed),
+          describe(error)
+        );
+        break;
+      }
+      if ended {
+        log::warn!(
+          "voice: camera stream ended after {} frame(s) (flags 0x{flags:X})",
+          frames.load(Ordering::Relaxed)
+        );
+        break;
+      }
+      if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0 {
+        // SAFETY: a plain reader call.
+        if let Ok(changed) = unsafe { reader.GetCurrentMediaType(VIDEO_STREAM) } {
+          if let Some(size) = frame_size(&changed) {
+            (width, height) = size;
+            stride = default_stride(&changed, width);
+            announced = false;
+            log::info!("voice: camera mode changed to {width}x{height}");
+          }
+        }
+      }
+      let Some(sample) = sample else { continue };
+      if deliver(&sample, (width, height), stride, max_height, &source, &mut announced) {
+        frames.fetch_add(1, Ordering::Relaxed);
+      }
+      if let Some(interval) = interval {
+        next += interval;
+        match next.checked_duration_since(Instant::now()) {
+          Some(wait) => std::thread::sleep(wait),
+          None => next = Instant::now(),
+        }
+      }
+    }
+    Ok(())
   }
 }

@@ -132,6 +132,11 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Direct3D11",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
+  # The camera (voice/capture.rs's `win`; stage W4): Media Foundation's
+  # device enumeration and its source reader, read synchronously on one
+  # thread. Attributes are read through the typed getters, so nothing here
+  # needs a PROPVARIANT.
+  "Win32_Media_MediaFoundation",
 ] }
 windows-core = "0.61"
 # `NativeAudioSource::capture_frame` is async in signature and synchronous

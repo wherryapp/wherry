@@ -292,8 +292,8 @@ export function VoiceSettings({
  * deliberately not the call's track, because this is answered *before* a
  * call and because holding a camera open in Settings is exactly the kind of
  * light nobody wants left on. Where the app's own engine opens the
- * *camera* (a macOS shell since 2026-09-08 — not Windows, which renders
- * and shares but has no camera capture), the list is the shell's and the preview
+ * *camera* (a macOS shell since 2026-09-08, a Windows shell since stage
+ * W4), the list is the shell's and the preview
  * is hidden with one sentence: the shell opens the camera into the call,
  * not into a page element, and a preview outside a call is its own later
  * piece of work (docs/prompts/video-next-stages-handoff.md §3.3).

@@ -32,8 +32,9 @@ export function createTransport(override?: "webview" | null): VoiceTransport {
  *
  * The session needs this because "this transport cannot open a camera" and
  * "there is another engine that can" stopped being the same sentence on
- * 2026-09-10: Windows renders a received tile natively and still has no
- * camera capture (stage W3), so the camera button is the switch while the
+ * 2026-09-10: a Windows shell from stage W3 renders a received tile
+ * natively with no camera capture (W4 added it, and an installed W3 shell
+ * still answers this way), so the camera button is the switch while the
  * screen button shares in place. A phone webview that cannot share a
  * screen has nothing to switch *to*, and offering it a switch would be a
  * dead control. Nothing else may ask which implementation it got.

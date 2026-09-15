@@ -31,18 +31,20 @@ export type NativeMediaProbe = {
   agc?: string;
   ns?: string;
   /** The shell does *all* of video natively — camera, screen and render.
-   *  macOS since 2026-09-08; no other platform, since Windows has no
-   *  camera capture. Absent from an older shell, which reads as false. */
+   *  macOS since 2026-09-08, Windows since stage W4 opened its camera
+   *  (2026-09-14). Absent from an older shell, which reads as false. */
   video?: boolean;
   /** The shell can capture a screen or window through a picker of its own
    *  (macOS, and Windows since 2026-09-09; stage W1). Split from `video`
-   *  because Windows came apart: it captured a screen months before it
-   *  could draw a received tile, and it still has no camera. */
+   *  because Windows came apart: it captured a screen before it could draw
+   *  a received tile or open a camera. */
   screenCapture?: boolean;
   /** The shell can draw received tiles natively: macOS since 2026-09-08
    *  (stage 3N), Windows since 2026-09-10 (stage W3, a child HWND over
-   *  WebView2). True on Windows while `video` stays false — the mixed
-   *  answer `rules.ts`'s `nativeEngine` exists to tell from a phone. */
+   *  WebView2). A Windows shell built between W3 and W4 answers this true
+   *  with `video` false — the mixed answer `rules.ts`'s `nativeEngine`
+   *  exists to tell from a phone, and one an installed shell can still
+   *  give. */
   videoRender?: boolean;
 };
 
