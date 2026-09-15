@@ -1,0 +1,132 @@
+From 6a32ecc04be57e5686d1177307c009967c251a6c Mon Sep 17 00:00:00 2001
+From: Connor Tarabocchia <318465412+ctarabocchia@users.noreply.github.com>
+Date: Tue, 15 Sep 2026 06:20:52 -0400
+Subject: [PATCH] webrtc-sys: open Windows' console default, not the
+ communications role
+
+Windows 11 treats a render stream opened through the eCommunications role as
+a call and lowers every other application's audio (by 80%, the default
+Communications setting) for as long as that stream plays.
+AudioDeviceWindowsCore starts on kDefaultCommunicationDevice, and
+WebRtcVoiceEngine::Init's adm_helpers::Init selects it again when the first
+PeerConnection is created, so a PlatformAudio call ducked the whole system
+from its first second and, because playout is kept open, until the process
+exited.
+
+AdmProxy now maps kDefaultCommunicationDevice to kDefaultDevice on Windows in
+both WindowsDeviceType setters, and selects the console default when the
+platform ADM is created with nothing selected. Capture is mapped with render
+so the two defaults stay a pair. A device chosen by index is untouched, and
+nothing changes off Windows.
+
+Measured with a probe opening one stream shape at a time against another
+process's tone: only render through eCommunications ducks. With this change
+a native call leaves the tone at its baseline during and after, answered or
+not, with audio flowing both ways.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ webrtc-sys/src/adm_proxy.cpp | 52 +++++++++++++++++++++++++++++++++---
+ 1 file changed, 49 insertions(+), 3 deletions(-)
+
+diff --git a/webrtc-sys/src/adm_proxy.cpp b/webrtc-sys/src/adm_proxy.cpp
+index 98d8468..7497b43 100644
+--- a/webrtc-sys/src/adm_proxy.cpp
++++ b/webrtc-sys/src/adm_proxy.cpp
+@@ -140,7 +140,8 @@ bool AdmProxy::EnsurePlatformAdmCreated() {
+     platform_adm_->RegisterAudioCallback(audio_transport_);
+   }
+ 
+-  // Re-apply any device selection made before the ADM existed
++  // Re-apply any device selection made before the ADM existed. A stored
++  // default role has already been through ConsoleRole.
+   if (selected_playout_device_.has_value()) {
+     if (auto* index = std::get_if<uint16_t>(&*selected_playout_device_)) {
+       platform_adm_->SetPlayoutDevice(*index);
+@@ -149,6 +150,13 @@ bool AdmProxy::EnsurePlatformAdmCreated() {
+           std::get<WindowsDeviceType>(*selected_playout_device_));
+     }
+   }
++#if defined(_WIN32)
++  else {
++    // Nothing selected yet, and AudioDeviceWindowsCore's own starting value
++    // is the communications role (see ConsoleRole).
++    platform_adm_->SetPlayoutDevice(webrtc::AudioDeviceModule::kDefaultDevice);
++  }
++#endif
+   if (selected_recording_device_.has_value()) {
+     if (auto* index = std::get_if<uint16_t>(&*selected_recording_device_)) {
+       platform_adm_->SetRecordingDevice(*index);
+@@ -157,6 +165,11 @@ bool AdmProxy::EnsurePlatformAdmCreated() {
+           std::get<WindowsDeviceType>(*selected_recording_device_));
+     }
+   }
++#if defined(_WIN32)
++  else {
++    platform_adm_->SetRecordingDevice(webrtc::AudioDeviceModule::kDefaultDevice);
++  }
++#endif
+ 
+   // Re-register an observer set before the ADM existed
+   if (audio_observer_) {
+@@ -410,6 +423,31 @@ int32_t AdmProxy::RecordingDeviceName(uint16_t index,
+   });
+ }
+ 
++namespace {
++
++// Windows 11 treats a render stream opened through the eCommunications role
++// as a call, and ducks every other application's audio for as long as that
++// stream plays (Sound > Communications, "Reduce the volume of other sounds by
++// 80%", which is the default). libwebrtc asks for exactly that role unless
++// told otherwise: AudioDeviceWindowsCore starts on
++// kDefaultCommunicationDevice, and WebRtcVoiceEngine::Init's
++// adm_helpers::Init selects it again when the first PeerConnection is
++// created. Chromium's default is the console role, which Windows does not
++// duck for, so "the default device" means the console default here as well.
++// A device chosen by index is never touched: only the two default roles are
++// WindowsDeviceType values.
++webrtc::AudioDeviceModule::WindowsDeviceType ConsoleRole(
++    webrtc::AudioDeviceModule::WindowsDeviceType device) {
++#if defined(_WIN32)
++  if (device == webrtc::AudioDeviceModule::kDefaultCommunicationDevice) {
++    return webrtc::AudioDeviceModule::kDefaultDevice;
++  }
++#endif
++  return device;
++}
++
++}  // namespace
++
+ int32_t AdmProxy::SetPlayoutDevice(uint16_t index) {
+   return RunOnWorker([this, index] {
+     RTC_DCHECK_RUN_ON(worker_thread_);
+@@ -421,7 +459,8 @@ int32_t AdmProxy::SetPlayoutDevice(uint16_t index) {
+   });
+ }
+ 
+-int32_t AdmProxy::SetPlayoutDevice(WindowsDeviceType device) {
++int32_t AdmProxy::SetPlayoutDevice(WindowsDeviceType requested) {
++  const WindowsDeviceType device = ConsoleRole(requested);
+   return RunOnWorker([this, device] {
+     RTC_DCHECK_RUN_ON(worker_thread_);
+     selected_playout_device_ = DeviceSelection(device);
+@@ -443,7 +482,14 @@ int32_t AdmProxy::SetRecordingDevice(uint16_t index) {
+   });
+ }
+ 
+-int32_t AdmProxy::SetRecordingDevice(WindowsDeviceType device) {
++// The capture half is mapped too, although a capture stream on the
++// communications role does not duck anything by itself: the two defaults
++// must stay a pair, or somebody whose headset is their default communications
++// device and whose speakers are their default device would capture from one
++// and hear the call on the other. Both console defaults is also exactly what
++// the webview engine opens.
++int32_t AdmProxy::SetRecordingDevice(WindowsDeviceType requested) {
++  const WindowsDeviceType device = ConsoleRole(requested);
+   return RunOnWorker([this, device] {
+     RTC_DCHECK_RUN_ON(worker_thread_);
+     selected_recording_device_ = DeviceSelection(device);
+-- 
+2.55.0
+
