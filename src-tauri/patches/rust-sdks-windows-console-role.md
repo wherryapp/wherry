@@ -94,6 +94,13 @@ plays, with a baseline of −5.0 dBFS:
   broadband during the answered call and back to silence after: the call's
   audio still reaches the device, through the console-role stream.
 
+**And from the pinned revision, the same day.** After the push and the bump,
+the rig built the `--debug` bundle from `6a32ecc` fetched from GitHub — the
+checkout's `adm_proxy.cpp` hashes `ef800137…`, byte for byte the file verified
+above — and the installed shell's probe reported `livekitRev` as
+`wherry/windows-console-role 6a32ecc0`. A lone native call then read **−5.0
+dBFS during and −5.0 after**, against a −5.0 baseline.
+
 **Off Windows:** the pushed commit **compiles on macOS** — `cargo check` on the
 dev Mac built `webrtc-sys`, bridge included, from `6a32ecc`. That behaviour
 there is unchanged is believed rather than measured (the helper returns its
