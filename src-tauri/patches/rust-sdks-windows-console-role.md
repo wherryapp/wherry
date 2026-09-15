@@ -1,12 +1,14 @@
 # rust-sdks-windows-console-role.patch
 
 One commit on `wherryapp/rust-sdks`, on top of `wherry/stage-3n` at
-`e75845b` (the revision `Cargo.toml` pins), written 2026-09-15 for row S-16
-in `docs/regression/desktop.md`: `webrtc-sys/src/adm_proxy.cpp` stops handing
-libwebrtc's Windows audio module the **communications** role for "the default
-device", and hands it the **console** role instead. Local branch
-`wherry/windows-console-role` in the fork clone; not pushed, and the pinned
-revision is not bumped.
+`e75845b` (the revision `Cargo.toml` pinned before it), written 2026-09-15 for
+row S-16 in `docs/regression/desktop.md`: `webrtc-sys/src/adm_proxy.cpp` stops
+handing libwebrtc's Windows audio module the **communications** role for "the
+default device", and hands it the **console** role instead. **Pushed the same
+day** as `wherry/windows-console-role` (commit `6a32ecc`, a new branch, so
+`wherry/stage-3n` and #1408's `wherry/frame-cryptor-detach` are untouched);
+`Cargo.toml`'s `rev` pins it and `LIVEKIT_REV` names it. Like the others it is
+meant to go upstream as its own pull request once the CLA for #1408 is signed.
 
 ## What was wrong
 
@@ -92,9 +94,11 @@ plays, with a baseline of −5.0 dBFS:
   broadband during the answered call and back to silence after: the call's
   audio still reaches the device, through the console-role stream.
 
-**Believed, not built:** that macOS, Linux and the phones are unaffected. The
-helper returns its argument there and the new branches are `_WIN32` only, but
-no non-Windows build of this commit has been run.
+**Off Windows:** the pushed commit **compiles on macOS** — `cargo check` on the
+dev Mac built `webrtc-sys`, bridge included, from `6a32ecc`. That behaviour
+there is unchanged is believed rather than measured (the helper returns its
+argument and the new branches are `_WIN32` only); Linux and the phones were not
+built.
 
 **Not addressed:** libwebrtc still keeps playout open after a call, so the shell
 holds the output device for the life of the process. On the console role that

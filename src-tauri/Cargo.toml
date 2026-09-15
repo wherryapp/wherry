@@ -48,16 +48,19 @@ tauri-plugin-single-instance = "2"
 # the prebuilt libwebrtc archive from the SDK's GitHub releases at compile
 # time and needs clang 21 on Linux; release.yml carries both.
 # Since 2026-09-08 the dependency is the wherryapp fork itself, not upstream
-# plus a `[patch]`: four commits sit on top of upstream's dee418bb (the
+# plus a `[patch]`: five commits sit on top of upstream's dee418bb (the
 # cryptor-thread detach; `configure_audio_processing` doing something on
-# desktop; a remote track's `set_volume`; and, since the evening of
-# 2026-09-08 on `wherry/stage-3n`, the detach made safe for video
-# receivers -- the null it handed them segfaulted the shell the first time a
-# received video track's cryptor dropped) and they touch `webrtc-sys`,
-# `libwebrtc` and `livekit`, which one patched crate cannot carry. Each is
-# also kept in patches/ with its note. When upstream merges them, point this
-# back at livekit/rust-sdks and bump `rev` with LIVEKIT_REV in src/voice/mod.rs.
-livekit = { git = "https://github.com/wherryapp/rust-sdks", rev = "e75845b1f0efc311d64c9570737c4f404d072c33", features = ["rustls-tls-native-roots"] }
+# desktop; a remote track's `set_volume`; since the evening of 2026-09-08 on
+# `wherry/stage-3n`, the detach made safe for video receivers -- the null it
+# handed them segfaulted the shell the first time a received video track's
+# cryptor dropped; and since 2026-09-15 on `wherry/windows-console-role`,
+# Windows' console default device instead of the communications role, without
+# which Windows 11 lowers every other application's sound during a call and
+# after it, row S-16) and they touch `webrtc-sys`, `libwebrtc` and `livekit`,
+# which one patched crate cannot carry. Each is also kept in patches/ with its
+# note. When upstream merges them, point this back at livekit/rust-sdks and
+# bump `rev` with LIVEKIT_REV in src/voice/mod.rs.
+livekit = { git = "https://github.com/wherryapp/rust-sdks", rev = "6a32ecc04be57e5686d1177307c009967c251a6c", features = ["rustls-tls-native-roots"] }
 # Only for naming the room event receiver's type; the runtime is Tauri's.
 tokio = { version = "1", features = ["sync"] }
 # `StreamExt::next` on the SDK's `NativeVideoStream` (voice/render.rs): the
