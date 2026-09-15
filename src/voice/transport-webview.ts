@@ -384,15 +384,16 @@ export class WebviewTransport implements VoiceTransport {
         // The three processing switches are off by requirement, not
         // preference -- see transport-rules.ts's screenAudioCapture.
         //
-        // THIS PATH DOES NOT MEET REQUIREMENT 3, and since 2026-09-09 that
-        // is measured rather than suspected: Chromium's loopback capture
+        // REQUIREMENT 3 IS MET HERE ONLY IN CHROMIUM ON WINDOWS 11. Since
+        // 2026-09-09 it is measured that Chromium's plain loopback capture
         // takes the render endpoint's whole mix, our own playback with it,
         // so a share on this transport returns the far end their own voice
         // (regression rows S-01 and S-11, the second of which watched both
-        // engines do opposite things in one sitting). The constraint that
-        // would fix it, `restrictOwnAudio`, is gated on Windows 11.
+        // engines do opposite things in one sitting). `restrictOwnAudio`,
+        // which screenAudioCapture now asks for, fixes that on Windows 11
+        // (row S-01b, 2026-09-15) and is dropped by Chromium before it.
         //
-        // It ships anyway, by the maintainer's decision the same day: the
+        // Everywhere else it ships anyway, by the maintainer's decision of 2026-09-09: the
         // people on the system are testing rather than relying on it. An
         // earlier version of this comment said the dark `video` flag was
         // what made that harmless -- the flag has been ON globally in

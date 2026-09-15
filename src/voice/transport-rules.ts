@@ -276,18 +276,34 @@ export function videoOptionsFor(
  *
  * Chromium may ignore any of these on a display capture; asking is still
  * right, and what it actually honours is a Windows row.
+ *
+ * `restrictOwnAudio` is requirement 3 — the share must not carry the call's
+ * own incoming audio back to the far end — on the one webview path that can
+ * meet it. Chromium on Windows 11 honours it: row S-01b (2026-09-15) read the
+ * page's own tone leave the capture while another application's stayed, on a
+ * source Chromium names `loopbackWithoutChrome`. Everywhere else it is
+ * ignored rather than refused — Chromium drops it before Windows 11, and an
+ * engine that does not know the name skips it — so asking costs nothing. It
+ * is not needed in the desktop shell, which captures a Windows share natively.
+ * Two things change for the person sharing in Chromium: the capture leaves
+ * out *everything the browser plays*, another tab included (a tab's sound
+ * still travels with a share of that tab), and Chrome words its checkbox
+ * "Also share all audio outputs" because the capture then covers every
+ * output device.
  */
 export function screenAudioCapture(): {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
   channelCount: number;
+  restrictOwnAudio: boolean;
 } {
   return {
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
     channelCount: 2,
+    restrictOwnAudio: true,
   };
 }
 

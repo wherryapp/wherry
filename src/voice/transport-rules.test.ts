@@ -311,6 +311,13 @@ describe("screen share audio", () => {
     assert.equal(capture.channelCount, 2);
   });
 
+  it("asks for the browser's own output to be left out of the capture", () => {
+    // Requirement 3 on the webview path: without it a share from a Chromium
+    // browser returns the far end their own voice (row S-01). Honoured on
+    // Windows 11 (row S-01b), ignored everywhere else.
+    assert.equal(screenAudioCapture().restrictOwnAudio, true);
+  });
+
   it("publishes without the speech tricks that ruin music", () => {
     const publish = screenAudioPublish();
     // dtx stops sending during silence -- free on speech, audible clipping
