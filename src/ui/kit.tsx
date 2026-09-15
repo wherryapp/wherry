@@ -482,6 +482,24 @@ export function PinIcon({ className }: IconProps) {
   );
 }
 
+export function SearchIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cx("h-5 w-5", className)}
+      aria-hidden="true"
+    >
+      <circle cx="8.5" cy="8.5" r="5" />
+      <path d="m12.5 12.5 4 4" />
+    </svg>
+  );
+}
+
 export function GifIcon({ className }: IconProps) {
   return (
     <svg

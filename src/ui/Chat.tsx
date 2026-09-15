@@ -48,6 +48,7 @@ import {
   useFeatures,
 } from "./hooks";
 import { QuickSwitcher } from "./QuickSwitcher";
+import { SearchPanel, type SearchState } from "./SearchPanel";
 import {
   BackButton,
   BellIcon,
@@ -58,6 +59,7 @@ import {
   LockIcon,
   PinIcon,
   ClassPill,
+  SearchIcon,
   UsersIcon,
   HeadphonesIcon,
 } from "./kit";
@@ -312,6 +314,23 @@ export function Chat({
   const [pinsFor, setPinsFor] = useState<string | null>(null);
   /** A message id the open timeline should scroll to -- search/pin jumps. */
   const [jumpTarget, setJumpTarget] = useState<string | null>(null);
+  /** Local search. Its query outlives the panel, so a jump to a result and a
+   *  return to search finds the same list; opening it from a different
+   *  conversation starts a fresh one. */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchState, setSearchState] = useState<SearchState>({
+    from: null,
+    query: "",
+    scope: "all",
+  });
+  function openSearch(from: string | null) {
+    setSearchState((previous) =>
+      previous.from === from
+        ? previous
+        : { from, query: "", scope: from === null ? "all" : "conversation" },
+    );
+    setSearchOpen(true);
+  }
   // Owned here rather than by Timeline or Composer, because it is the one
   // piece of state they share: the bar's Reply action sets it, the
   // composer renders and consumes it. Reset on switching conversations --
@@ -393,7 +412,8 @@ export function Chat({
       composeOpen ||
       groupDetailsOpen ||
       hubDetailsFor !== null ||
-      pinsFor !== null;
+      pinsFor !== null ||
+      searchOpen;
     const onKey = (event: KeyboardEvent) => {
       // Ctrl/Cmd+Shift+M toggles the microphone while in a call. Escape
       // never hangs up -- leaving a call is a deliberate click.
@@ -432,6 +452,20 @@ export function Chat({
         setSwitcherOpen((open) => !open);
         return;
       }
+      // Ctrl/Cmd+Shift+F searches the open conversation, or everything from
+      // the list. Not plain Ctrl+F: in a browser tab that is the page's own
+      // find, which still works on what the timeline has loaded.
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "f"
+      ) {
+        if (panelOpen) return;
+        event.preventDefault();
+        setSwitcherOpen(false);
+        openSearch(selected);
+        return;
+      }
       if (event.key !== "Escape" || switcherOpen || panelOpen) return;
       if (isDesktop || selected === null) return;
       const target = event.target;
@@ -457,6 +491,7 @@ export function Chat({
     groupDetailsOpen,
     hubDetailsFor,
     pinsFor,
+    searchOpen,
     voiceState.grant,
     voiceState.capabilities,
     voiceState.phase,
@@ -744,6 +779,35 @@ export function Chat({
     );
   }
 
+  if (searchOpen) {
+    return withChrome(
+      <SearchPanel
+        conversations={conversations}
+        selfUserId={session.user.id}
+        state={searchState}
+        onStateChange={setSearchState}
+        onClose={() => setSearchOpen(false)}
+        onOpenHub={(hubId) => {
+          setSearchOpen(false);
+          setHubDetailsFor(hubId);
+        }}
+        onJump={(hit) => {
+          setSearchOpen(false);
+          // Already stored -- it was found in the store -- so the jump is the
+          // no-payload path: select the conversation and scroll to the id.
+          void jumpToArchived({
+            conversationId: hit.conversationId,
+            messageId: hit.messageId,
+            payload: null,
+            senderUserId: hit.senderUserId,
+            senderDeviceId: hit.senderDeviceId,
+            sentAt: hit.sentAt,
+          });
+        }}
+      />
+    );
+  }
+
   if (composeOpen) {
     return withChrome(
       <Compose
@@ -836,6 +900,9 @@ export function Chat({
                 at the right edge of the list's title bar. */}
             <IconButton label="New conversation" onClick={() => setComposeOpen(true)}>
               <ComposeIcon />
+            </IconButton>
+            <IconButton label="Search messages" onClick={() => openSearch(null)}>
+              <SearchIcon />
             </IconButton>
             <IconButton label="Friends" onClick={() => setFriendsOpen(true)}>
               <UsersIcon />
@@ -982,6 +1049,15 @@ export function Chat({
                       conversation={current}
                       openCall={openCalls.get(current.id)}
                     />
+                  )}
+                  {current && current.channelKind !== "voice" && (
+                    <IconButton
+                      label="Search this conversation"
+                      onClick={() => openSearch(current.id)}
+                      className="shrink-0"
+                    >
+                      <SearchIcon />
+                    </IconButton>
                   )}
                   {current?.kind === "channel" && current.hubId && (
                     <IconButton

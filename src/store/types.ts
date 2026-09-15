@@ -1,4 +1,5 @@
 import type { ConversationEventCall, ConversationEventKind } from "../api/types";
+import type { SearchOptions, SearchResult } from "./search";
 // What the client keeps locally, and the interface it keeps it behind.
 //
 // ---------------------------------------------------------------------------
@@ -292,6 +293,21 @@ export interface MessageStore {
 
   /** How many messages are stored, for a conversation or in total. */
   countMessages(conversationId?: string): Promise<number>;
+
+  /**
+   * The messages a local search matches, newest first -- the only search a
+   * sealed conversation can have (docs/prompts/local-search-plan.md).
+   *
+   * Every implementation owes `store/search.ts`'s answer, not only its
+   * matching: an edited message matches its sender's newest edit and never
+   * the text it replaced, a retracted one never matches, undecrypted rows are
+   * skipped, and this device's unsent ops apply. The IndexedDB version scans;
+   * the SQLite one Phase 5 owes may query instead, as long as it returns the
+   * rows `SearchFold` would.
+   *
+   * Rejects with the signal's reason once aborted.
+   */
+  searchMessages(options: SearchOptions): Promise<SearchResult>;
 
   putConversations(conversations: readonly StoredConversation[]): Promise<void>;
 

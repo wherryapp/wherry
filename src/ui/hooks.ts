@@ -510,10 +510,13 @@ export function useLatestMessages(
         });
 
         // Newest first, so ops are seen before the targets they modify (an
-        // op is always newer than its target). First edit seen per target is
-        // the newest and wins.
+        // op is always newer than its target). The first edit seen per
+        // target *from each sender* is that sender's newest -- kept per
+        // sender, so a newer edit from somebody without authority cannot
+        // hide the real one (store/search.ts folds the same way).
         const retractedBy = new Map<string, Set<string>>();
-        const editSeen = new Map<string, { text: string; by: string }>();
+        const editSeen = new Map<string, string>();
+        const editKey = (target: string, sender: string) => `${target} ${sender}`;
         for (const message of page) {
           const content = message.decryptFailed
             ? null
@@ -524,14 +527,9 @@ export function useLatestMessages(
               const senders = retractedBy.get(content.target) ?? new Set();
               senders.add(message.senderUserId);
               retractedBy.set(content.target, senders);
-            } else if (
-              content.kind === "edit" &&
-              !editSeen.has(content.target)
-            ) {
-              editSeen.set(content.target, {
-                text: content.text,
-                by: message.senderUserId,
-              });
+            } else if (content.kind === "edit") {
+              const key = editKey(content.target, message.senderUserId);
+              if (!editSeen.has(key)) editSeen.set(key, content.text);
             }
             continue;
           }
@@ -540,13 +538,14 @@ export function useLatestMessages(
           const retracted =
             retractedBy.get(message.messageId)?.has(message.senderUserId) ??
             false;
-          const edit = editSeen.get(message.messageId);
+          const editedText = editSeen.get(
+            editKey(message.messageId, message.senderUserId),
+          );
           const withEdit =
             content !== null &&
             content !== "unsupported" &&
-            edit !== undefined &&
-            edit.by === message.senderUserId
-              ? { ...content, text: edit.text }
+            editedText !== undefined
+              ? { ...content, text: editedText }
               : content;
           return [
             id,
