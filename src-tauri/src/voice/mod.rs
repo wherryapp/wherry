@@ -451,8 +451,15 @@ async fn pump(
           video::on_video_event(&app, session, &room);
         }
       }
-      RoomEvent::TrackUnsubscribed { publication, .. }
-      | RoomEvent::TrackPublished { publication, .. }
+      RoomEvent::TrackUnsubscribed { publication, participant, .. } => {
+        log::info!("voice: unsubscribed from {} from {}", publication.sid(), participant.identity());
+        emit(&app, session, Event::Roster { roster: roster(&room) });
+        if publication.kind() == TrackKind::Video {
+          video::on_unsubscribed(session, participant.identity().as_str(), publication.source());
+          video::on_video_event(&app, session, &room);
+        }
+      }
+      RoomEvent::TrackPublished { publication, .. }
       | RoomEvent::TrackUnpublished { publication, .. } => {
         emit(&app, session, Event::Roster { roster: roster(&room) });
         if publication.kind() == TrackKind::Video {

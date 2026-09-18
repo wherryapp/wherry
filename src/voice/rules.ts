@@ -518,6 +518,63 @@ export function subscriptionFor(input: {
   return "high";
 }
 
+/** How long a track must stay unwanted before `off` is sent. */
+export const SUBSCRIPTION_OFF_DELAY_MS = 1000;
+/** How long after an `off` before the same track may be asked for again. */
+export const SUBSCRIPTION_REON_GAP_MS = 1000;
+
+/**
+ * When to hand `subscriptionFor`'s answer to the transport: now, not at
+ * all, or after a wait (the caller re-decides then).
+ *
+ * **An `off` followed quickly by an `on` kills the picture** (reproduced on
+ * the Windows rig 2026-09-18, `docs/regression/desktop.md` Known broken).
+ * The Rust SDK drops the track the moment it is told `off`, before the SFU
+ * has acted. When the `on` arrives first the SFU either has nothing to
+ * change and never sends the track again -- a tile with nothing to bind
+ * to -- or re-sends it to a tile still bound to the old one. React produces
+ * such pairs with no person involved: an unmount and a remount in one
+ * commit, StrictMode's double effect in development, a tile flickering
+ * across the viewport edge, the page re-applying its answer after an
+ * unsubscribe. So an `off` waits until the track has been unwanted for a
+ * second, and an `on` waits until a second has passed since the last `off`.
+ * The cost is a second of video nobody sees after a tile leaves, and up to
+ * a second of placeholder when one returns straight after being turned off.
+ *
+ * Nothing is deduplicated. Repeats are what reach a publication that
+ * replaced the one last told (a camera turned off and on again is a new
+ * publication, auto-subscribed at the SFU's default), and both SDKs treat
+ * a repeat as harmless.
+ */
+export function paceSubscription(input: {
+  want: VideoQualityRequest;
+  /** The last request actually sent for this track, or null for none. */
+  sent: VideoQualityRequest | null;
+  /** When it was sent. */
+  sentAt: number | null;
+  /** When `want` last became `off` without having been sent since. */
+  offWantedSince: number | null;
+  now: number;
+}): { send: true } | { send: false; waitMs: number } {
+  const { want, sent, sentAt, now } = input;
+  if (want === "off") {
+    // Already off: a repeat, sent at once, is what tells a new publication.
+    // Never told anything is not "already off": the native shell
+    // auto-subscribes at join, so an immediate `off` there is the first half
+    // of exactly the pair this exists to prevent -- the bar's thumbnail asks
+    // for `low` a frame later.
+    if (sent === "off") return { send: true };
+    const since = input.offWantedSince ?? now;
+    const left = SUBSCRIPTION_OFF_DELAY_MS - (now - since);
+    return left > 0 ? { send: false, waitMs: left } : { send: true };
+  }
+  if (sent === "off" && sentAt !== null) {
+    const left = SUBSCRIPTION_REON_GAP_MS - (now - sentAt);
+    if (left > 0) return { send: false, waitMs: left };
+  }
+  return { send: true };
+}
+
 /**
  * Who is showing something, in the order the call bar should prefer.
  *

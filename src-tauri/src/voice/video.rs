@@ -735,11 +735,25 @@ pub async fn voice_set_video_subscription(identity: String, source: String, qual
   let Some(participant) = find_participant(&room, &identity) else { return Ok(()) };
   let Some(publication) = video_publication(&participant, source) else { return Ok(()) };
   let subscribed = quality != "off";
+  let was = publication.is_subscribed();
   publication.set_subscribed(subscribed);
   if subscribed {
     publication.set_video_quality(if quality == "high" { VideoQuality::High } else { VideoQuality::Low });
   }
-  log::debug!("voice: {identity}/{} subscription -> {quality}", word_of(source));
+  // A flip is worth a line at Info, a repeat is not (the page re-sends on
+  // every video event). `track` is whether the SDK holds a track for it
+  // now: `set_subscribed(false)` drops it locally at once, before the SFU
+  // has acted, which is the half of a tile that never binds.
+  if was != subscribed {
+    log::info!(
+      "voice: {identity}/{} subscription {} -> {quality}, track={}",
+      word_of(source),
+      if was { "on" } else { "off" },
+      publication.track().is_some()
+    );
+  } else {
+    log::debug!("voice: {identity}/{} subscription -> {quality}", word_of(source));
+  }
   Ok(())
 }
 
@@ -897,6 +911,27 @@ fn rebind_tiles(session: u64, room: &Room) {
 }
 
 // -- what the pump and the roster ask ------------------------------------------
+
+/// The SDK let go of a remote track: unbind every tile drawing it, so the
+/// next subscription binds them afresh.
+///
+/// `rebind_tiles` only binds tiles that are unbound, and a tile's frame
+/// task ends by itself only when its stream ends -- which an unsubscribe
+/// does not reliably cause. So an `off` then `on` in quick succession left
+/// the tile bound to the old track: the new one arrived, `TrackSubscribed`
+/// fired, the Details row read frames flowing, and the picture stayed frozen
+/// on its last frame for good (reproduced on the rig 2026-09-18,
+/// `scripts/rig/tile-bind.mjs burst`).
+pub fn on_unsubscribed(session: u64, identity: &str, source: TrackSource) {
+  with_state(session, |state| {
+    for (id, entry) in &state.tiles {
+      if entry.identity == identity && entry.source == source && entry.tile.is_bound() {
+        entry.tile.unbind();
+        log::info!("voice: tile {id} unbound from {identity}/{} (unsubscribed)", word_of(source));
+      }
+    }
+  });
+}
 
 /// A video-shaped room event: rebind what can be bound, and tell the page.
 pub fn on_video_event(app: &AppHandle, session: u64, room: &Room) {

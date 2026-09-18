@@ -28,6 +28,9 @@ import {
   videoDisabledReason,
   videoNeedsSwitch,
   subscriptionFor,
+  paceSubscription,
+  SUBSCRIPTION_OFF_DELAY_MS,
+  SUBSCRIPTION_REON_GAP_MS,
   videoJustStarted,
   videoLine,
   RING_TIMEOUT_MS,
@@ -317,6 +320,50 @@ test("topLayerCallSize is enforced here and only here", () => {
     subscriptionFor({ ...base, participants: 500, topLayerCallSize: null }),
     "high",
   );
+});
+
+test("paceSubscription never lets an off and an on arrive close together", () => {
+  const at = (now: number, input: Partial<Parameters<typeof paceSubscription>[0]>) =>
+    paceSubscription({ want: "low", sent: null, sentAt: null, offWantedSince: null, now, ...input });
+
+  // An unmount and a remount in one commit: the off waits, and the on that
+  // follows it a frame later goes straight out, so the SDK never hears the off.
+  assert.deepEqual(at(0, { want: "off", sent: "low", sentAt: -5000, offWantedSince: 0 }), {
+    send: false,
+    waitMs: SUBSCRIPTION_OFF_DELAY_MS,
+  });
+  assert.deepEqual(at(16, { want: "low", sent: "low", sentAt: -5000 }), { send: true });
+
+  // Unwanted for the whole delay: now it is sent.
+  assert.deepEqual(
+    at(SUBSCRIPTION_OFF_DELAY_MS, { want: "off", sent: "low", sentAt: -5000, offWantedSince: 0 }),
+    { send: true },
+  );
+  // Re-deciding partway through keeps the original deadline.
+  assert.deepEqual(at(400, { want: "off", sent: "high", sentAt: -5000, offWantedSince: 0 }), {
+    send: false,
+    waitMs: SUBSCRIPTION_OFF_DELAY_MS - 400,
+  });
+
+  // A track never told anything is not "already off": the shell
+  // auto-subscribed it, so its first off waits like any other.
+  assert.equal(at(0, { want: "off", offWantedSince: 0 }).send, false);
+
+  // Straight after a real off, the on waits out the gap...
+  assert.deepEqual(at(300, { want: "low", sent: "off", sentAt: 0 }), {
+    send: false,
+    waitMs: SUBSCRIPTION_REON_GAP_MS - 300,
+  });
+  // ...and goes once it has passed.
+  assert.deepEqual(at(SUBSCRIPTION_REON_GAP_MS, { want: "high", sent: "off", sentAt: 0 }), {
+    send: true,
+  });
+
+  // Repeats are never swallowed: they are what reach a replaced publication.
+  assert.deepEqual(at(10, { want: "off", sent: "off", sentAt: 0 }), { send: true });
+  assert.deepEqual(at(10, { want: "low", sent: "low", sentAt: 0 }), { send: true });
+  // The first request for a visible tile goes at once.
+  assert.deepEqual(at(0, {}), { send: true });
 });
 
 test("cameraOnVisibility pauses a live camera and resumes only what it paused", () => {

@@ -54,6 +54,7 @@ import {
   micStatus,
   shouldJoinMuted,
   liveVideoKeys,
+  paceSubscription,
   subscriptionFor,
   videoJustStarted,
   videoLine,
@@ -62,6 +63,7 @@ import {
   type EchoReport,
   type MicFailure,
   type MicStatus,
+  type VideoQualityRequest,
   type VideoSource,
 } from "./rules";
 import { videoOptionsFor, volumeKey } from "./transport-rules";
@@ -343,6 +345,17 @@ class VoiceSession {
    *  `subscriptionFor`, held here rather than in state because it changes
    *  on every scroll and must not re-render the roster. */
   #visibleTiles = new Map<string, Set<TileKind>>();
+  /** What was last sent per `identity/source`, and any wait `paceSubscription`
+   *  asked for. */
+  #paced = new Map<
+    string,
+    {
+      sent: VideoQualityRequest | null;
+      sentAt: number | null;
+      offWantedSince: number | null;
+      timer: ReturnType<typeof setTimeout> | null;
+    }
+  >();
   /** The live remote sources at the last roster read, for the chime. */
   #liveVideo: string[] = [];
   #onVisibility: (() => void) | null = null;
@@ -1012,7 +1025,44 @@ class VoiceSession {
       participants: this.#state.participants.length + 1,
       topLayerCallSize: this.#state.grant?.topLayerCallSize ?? null,
     });
+    // When, not what: `paceSubscription` keeps an off and an on from
+    // reaching the SDK close together, which leaves a tile black for good.
+    const key = `${identity}/${source}`;
+    const paced = this.#paced.get(key) ?? {
+      sent: null,
+      sentAt: null,
+      offWantedSince: null,
+      timer: null,
+    };
+    this.#paced.set(key, paced);
+    const now = Date.now();
+    if (quality !== "off") paced.offWantedSince = null;
+    else paced.offWantedSince ??= now;
+    if (paced.timer) clearTimeout(paced.timer);
+    paced.timer = null;
+    const pace = paceSubscription({
+      want: quality,
+      sent: paced.sent,
+      sentAt: paced.sentAt,
+      offWantedSince: paced.offWantedSince,
+      now,
+    });
+    if (!pace.send) {
+      paced.timer = setTimeout(() => {
+        paced.timer = null;
+        this.#applySubscription(identity, source);
+      }, pace.waitMs);
+      return;
+    }
+    paced.sent = quality;
+    paced.sentAt = now;
+    if (quality === "off") paced.offWantedSince = null;
     transport.setVideoSubscription(identity, source, quality);
+  }
+
+  #clearPacing(): void {
+    for (const paced of this.#paced.values()) if (paced.timer) clearTimeout(paced.timer);
+    this.#paced.clear();
   }
 
   #applyAllSubscriptions(): void {
@@ -1173,6 +1223,7 @@ class VoiceSession {
     this.#onVisibility?.();
     this.#onVisibility = null;
     this.#visibleTiles.clear();
+    this.#clearPacing();
     if (!input.keepPlan) this.#plan = null;
 
     const transport = this.#transport;
