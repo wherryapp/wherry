@@ -170,7 +170,7 @@ export function GifPanel({ context }: { context: WidgetContext }) {
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search GIFs"
           aria-label="Search GIFs"
-          // The panel closes on Escape (WidgetBar owns that); stopping the
+          // The panel closes on Escape (WidgetBar's back layer); stopping the
           // key here would trap somebody inside a field they cannot leave.
           enterKeyHint="search"
         />

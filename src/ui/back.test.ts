@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BackStack, type HistoryLike } from "./back.ts";
+import {
+  BackStack,
+  countsAsEscape,
+  isTextEntry,
+  type EscapeKeyEvent,
+  type HistoryLike,
+} from "./back.ts";
 
 /**
  * A history that models the one property this depends on: entries exist,
@@ -254,4 +260,270 @@ test("a layer's own overlay position is the count beneath it, so 'covered' is de
   assert.equal(stack.overlayDepth > position + 1, true);
   stack.onPopState();
   assert.equal(stack.overlayDepth > position + 1, false);
+});
+
+// ---------------------------------------------------------------------------
+// Escape: the keyboard's back, over the same stack
+// ---------------------------------------------------------------------------
+
+test("W-103: one Escape with the call page over Settings closes the page and not Settings", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  const closed: string[] = [];
+  stack.push(() => closed.push("settings"), false); // Panel: not an overlay
+  stack.push(() => closed.push("call page")); // over it
+
+  assert.equal(stack.onEscape(false), "closed");
+  assert.deepEqual(closed, ["call page"]);
+  assert.equal(stack.depth, 1);
+  assert.equal(stack.overlayDepth, 0);
+
+  // The page's history entry is given back like any other close...
+  assert.equal(history.backs, 1);
+  history.settle();
+  assert.equal(stack.entries, 1);
+  // ...and the popstate that produces closes nothing further.
+  assert.deepEqual(closed, ["call page"]);
+
+  // The next press is Settings'.
+  assert.equal(stack.onEscape(false), "closed");
+  assert.deepEqual(closed, ["call page", "settings"]);
+  history.settle();
+  assert.equal(stack.entries, 0);
+});
+
+test("a confirm opened from a profile card: the first Escape cancels only the confirm", () => {
+  // The two used to be capture-phase listeners on the same node, where
+  // stopPropagation stops neither, so one Escape closed both.
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  const closed: string[] = [];
+  stack.push(() => closed.push("card"));
+  stack.push(() => closed.push("confirm"));
+
+  stack.onEscape(false);
+  assert.deepEqual(closed, ["confirm"]);
+  assert.equal(stack.depth, 1);
+});
+
+test("with nothing open Escape is not ours", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  assert.equal(stack.onEscape(false), "passed");
+  assert.equal(history.backs, 0);
+  assert.equal(history.pushes, 0);
+});
+
+test("an 'outside-fields' layer on top leaves a key pressed in a field to the field", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  let closed = 0;
+  stack.push(() => (closed += 1), false, "outside-fields"); // the phone's thread
+
+  assert.equal(stack.onEscape(true), "passed");
+  assert.equal(closed, 0);
+  assert.equal(stack.depth, 1);
+  assert.equal(history.backs, 0);
+
+  assert.equal(stack.onEscape(false), "closed");
+  assert.equal(closed, 1);
+  assert.equal(stack.depth, 0);
+});
+
+test("the field exception is the thread's alone: a panel over it closes from a field", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  const closed: string[] = [];
+  stack.push(() => closed.push("thread"), false, "outside-fields");
+  stack.push(() => closed.push("search"), false); // a Panel with a focused input
+
+  assert.equal(stack.onEscape(true), "closed");
+  assert.deepEqual(closed, ["search"]);
+  // With the thread on top again, the same key in the composer is kept.
+  assert.equal(stack.onEscape(true), "passed");
+  assert.deepEqual(closed, ["search"]);
+});
+
+test("a 'never' layer holds the key: it stays, and nothing under it closes", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  const closed: string[] = [];
+  stack.push(() => closed.push("settings"), false);
+  stack.push(() => closed.push("ring"), true, "never"); // the incoming-call sheet
+
+  assert.equal(stack.onEscape(false), "held");
+  assert.equal(stack.onEscape(true), "held");
+  assert.deepEqual(closed, []);
+  assert.equal(stack.depth, 2);
+  assert.equal(history.backs, 0);
+
+  // Back still declines it -- the rule is Escape's only.
+  stack.onPopState();
+  assert.deepEqual(closed, ["ring"]);
+});
+
+test("an Escape's own close() cleanup releases nothing twice", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  // What React does: close() unmounts the component, whose effect cleanup
+  // then calls release. The layer is already off the stack by then.
+  const closed: string[] = [];
+  stack.push(() => closed.push("panel"), false);
+  let release = (): void => {};
+  release = stack.push(() => {
+    closed.push("page");
+    release();
+  });
+
+  stack.onEscape(false);
+  history.settle();
+  assert.deepEqual(closed, ["page"]);
+  assert.equal(stack.depth, 1);
+  assert.equal(stack.entries, 1);
+  assert.equal(history.backs, 1);
+});
+
+test("a second Escape before the first close has committed goes to the layer beneath", () => {
+  // The layer comes off at the press, not at React's commit, so a quick
+  // second press is the next layer's rather than the closing one's again.
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  const closed: string[] = [];
+  const releases = [
+    stack.push(() => closed.push("panel"), false),
+    stack.push(() => closed.push("page")),
+  ];
+
+  stack.onEscape(false);
+  stack.onEscape(false);
+  assert.deepEqual(closed, ["page", "panel"]);
+
+  // Both components' cleanups arrive late and find nothing to do.
+  for (const release of releases) release();
+  history.settle();
+  assert.equal(stack.depth, 0);
+  assert.equal(stack.entries, 0);
+});
+
+test("Escapes while a back() is in flight settle at one entry per open layer", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  const closed: string[] = [];
+  stack.push(() => closed.push("a"), false);
+  stack.push(() => closed.push("b"));
+  stack.push(() => closed.push("c"));
+
+  stack.onEscape(false); // c, and a back() goes in flight
+  stack.onEscape(false); // b, while it is still in flight
+  assert.equal(history.backs, 1);
+  history.settle();
+
+  assert.deepEqual(closed, ["c", "b"]);
+  assert.equal(stack.depth, 1);
+  assert.equal(stack.entries, 1);
+
+  // The layer left open is still the next back press's.
+  stack.onPopState();
+  assert.deepEqual(closed, ["c", "b", "a"]);
+  assert.equal(stack.entries, 0);
+});
+
+test("Escape and back interleave one layer each", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  const closed: string[] = [];
+  stack.push(() => closed.push("panel"), false);
+  stack.push(() => closed.push("page"));
+  stack.push(() => closed.push("card"));
+
+  stack.onEscape(false);
+  history.settle();
+  stack.onPopState(); // a real back press
+  assert.deepEqual(closed, ["card", "page"]);
+  assert.equal(stack.depth, 1);
+  assert.equal(stack.entries, 1);
+});
+
+test("an Escape close tells the listeners, so a covered tile uncovers", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  stack.push(() => {}); // the call page
+  stack.push(() => {}); // a Popover over it
+  let heard = 0;
+  stack.subscribe(() => (heard += 1));
+
+  stack.onEscape(false);
+  assert.equal(heard, 1);
+  assert.equal(stack.overlayDepth, 1);
+});
+
+test("a held or passed Escape changes nothing, so nobody is told", () => {
+  const history = fakeHistory();
+  const stack = new BackStack(history);
+  history.attach(stack);
+
+  stack.push(() => {}, false, "outside-fields");
+  stack.push(() => {}, true, "never");
+  let heard = 0;
+  stack.subscribe(() => (heard += 1));
+
+  assert.equal(stack.onEscape(false), "held");
+  assert.equal(heard, 0);
+  stack.onPopState();
+  heard = 0;
+  assert.equal(stack.onEscape(true), "passed");
+  assert.equal(heard, 0);
+});
+
+test("which key presses count as one Escape", () => {
+  const press = (over: Partial<EscapeKeyEvent> = {}): EscapeKeyEvent => ({
+    key: "Escape",
+    repeat: false,
+    isComposing: false,
+    defaultPrevented: false,
+    ...over,
+  });
+
+  assert.equal(countsAsEscape(press()), true);
+  // A held key is one press, not one per repeat.
+  assert.equal(countsAsEscape(press({ repeat: true })), false);
+  // Cancelling an IME composition is the field's.
+  assert.equal(countsAsEscape(press({ isComposing: true })), false);
+  // Something closer to the focus already took it.
+  assert.equal(countsAsEscape(press({ defaultPrevented: true })), false);
+  assert.equal(countsAsEscape(press({ key: "Enter" })), false);
+});
+
+test("what counts as a text field for the thread's rule", () => {
+  assert.equal(isTextEntry({ tagName: "INPUT", isContentEditable: false }), true);
+  assert.equal(isTextEntry({ tagName: "TEXTAREA", isContentEditable: false }), true);
+  assert.equal(isTextEntry({ tagName: "DIV", isContentEditable: true }), true);
+  assert.equal(isTextEntry({ tagName: "BUTTON", isContentEditable: false }), false);
+  assert.equal(isTextEntry({ tagName: "BODY", isContentEditable: false }), false);
+  // The document or the window as a target: no tagName at all.
+  assert.equal(isTextEntry({}), false);
+  assert.equal(isTextEntry(null), false);
+  assert.equal(isTextEntry(undefined), false);
 });

@@ -401,10 +401,8 @@ export function Chat({
   // Global keys. Ctrl/Cmd+K opens the switcher from anywhere in the main
   // view, composer included; it stays out of the full-screen panels because
   // they early-return their own trees and the dialog could not render over
-  // them. Plain Escape backs out of a thread only on a phone -- desktop
-  // shows both panes, so deselecting would just empty one -- and only when
-  // the key is not already someone else's: a focused field, an open panel,
-  // or the switcher itself all take precedence.
+  // them. Escape is not here: it is the back stack's (ui/back.ts), and the
+  // thread's share of it is the layer registered below.
   useEffect(() => {
     const panelOpen =
       settingsOpen ||
@@ -466,23 +464,10 @@ export function Chat({
         openSearch(selected);
         return;
       }
-      if (event.key !== "Escape" || switcherOpen || panelOpen) return;
-      if (isDesktop || selected === null) return;
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-      setSelected(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
-    switcherOpen,
     isDesktop,
     selected,
     settingsOpen,
@@ -497,11 +482,19 @@ export function Chat({
     voiceState.phase,
   ]);
 
-  // Back leaves the thread for the list, which is the Escape rule above in
-  // the gesture Android people actually use -- and, being the bottom layer,
+  // Back leaves the thread for the list -- and, being the bottom layer, is
   // the one that hands the app back to the system once the list is showing.
   // Desktop shows both panes, so there is nothing to back out of.
-  useBackLayer(!isDesktop && selected !== null, () => setSelected(null), { overlay: false });
+  //
+  // Escape does the same on a phone with a keyboard, but not from inside a
+  // text field (`"outside-fields"`): the composer usually has the caret, and
+  // Escape there is the field's, not a request to lose the thread. Anything
+  // opened over the thread -- a panel, the switcher, the call page -- is
+  // above this layer and takes the key first.
+  useBackLayer(!isDesktop && selected !== null, () => setSelected(null), {
+    overlay: false,
+    escape: "outside-fields",
+  });
 
   // Only when a thread is actually on screen. On a phone that is the same
   // thing as being selected; on desktop both panes are visible at once.

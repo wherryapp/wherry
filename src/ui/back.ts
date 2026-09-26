@@ -23,6 +23,21 @@
 // the phone. Gating would mean a second behaviour to reason about for no
 // gain -- see CLAUDE.md on deciding by capability rather than platform.
 //
+// **Escape follows the same stack.** It is the keyboard's back, and it had
+// been wired per layer instead: each surface listened for the key itself and
+// told the others apart only by event phase -- Panel on the document's
+// bubble, the call page on the window's, Popovers and dialogs in the
+// capture phase with propagation stopped. Three phases cannot order more
+// than three layers, and two of them were bubble listeners that did not
+// stop anything, so one Escape with the call page open over Settings closed
+// both (row W-103, 2026-09-26, both engines on the Windows rig), and one
+// Escape on a confirm opened from a profile card closed both of those (two
+// capture listeners on the same node, where stopPropagation stops neither).
+// The stack already knows which layer is on top, because it is the stack a
+// back press pops, so there is one keydown listener and it asks the stack:
+// one press, the topmost layer, and nothing under it. A surface that wants
+// Escape to close it registers with `useBackLayer` and listens for nothing.
+//
 // The arithmetic here is the part that goes wrong, so it is a pure class
 // over a tiny history interface (back.test.ts), with the singleton below
 // binding it to the real one.
@@ -35,9 +50,32 @@ export interface HistoryLike {
   back(): void;
 }
 
+/**
+ * What Escape does when this layer is the topmost one.
+ *
+ * - `"close"`: closes it, exactly as a back press would. Every layer but two.
+ * - `"outside-fields"`: closes it unless the key was pressed in a text field,
+ *   where Escape belongs to the field. The phone's open conversation, whose
+ *   composer usually has the caret: Escape there must not throw away the
+ *   thread somebody is typing in.
+ * - `"never"`: closes nothing -- *including whatever is under it*. The
+ *   incoming-call sheet: back declines there, but Escape never ends a call
+ *   (Chat.tsx: leaving a call is a deliberate click), and a modal sheet
+ *   letting the key through would close the screen it is covering.
+ */
+export type EscapeRule = "close" | "outside-fields" | "never";
+
+/**
+ * What one Escape did. `"passed"` is "not ours" -- nothing open, or the top
+ * layer leaves this key to the field it was pressed in -- and is the only
+ * outcome the key is allowed to travel on from.
+ */
+export type EscapeOutcome = "closed" | "held" | "passed";
+
 interface Layer {
   readonly id: number;
   readonly close: () => void;
+  readonly escape: EscapeRule;
   /**
    * Drawn *over* the screen (a Popover, the photo viewer, a dialog, the
    * call page) rather than replacing it (a Settings panel, the phone's open
@@ -94,11 +132,15 @@ export class BackStack {
   /**
    * Registers a layer as the topmost thing a back press should dismiss.
    * Returns the release function for when it closes some other way -- a
-   * close button, Escape, a tap on the backdrop. `overlay` is the Layer
-   * field of that name; the default is the common case.
+   * close button, a tap on the backdrop. `overlay` and `escape` are the
+   * Layer fields of those names; the defaults are the common case.
    */
-  push(close: () => void, overlay = true): () => void {
-    const layer: Layer = { id: this.#nextId++, close, overlay };
+  push(
+    close: () => void,
+    overlay = true,
+    escape: EscapeRule = "close",
+  ): () => void {
+    const layer: Layer = { id: this.#nextId++, close, overlay, escape };
     this.#layers.push(layer);
     this.#sync();
     this.#notify();
@@ -138,6 +180,30 @@ export class BackStack {
     this.#sync();
     this.#notify();
     return true;
+  }
+
+  /**
+   * Escape was pressed (see `countsAsEscape` for which presses count).
+   * `inField` is whether it was pressed in a text field, which only an
+   * `"outside-fields"` layer reads.
+   *
+   * A back press without the history: the topmost layer comes off *before*
+   * its close() runs, the way onPopState does it, so the component's own
+   * release on unmount finds it gone, and a second press -- even one that
+   * lands before React has committed the first -- goes to the layer under
+   * it rather than to the one already closing. The entry the layer owned is
+   * then given back by #sync, the same way as any other close.
+   */
+  onEscape(inField: boolean): EscapeOutcome {
+    const layer = this.#layers.at(-1);
+    if (!layer) return "passed";
+    if (layer.escape === "never") return "held";
+    if (layer.escape === "outside-fields" && inField) return "passed";
+    this.#layers.pop();
+    layer.close();
+    this.#sync();
+    this.#notify();
+    return "closed";
   }
 
   /** Layers currently registered. For the tests. */
@@ -194,7 +260,58 @@ export class BackStack {
 }
 
 // ---------------------------------------------------------------------------
-// The singleton, bound to the real history
+// Which key presses are an Escape
+// ---------------------------------------------------------------------------
+
+/** The parts of a keydown the Escape decision reads, so a test can hand in
+ *  a plain object. */
+export interface EscapeKeyEvent {
+  readonly key: string;
+  readonly repeat: boolean;
+  readonly isComposing: boolean;
+  readonly defaultPrevented: boolean;
+}
+
+/**
+ * Whether a keydown is one Escape press for the stack to act on.
+ *
+ * - An auto-repeat is not another press. A held key would otherwise close
+ *   layer after layer at the keyboard's repeat rate, which is several
+ *   presses' worth from somebody who pressed once.
+ * - A press during IME composition cancels the composition and nothing
+ *   else.
+ * - A press something else already claimed with `preventDefault` is
+ *   theirs. Nothing here claims one today; it is the conventional way for a
+ *   widget with its own use for the key -- a combobox closing its list --
+ *   to keep it from also closing the layer it sits in. (Stopping the key's
+ *   propagation does the same, since the listener is on the document.)
+ */
+export function countsAsEscape(event: EscapeKeyEvent): boolean {
+  return (
+    event.key === "Escape" &&
+    !event.repeat &&
+    !event.isComposing &&
+    !event.defaultPrevented
+  );
+}
+
+/**
+ * Whether a key's target is a text field, for an `"outside-fields"` layer.
+ * Duck-typed so the tests need no DOM. The same three cases Chat.tsx's
+ * thread Escape tested before it moved here.
+ */
+export function isTextEntry(target: unknown): boolean {
+  if (typeof target !== "object" || target === null) return false;
+  const element = target as { tagName?: unknown; isContentEditable?: unknown };
+  return (
+    element.tagName === "INPUT" ||
+    element.tagName === "TEXTAREA" ||
+    element.isContentEditable === true
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The singleton, bound to the real history and the real keyboard
 // ---------------------------------------------------------------------------
 
 let shared: BackStack | null = null;
@@ -205,18 +322,35 @@ function stack(): BackStack {
     window.addEventListener("popstate", () => {
       shared?.onPopState();
     });
+    // The one Escape listener (see the header). Installed with the stack
+    // because until a layer exists there is nothing for the key to close.
+    // The document's bubble phase: a focused element's own handler --
+    // React's included, which listen on the root below the document -- runs
+    // first and can keep the key; a key the stack used stops here, before
+    // anything on the window hears it.
+    document.addEventListener("keydown", (event) => {
+      if (!shared || !countsAsEscape(event)) return;
+      if (shared.onEscape(isTextEntry(event.target)) !== "passed") {
+        event.stopPropagation();
+      }
+    });
   }
   return shared;
 }
 
 /**
- * Registers `close` as what a back press should do, and returns the
- * release function. Outside a browser (the tsx test runner) this is a
- * no-op, the way the rest of the ui/ helpers are.
+ * Registers `close` as what a back press -- and an Escape, by `escape`'s
+ * rule -- should do, and returns the release function. Outside a browser
+ * (the tsx test runner) this is a no-op, the way the rest of the ui/
+ * helpers are.
  */
-export function pushBackLayer(close: () => void, overlay = true): () => void {
+export function pushBackLayer(
+  close: () => void,
+  overlay = true,
+  escape: EscapeRule = "close",
+): () => void {
   if (typeof window === "undefined") return () => {};
-  return stack().push(close, overlay);
+  return stack().push(close, overlay, escape);
 }
 
 /** Open overlay layers right now; 0 outside a browser. */
@@ -236,7 +370,9 @@ export function useOverlayDepth(): number {
 }
 
 /**
- * Makes an open layer the back gesture's target for as long as `active`.
+ * Makes an open layer the back gesture's target -- and Escape's, by
+ * `options.escape` (an `EscapeRule`; it closes by default) -- for as long as
+ * `active`.
  *
  * `close` is read through a ref so that a caller re-rendering with a fresh
  * closure -- which is every caller, since these are inline arrows -- does
@@ -251,9 +387,10 @@ export function useOverlayDepth(): number {
 export function useBackLayer(
   active: boolean,
   close: () => void,
-  options: { overlay?: boolean } = {},
+  options: { overlay?: boolean; escape?: EscapeRule } = {},
 ): { readonly current: number | null } {
   const overlay = options.overlay ?? true;
+  const escape = options.escape ?? "close";
   const latest = useRef(close);
   const position = useRef<number | null>(null);
   // Updated in an effect rather than during render: declared first, so it
@@ -265,11 +402,11 @@ export function useBackLayer(
   useEffect(() => {
     if (!active) return;
     position.current = overlay ? overlayDepth() : null;
-    const release = pushBackLayer(() => latest.current(), overlay);
+    const release = pushBackLayer(() => latest.current(), overlay, escape);
     return () => {
       release();
       position.current = null;
     };
-  }, [active, overlay]);
+  }, [active, overlay, escape]);
   return position;
 }

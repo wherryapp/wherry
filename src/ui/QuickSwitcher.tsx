@@ -163,10 +163,9 @@ export function QuickSwitcher({
             } else if (event.key === "Enter") {
               event.preventDefault();
               pick(matches[clampedActive]);
-            } else if (event.key === "Escape") {
-              event.stopPropagation();
-              onClose();
             }
+            // Escape is the back stack's (useBackLayer above), like every
+            // other layer's.
           }}
         />
         <ul role="listbox" aria-label="Matches" className="mt-1">
