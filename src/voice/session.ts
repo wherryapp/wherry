@@ -158,9 +158,11 @@ export type VoiceState = {
   /** What the server allowed this device to publish in this call; null
    *  outside a call, and on a server predating video. */
   grant: VideoLimits | null;
-  /** What this transport can do with video. All false on the desktop
-   *  shell's native engine until stage 3N -- the bar disables its buttons
-   *  and offers `switchEngineForThisCall`. */
+  /** What this transport can do with video, per source
+   *  (`TransportCapabilities`). All true on the native engine on macOS
+   *  (stage 3N) and Windows (since W4). A source it reads false for on the
+   *  native engine is not a disabled button: pressing it is
+   *  `switchEngineForThisCall` (rules.ts's `videoNeedsSwitch`). */
   capabilities: TransportCapabilities;
   /** `paused` is the background pause (rules.ts's `cameraOnVisibility`),
    *  which is a *remembered* on rather than an off: coming back to the
@@ -170,8 +172,8 @@ export type VoiceState = {
   /** The identity whose tile is enlarged, or null for the grid. */
   pinned: string | null;
   /** This call is running on the webview engine because the person asked
-   *  for video on a shell that has none. Cleared on teardown; the
-   *  `nativeMedia` preference is never touched. */
+   *  for video this shell's own engine cannot capture or show. Cleared on
+   *  teardown; the `nativeMedia` preference is never touched. */
   engineOverride: "webview" | null;
   /** This call is running on the shell's own media engine, so the switch
    *  above has somewhere to go. `rules.ts`'s `videoNeedsSwitch` reads it:
@@ -449,9 +451,10 @@ class VoiceSession {
   // -- video ---------------------------------------------------------------
 
   async setCameraEnabled(on: boolean): Promise<void> {
-    // The camera button is the engine switch on a transport that cannot
-    // do video (rules.ts's `videoNeedsSwitch`): one press rejoins through
-    // the browser engine and *then* turns the camera on, rather than two.
+    // The camera button is the engine switch on a native engine that
+    // cannot open a camera (rules.ts's `videoNeedsSwitch`): one press
+    // rejoins through the browser engine and *then* turns the camera on,
+    // rather than two.
     if (on && videoNeedsSwitch(this.#state, "camera")) await this.switchEngineForThisCall();
     const transport = this.#transport;
     if (!transport) return;
@@ -606,12 +609,17 @@ class VoiceSession {
   /**
    * Rejoin this one call through the webview engine.
    *
-   * The desktop shell's native engine has no camera capture and no way to
-   * put a received frame on screen (docs/prompts/video-execution-handoff.md
-   * §0), so somebody who wants video on this device pays one reconnect --
-   * a second or two of silence -- and gets it. The `nativeMedia`
-   * preference is deliberately untouched: they did not change their mind
-   * about audio, and the next call starts on their engine again.
+   * For a shell whose native engine cannot capture the source asked for,
+   * or cannot put a received frame on screen at all
+   * (docs/prompts/video-execution-handoff.md §0): somebody who wants video
+   * on this device pays one reconnect -- a second or two of silence -- and
+   * gets it. When this was written that was every desktop shell. Since
+   * stage 3N on macOS and W4 on Windows the native engine does all of video
+   * there, so only a shell whose probe says otherwise still needs this:
+   * Linux, or an installed Windows shell built between W3 and W4, which
+   * renders and shares but has no camera. The `nativeMedia` preference is
+   * deliberately untouched: they did not change their mind about audio,
+   * and the next call starts on their engine again.
    *
    * `tellServer: false` on the way out: the participant row is about to be
    * re-taken by the same device, and telling the server we left would end

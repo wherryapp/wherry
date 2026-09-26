@@ -26,17 +26,18 @@
 // surface is covered (ui/back.ts's overlay depth), because a native view
 // cannot be told by the document's stacking order what is drawn over it.
 //
-// **Windows shares a screen and, since 2026-09-10, draws (stages W1 and
-// W3).** The three capabilities used to be one probe field and now are
-// three, because that platform came apart: it captures a screen and its
-// sound through a picker of our own -- WebView2 opens none and
-// `getDisplayMedia` hangs there (row S-00), so the shell is the only thing
-// that can -- and it puts every received tile in a child window over the
-// page. What it still has no path to is a **camera**, so that one button
-// stays the engine switch while the screen button shares in place. Which
-// made a third shape the rules had never met: an engine that renders and
-// cannot capture. `rules.ts`'s `nativeEngine` is what tells it from a
-// phone.
+// **Windows shares a screen (W1, 2026-09-09), draws (W3, 2026-09-10) and,
+// since W4 (2026-09-15), opens a camera.** The three capabilities used to
+// be one probe field and now are three, because that platform came apart
+// on the way: it captures a screen and its sound through a picker of our
+// own -- WebView2 opens none and `getDisplayMedia` hangs there (row S-00),
+// so the shell is the only thing that can -- and it puts every received
+// tile in a child window over the page. Between W3 and W4 it had no path
+// to a **camera**, so that one button stayed the engine switch while the
+// screen button shared in place, and an installed shell from then still
+// answers that way. Which made a third shape the rules had never met: an
+// engine that renders and cannot capture. `rules.ts`'s `nativeEngine` is
+// what tells it from a phone.
 
 import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules";
 import { nativeMediaProbe } from "./native-media";

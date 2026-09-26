@@ -39,16 +39,19 @@ export type { VideoQualityRequest, VideoSource } from "./rules";
  * Three booleans rather than one because the native transport answers
  * them differently per platform, and each answer moved on its own date:
  * macOS captures and renders everything (stage 3N, 2026-09-08); Windows
- * captures a screen but not a camera (W1, 2026-09-09) and draws received
- * tiles (W3, 2026-09-10); Linux does none of it. A source this transport
- * cannot capture is not a dead button — `rules.ts`'s `videoNeedsSwitch`
- * turns the press into a rejoin through the browser engine, for the one
- * call.
+ * captured a screen first (W1, 2026-09-09), drew received tiles next (W3,
+ * 2026-09-10) and opened a camera last (W4, 2026-09-15), so it now answers
+ * as macOS does and a shell built between those stages answers in between;
+ * Linux does none of it. A source this transport cannot capture is not a
+ * dead button — `rules.ts`'s `videoNeedsSwitch` turns the press into a
+ * rejoin through the browser engine, for the one call.
  */
 export type TransportCapabilities = {
   /** This transport can publish a camera. */
   camera: boolean;
-  /** ... and a screen (getDisplayMedia present, or 3N). */
+  /** ... and a screen (getDisplayMedia present on the webview engine; the
+   *  shell's own capture on the native one, macOS since 3N and Windows
+   *  since W1). */
   screen: boolean;
   /** ... and can put a received video track on an element. */
   renderVideo: boolean;

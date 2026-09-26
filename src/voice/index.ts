@@ -16,11 +16,15 @@ import { WebviewTransport } from "./transport-webview";
 
 /**
  * `override` is the per-call engine switch (docs/prompts/video-execution-
- * handoff.md §0): a desktop shell on the native engine cannot publish or
- * render video in v1, so the call bar offers to rejoin this one call
- * through the webview. It beats the preference for that call only and is
- * cleared on teardown -- the `nativeMedia` preference itself is never
- * touched, because the person did not change their mind about audio.
+ * handoff.md §0). It began when the native engine could do no video at
+ * all; since stage 3N on macOS and W4 on Windows it captures and renders
+ * everything there, so what still takes the switch is a shell whose probe
+ * says it cannot -- Linux, which does no video natively, or an installed
+ * Windows shell built between W3 and W4, which has no camera. For such a
+ * source, its button rejoins this one call through the webview. It
+ * beats the preference for that call only and is cleared on teardown --
+ * the `nativeMedia` preference itself is never touched, because the person
+ * did not change their mind about audio.
  */
 export function createTransport(override?: "webview" | null): VoiceTransport {
   return transportIsNative(override) ? new NativeTransport() : new WebviewTransport();

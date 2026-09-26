@@ -326,9 +326,15 @@ export class WebviewTransport implements VoiceTransport {
       camera:
         typeof navigator !== "undefined" &&
         typeof navigator.mediaDevices?.getUserMedia === "function",
-      // Feature detection, never a platform name: both phone webviews and
-      // the macOS shell's WebKit lack getDisplayMedia, and each for its own
-      // reason (docs/prompts/video-plan.md §8).
+      // Feature detection, never a platform name. The phone webviews lack
+      // getDisplayMedia (docs/prompts/video-plan.md §8). The macOS shell's
+      // WKWebView does not: it has the function (measured 2026-09-08), but
+      // wry answers none of WebKit's display-capture requests, which WebKit
+      // takes as a denial, so on this engine there the check answers true
+      // for a button believed not to work. That is on
+      // docs/regression/desktop.md's known-broken list and waits on
+      // src-tauri/patches/wry-display-capture.md; the native engine, the
+      // default on macOS, captures a screen through the shell instead.
       screen:
         typeof navigator !== "undefined" &&
         typeof navigator.mediaDevices?.getDisplayMedia === "function",
