@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   cameraCeilingFor,
   connectionFromWord,
+  disconnectSfuStopping,
+  disconnectWasTold,
   isEncryptionFailure,
   knownDeviceId,
   nativeErrorName,
@@ -12,6 +14,11 @@ import {
   playoutReadingChanged,
   publishErrorMessage,
   qualityFromWord,
+  ROOM_FOLLOW_UP_EVERY_MS,
+  ROOM_FOLLOW_UP_FOR_MS,
+  roomFollowUpStep,
+  roomProbeUrl,
+  roomProbeVerdict,
   SCREEN_AUDIENCE_STEP,
   screenAudioCapture,
   screenAudioMode,
@@ -21,6 +28,7 @@ import {
   screenOptionsFor,
   screenSourceKind,
   tileRect,
+  transportEndFor,
   volumeKey,
   userIdFromMetadata,
   videoCodecFor,
@@ -520,5 +528,175 @@ describe("screenAudioNote", () => {
       const mentionsOneApp = /this app's sound/.test(screenAudioNote(id));
       assert.equal(mentionsOneApp, screenAudioMode(id) === "include-target");
     }
+  });
+});
+
+describe("roomProbeUrl", () => {
+  it("asks the SFU the token names, over HTTP, at rtc/validate", () => {
+    assert.equal(
+      roomProbeUrl("wss://voice.wherry.app", "tok"),
+      "https://voice.wherry.app/rtc/validate?access_token=tok",
+    );
+    // The rig and the dev stack: ws://localhost:7880.
+    assert.equal(
+      roomProbeUrl("ws://localhost:7880", "tok"),
+      "http://localhost:7880/rtc/validate?access_token=tok",
+    );
+  });
+
+  it("keeps a path the SFU is served under, as livekit-client does", () => {
+    assert.equal(
+      roomProbeUrl("wss://example.test/livekit/", "t"),
+      "https://example.test/livekit/rtc/validate?access_token=t",
+    );
+    assert.equal(
+      roomProbeUrl("wss://example.test/livekit", "t"),
+      "https://example.test/livekit/rtc/validate?access_token=t",
+    );
+  });
+
+  it("drops a query the URL came with and encodes the token", () => {
+    assert.equal(
+      roomProbeUrl("wss://example.test/?x=1", "a+b/c="),
+      "https://example.test/rtc/validate?access_token=a%2Bb%2Fc%3D",
+    );
+  });
+
+  it("answers nothing for a URL that is not an SFU's", () => {
+    assert.equal(roomProbeUrl("not a url", "t"), null);
+    assert.equal(roomProbeUrl("file:///etc/passwd", "t"), null);
+  });
+});
+
+describe("roomProbeVerdict", () => {
+  it("reads the SFU's own sentence as a room that is gone", () => {
+    assert.equal(roomProbeVerdict(404, "requested room does not exist"), "gone");
+    assert.equal(roomProbeVerdict(404, "requested room does not exist\n"), "gone");
+  });
+
+  it("does not read any other 404 as a dead room", () => {
+    // An SFU without the path, or a proxy in front of one: ending a call on
+    // that would end calls that are fine.
+    assert.equal(roomProbeVerdict(404, "404 page not found"), "unknown");
+    assert.equal(roomProbeVerdict(404, ""), "unknown");
+  });
+
+  it("tells a live room and a refused token apart from both", () => {
+    assert.equal(roomProbeVerdict(200, "success"), "present");
+    assert.equal(roomProbeVerdict(401, "invalid token"), "refused");
+    assert.equal(roomProbeVerdict(403, ""), "refused");
+    assert.equal(roomProbeVerdict(503, "requested room does not exist"), "unknown");
+  });
+});
+
+describe("disconnectWasTold", () => {
+  it("knows the reasons somebody else already reported", () => {
+    // livekit-client's spelling and the Rust SDK's Debug spelling.
+    for (const reason of [
+      "PARTICIPANT_REMOVED",
+      "ParticipantRemoved",
+      "ROOM_DELETED",
+      "RoomDeleted",
+      "ROOM_CLOSED",
+      "DUPLICATE_IDENTITY",
+      "CLIENT_INITIATED",
+      "ClientInitiated",
+    ]) {
+      assert.equal(disconnectWasTold(reason), true, reason);
+    }
+  });
+
+  it("asks about everything else, the SFU restart's reasons included", () => {
+    // The rig's SFU restart ended the native call with UnknownReason. A
+    // graceful stop says ServerShutdown while the SFU is still stopping, so
+    // the room's fate is unknown at that moment too (roomFollowUpStep keeps
+    // asking, and does not believe an early "present" after it).
+    for (const reason of [
+      null,
+      undefined,
+      "",
+      "UnknownReason",
+      "UNKNOWN_REASON",
+      "ServerShutdown",
+      "SERVER_SHUTDOWN",
+      "SignalClose",
+      "JoinFailure",
+      "ConnectionTimeout",
+      "something new",
+    ]) {
+      assert.equal(disconnectWasTold(reason), false, String(reason));
+    }
+  });
+});
+
+describe("disconnectSfuStopping", () => {
+  it("reads a server shutdown in either SDK's spelling", () => {
+    assert.equal(disconnectSfuStopping("SERVER_SHUTDOWN"), true);
+    assert.equal(disconnectSfuStopping("ServerShutdown"), true);
+  });
+
+  it("reads nothing else as the SFU stopping", () => {
+    for (const reason of [null, undefined, "", "UnknownReason", "SignalClose", "ROOM_DELETED"]) {
+      assert.equal(disconnectSfuStopping(reason), false, String(reason));
+    }
+  });
+});
+
+describe("transportEndFor", () => {
+  const endpoint = { url: "wss://voice.wherry.app", token: "tok" };
+
+  it("hands the session the endpoint when nobody was told", () => {
+    assert.deepEqual(transportEndFor("UnknownReason", endpoint), {
+      roomGone: false,
+      unsettled: { endpoint, sfuStopping: false },
+    });
+    assert.deepEqual(transportEndFor(null, endpoint), {
+      roomGone: false,
+      unsettled: { endpoint, sfuStopping: false },
+    });
+    assert.deepEqual(transportEndFor("SERVER_SHUTDOWN", endpoint), {
+      roomGone: false,
+      unsettled: { endpoint, sfuStopping: true },
+    });
+  });
+
+  it("leaves nothing to ask after a reason somebody already reported", () => {
+    assert.deepEqual(transportEndFor("ParticipantRemoved", endpoint), { roomGone: false, unsettled: null });
+    assert.deepEqual(transportEndFor("CLIENT_INITIATED", endpoint), { roomGone: false, unsettled: null });
+  });
+
+  it("has nothing to hand over without an endpoint, and never says gone itself", () => {
+    assert.deepEqual(transportEndFor("UnknownReason", null), { roomGone: false, unsettled: null });
+  });
+});
+
+describe("roomFollowUpStep", () => {
+  it("leaves on gone, whenever it comes", () => {
+    assert.equal(roomFollowUpStep("gone", 0, false), "leave");
+    assert.equal(roomFollowUpStep("gone", ROOM_FOLLOW_UP_FOR_MS, true), "leave");
+  });
+
+  it("keeps asking an SFU it cannot reach, for a bounded time", () => {
+    // Both clients used up their retries while the SFU was down, so the
+    // first question after the end goes unanswered (review, 2026-09-27).
+    assert.equal(roomFollowUpStep("unknown", 0, false), "again");
+    assert.equal(roomFollowUpStep("unknown", 60_000, false), "again");
+    const last = ROOM_FOLLOW_UP_FOR_MS - ROOM_FOLLOW_UP_EVERY_MS;
+    assert.equal(roomFollowUpStep("unknown", last, false), "again");
+    assert.equal(roomFollowUpStep("unknown", last + 1, false), "stop");
+    assert.equal(roomFollowUpStep("unknown", ROOM_FOLLOW_UP_FOR_MS * 2, false), "stop");
+  });
+
+  it("stops at a room that is there, unless the SFU said it was stopping", () => {
+    assert.equal(roomFollowUpStep("present", 0, false), "stop");
+    // A forced stop's leave arrives while the SFU still holds the room; the
+    // restart that follows forgets it.
+    assert.equal(roomFollowUpStep("present", 0, true), "again");
+    assert.equal(roomFollowUpStep("present", ROOM_FOLLOW_UP_FOR_MS, true), "stop");
+  });
+
+  it("stops on a refused token, which no later answer can change", () => {
+    assert.equal(roomFollowUpStep("refused", 0, false), "stop");
+    assert.equal(roomFollowUpStep("refused", 0, true), "stop");
   });
 });

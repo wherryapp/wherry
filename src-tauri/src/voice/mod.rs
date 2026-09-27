@@ -818,8 +818,16 @@ enum Event {
   ParticipantJoined,
   ParticipantLeft,
   /// The local connection: `connected`, `reconnecting` or `disconnected`,
-  /// with the last known quality word.
-  Connection { state: String, quality: String },
+  /// with the last known quality word. `reason` is the SDK's
+  /// `DisconnectReason` by name, on `disconnected` only: whether it means
+  /// somebody already knows the call is over is TypeScript's decision
+  /// (transport-rules.ts's `disconnectWasTold`).
+  Connection {
+    state: String,
+    quality: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+  },
   /// The SDK's frame-cryption state for one participant, by name
   /// (`Ok`, `MissingKey`, `DecryptionFailed`, ...). TypeScript decides which
   /// of these count as a frame that failed to open.
@@ -828,6 +836,12 @@ enum Event {
   /// seam's `videoChanged`, kept apart from the roster event because a tile
   /// remounting is expensive where a name changing is not.
   VideoChanged,
+  /// The SFU refreshed this call's token, as it does every few minutes. The
+  /// page asks the SFU's `rtc/validate` whether a room still exists
+  /// (transport-native.ts), and the join token it started with expires after
+  /// 15 minutes, which would make every longer call's answer a 401. Never
+  /// logged.
+  Token { token: String },
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -835,6 +849,11 @@ struct Envelope {
   session: u64,
   #[serde(flatten)]
   event: Event,
+}
+
+/// A connection word with no disconnect reason: everything but `disconnected`.
+fn connection(state: &str, quality: String) -> Event {
+  Event::Connection { state: state.into(), quality, reason: None }
 }
 
 fn emit(app: &AppHandle, session: u64, event: Event) {
@@ -879,7 +898,7 @@ async fn pump(
   while let Some(event) = rx.recv().await {
     match event {
       RoomEvent::Connected { .. } => {
-        emit(&app, session, Event::Connection { state: "connected".into(), quality: quality() });
+        emit(&app, session, connection("connected", quality()));
         emit(&app, session, Event::Roster { roster: roster(&room) });
       }
       RoomEvent::ParticipantConnected(_) => {
@@ -941,22 +960,24 @@ async fn pump(
         if matches!(participant, Participant::Local(_)) {
           let word = format!("{q:?}").to_lowercase();
           *shared.quality.lock().unwrap() = word.clone();
-          emit(&app, session, Event::Connection { state: "connected".into(), quality: word });
+          emit(&app, session, connection("connected", word));
         }
       }
       RoomEvent::ConnectionStateChanged(state) => {
         let word = match state {
           ConnectionState::Connected => "connected",
           ConnectionState::Reconnecting => "reconnecting",
-          ConnectionState::Disconnected => "disconnected",
+          // Said by `RoomEvent::Disconnected` below, which the SDK dispatches
+          // straight after this one and which alone carries the reason.
+          ConnectionState::Disconnected => continue,
         };
-        emit(&app, session, Event::Connection { state: word.into(), quality: quality() });
+        emit(&app, session, connection(word, quality()));
       }
       RoomEvent::Reconnecting => {
-        emit(&app, session, Event::Connection { state: "reconnecting".into(), quality: quality() });
+        emit(&app, session, connection("reconnecting", quality()));
       }
       RoomEvent::Reconnected => {
-        emit(&app, session, Event::Connection { state: "connected".into(), quality: quality() });
+        emit(&app, session, connection("connected", quality()));
         emit(&app, session, Event::Roster { roster: roster(&room) });
         // A full reconnect has just republished every local track, a parked
         // share's sound (muted) included, and the new senders' `MuteStream`
@@ -966,7 +987,18 @@ async fn pump(
       }
       RoomEvent::Disconnected { reason } => {
         log::info!("voice: disconnected ({reason:?})");
-        emit(&app, session, Event::Connection { state: "disconnected".into(), quality: quality() });
+        emit(
+          &app,
+          session,
+          Event::Connection {
+            state: "disconnected".into(),
+            quality: quality(),
+            reason: Some(format!("{reason:?}")),
+          },
+        );
+      }
+      RoomEvent::TokenRefreshed { token } => {
+        emit(&app, session, Event::Token { token });
       }
       RoomEvent::E2eeStateChanged { participant, state } => {
         log::info!("voice: e2ee state for {} is {state:?}", participant.identity());
