@@ -55,6 +55,12 @@ class CallService : Service() {
         var running: Boolean = false
             private set
 
+        /** A start was sent and its onStartCommand has not run yet, so
+         *  CallLifecycle's retry does not send a second one. */
+        @Volatile
+        var starting: Boolean = false
+            private set
+
         /**
          * Start the service, or update its notification and proximity lock
          * while it runs. `startService`, not `startForegroundService`: the
@@ -73,22 +79,28 @@ class CallService : Service() {
                 .putExtra(EXTRA_CALL_ID, callId)
                 .putExtra(EXTRA_LABEL, label)
                 .putExtra(EXTRA_AUDIO_ONLY, audioOnly)
+            // Set before the start, since onStartCommand (which clears it)
+            // may run on the main thread before startService returns here.
+            if (!running) starting = true
             return try {
-                context.startService(intent) != null
+                (context.startService(intent) != null).also { if (!it) starting = false }
             } catch (e: IllegalStateException) {
                 // The app is in the background with no service running yet
                 // (a join that began in front and was backgrounded before
-                // this call arrived). Nothing to recover: the next setActive
-                // from the foreground starts it.
+                // this call arrived). CallLifecycle starts it when the
+                // activity next resumes, as does any later setActive.
+                starting = false
                 Log.w(TAG, "[wherry] calls: service not started: ${e.message}")
                 false
             } catch (e: SecurityException) {
+                starting = false
                 Log.w(TAG, "[wherry] calls: service not started: ${e.message}")
                 false
             }
         }
 
         fun stop(context: Context) {
+            starting = false
             context.stopService(Intent(context, CallService::class.java))
         }
 
@@ -96,8 +108,10 @@ class CallService : Service() {
          * Android 14 (API 34) refuses a `microphone` foreground service to an
          * app without RECORD_AUDIO with a SecurityException from
          * `startForeground`. Before 34 the type needs no grant. The grant is
-         * the page's getUserMedia ask (wry's WebChromeClient), made before a
-         * call can reach `connecting` with a real microphone.
+         * the page's getUserMedia ask (wry's WebChromeClient), which on a
+         * first call comes *after* `connected`, the page asking for the
+         * microphone last and sending no setActive after it: CallLifecycle
+         * starts the service when the activity resumes from that dialog.
          */
         fun microphoneGranted(context: Context): Boolean =
             Build.VERSION.SDK_INT < 34 ||
@@ -133,6 +147,7 @@ class CallService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        starting = false
         if (intent == null) {
             // A restart with no intent has no call behind it. START_NOT_STICKY
             // should prevent it; this is the belt to that brace.
@@ -177,6 +192,7 @@ class CallService : Service() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         if (running) Log.i(TAG, "[wherry] calls: service stopped")
         running = false
+        starting = false
         super.onDestroy()
     }
 
