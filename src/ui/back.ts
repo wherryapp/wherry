@@ -30,9 +30,13 @@
 // capture phase with propagation stopped. Three phases cannot order more
 // than three layers, and two of them were bubble listeners that did not
 // stop anything, so one Escape with the call page open over Settings closed
-// both (row W-103, 2026-09-26, both engines on the Windows rig), and one
-// Escape on a confirm opened from a profile card closed both of those (two
-// capture listeners on the same node, where stopPropagation stops neither).
+// both (row W-103, 2026-09-26, both engines on the Windows rig). And two
+// capture listeners on one node run in the order they were *added*, which
+// stopPropagation does not change: an Escape on a confirm opened from a
+// profile card ran the card's listener first, closing the card under the
+// confirm and unmounting the confirm unanswered (reproduced in a browser
+// against the real components the same day). Which one went first depended
+// on whether something had re-rendered the card since it opened.
 // The stack already knows which layer is on top, because it is the stack a
 // back press pops, so there is one keydown listener and it asks the stack:
 // one press, the topmost layer, and nothing under it. A surface that wants
