@@ -776,12 +776,12 @@ export type VideoButtonState = {
    * Added 2026-09-10, and the reason is that the three capabilities stopped
    * being able to tell two devices apart. A phone webview reads
    * `{ camera: true, screen: false, renderVideo: true }` and a Windows
-   * shell after stage W3 reads `{ camera: false, screen: true,
-   * renderVideo: true }` — both with no override taken, and only one of
-   * them has anywhere to switch. Before W3 the difference was carried by
-   * `renderVideo`, because a shell that could not draw was the only shell
-   * that existed; a shell that draws and still cannot open a camera is the
-   * third shape those rules were never written for.
+   * shell built between stages W3 and W4 reads `{ camera: false,
+   * screen: true, renderVideo: true }` — both with no override taken, and
+   * only one of them has anywhere to switch. Before W3 the difference was
+   * carried by `renderVideo`, because a shell that could not draw was the
+   * only shell that existed; a shell that draws and still cannot open a
+   * camera is the third shape those rules were never written for.
    */
   nativeEngine: boolean;
 };
@@ -789,20 +789,22 @@ export type VideoButtonState = {
 /**
  * Whether pressing this button means switching engines first.
  *
- * A desktop shell on its own audio engine cannot do video (until 3N ships
- * on that platform), and the way out is one reconnect through the browser
- * engine. Until 2026-09-08 that was a separate *Switch engine* button
- * beside a disabled camera -- two presses for one intention. Now the
- * camera button *is* the switch: the session rejoins and then turns the
- * camera on, and this predicate is how the button and the session agree
- * on when that applies. False once the switch has been taken.
+ * A desktop shell on its own engine that cannot capture a source -- every
+ * shell before 3N shipped on macOS, and today Linux or a Windows shell
+ * built between W3 and W4 -- has one way out: a reconnect through the
+ * browser engine. Until 2026-09-08 that was a separate *Switch engine*
+ * button beside a disabled camera -- two presses for one intention. Now
+ * the camera button *is* the switch: the session rejoins and then turns
+ * the camera on, and this predicate is how the button and the session
+ * agree on when that applies. False once the switch has been taken.
  *
  * Rendering stopped being the reason on 2026-09-10 (stage W3): Windows
- * draws everybody else's tile natively and still cannot open a camera, so
- * "this engine cannot show video" and "this engine cannot capture this
- * source" came apart. Not being able to capture is the reason now, and
- * being on the native engine is what makes the switch a real way out —
- * which a browser that simply lacks the API does not have.
+ * drew everybody else's tile natively and could not yet open a camera
+ * (W4 added one on 2026-09-15), so "this engine cannot show video" and
+ * "this engine cannot capture this source" came apart. Not being able to
+ * capture is the reason now, and being on the native engine is what makes
+ * the switch a real way out — which a browser that simply lacks the API
+ * does not have.
  */
 export function videoNeedsSwitch(state: VideoButtonState, source: VideoSource): boolean {
   if (state.capabilities[source]) return false;

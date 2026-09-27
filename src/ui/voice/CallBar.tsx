@@ -238,10 +238,10 @@ export function CallBar({
         This strip is standing rather than per-source, so it is gated on
         `renderVideo` alone, and both desktop platforms have now left it
         behind: macOS renders since stage 3N (2026-09-08) and Windows
-        since W3 (2026-09-10). What Windows still lacks is camera
-        *capture*, and that is the camera button's business -- the press
-        there is the switch, through `rules.ts`'s `nativeEngine`. Leave
-        this for a shell that renders nothing at all.
+        since W3 (2026-09-10). What a Windows shell built between W3 and
+        W4 lacks is camera *capture*, and that is the camera button's
+        business -- the press there is the switch, through `rules.ts`'s
+        `nativeEngine`. Leave this for a shell that renders nothing at all.
       */}
       {!state.capabilities.renderVideo &&
         state.phase === "connected" &&

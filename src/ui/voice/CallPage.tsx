@@ -166,9 +166,9 @@ export function CallPage({
   // Which transports those are has narrowed twice, so read the capability
   // rather than assuming the engine: the desktop shell's own engine
   // renders on macOS (stage 3N, 2026-09-08) and on Windows (stage W3,
-  // 2026-09-10, a child HWND over the page). What Windows still cannot do
-  // is open a *camera*, which is a different question and one the buttons
-  // ask, not this branch.
+  // 2026-09-10, a child HWND over the page). Opening a *camera*, which
+  // Windows could not do until W4, is a different question and one the
+  // buttons ask, not this branch.
   const canRender = state.capabilities.renderVideo;
   const tiles = canRender ? tilesOf(state, selfName, selfUserId) : [];
   const featured = featureOf(tiles, state.pinned);

@@ -99,8 +99,9 @@ export function CallControls({
           label={state.camera.on ? "Turn camera off" : "Turn camera on"}
           // Where this transport cannot capture *this source*, the press
           // *is* the engine switch (rules.ts's videoNeedsSwitch); the
-          // hover text says so. Per source, not per transport: Windows
-          // shares a screen in place and still switches for a camera.
+          // hover text says so. Per source, not per transport: a Windows
+          // shell built between W3 and W4 shares a screen in place and
+          // still switches for a camera.
           title={
             cameraReason ?? (videoNeedsSwitch(state, "camera") ? VIDEO_SWITCH_NOTE : undefined)
           }
