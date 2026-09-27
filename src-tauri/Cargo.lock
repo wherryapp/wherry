@@ -4671,6 +4671,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-wherry-calls"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "tauri-plugin-wherry-push"
 version = "0.1.0"
 dependencies = [
@@ -5663,6 +5674,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tauri-plugin-wherry-calls",
  "tauri-plugin-wherry-push",
  "tokio",
  "windows",
