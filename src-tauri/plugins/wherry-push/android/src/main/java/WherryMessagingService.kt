@@ -42,10 +42,14 @@ internal object PushDispatch {
   /** A per-device conversation reference: 16 bytes of base64url (plan §2). */
   private val REF_PATTERN = Regex("^[A-Za-z0-9_-]{22}$")
 
-  fun handle(context: Context, data: Map<String, String>) {
+  /**
+   * [allowPlaintextRing] is false for every real FCM message; only the
+   * debug-only DebugPushReceiver passes true, and only when asked (RingGate).
+   */
+  fun handle(context: Context, data: Map<String, String>, allowPlaintextRing: Boolean = false) {
     val kind = data["k"] ?: "message"
     if (kind in CALL_KINDS) {
-      handleCall(context, kind, data)
+      handleCall(context, kind, data, allowPlaintextRing)
     } else {
       val ref = data["r"]?.takeIf { REF_PATTERN.matches(it) }
       if (PushState.resumed && PushRenderer.groupFor(kind) != PushRenderer.Group.CALL) {
@@ -69,30 +73,44 @@ internal object PushDispatch {
    * addressed to this package (`setPackage`) and its receiver is not
    * exported, so the plaintext never leaves the app, and the calls plugin
    * needs neither the key nor any crypto (its debug receiver takes the same
-   * plaintext extras from `adb`, phone-calls-plan §6.2). A map without `e`
-   * is forwarded as it is.
+   * plaintext extras from `adb`, phone-calls-plan §6.2).
+   *
+   * A call kind with no `e` is refused as `unencrypted` (RingGate): the
+   * server never sends one, so it is shown as the generic ring or dropped,
+   * never forwarded. Only the debug receiver can forward plaintext.
    */
-  private fun handleCall(context: Context, kind: String, data: Map<String, String>) {
-    val fields: Map<String, String>? = if (data.containsKey("e")) open(context, kind, data["e"]!!) else data
+  private fun handleCall(
+    context: Context,
+    kind: String,
+    data: Map<String, String>,
+    allowPlaintextRing: Boolean,
+  ) {
+    val decision = RingGate.decide(data, allowPlaintextRing) { open(context, kind, it) }
+    if (decision is RingDecision.Refuse && decision.reason == "unencrypted") {
+      // Whatever it carried crossed the wire in the clear; say so.
+      Log.w(TAG, "ring not opened: unencrypted $kind refused")
+    }
     val probe = Intent(ACTION_CALLS_PUSH).setPackage(context.packageName)
     @Suppress("DEPRECATION")
     val hasReceiver = context.packageManager.queryBroadcastReceivers(probe, 0).isNotEmpty()
 
-    if (fields != null && hasReceiver) {
-      for ((key, value) in fields) probe.putExtra(key, value)
+    if (decision is RingDecision.Forward && hasReceiver) {
+      for ((key, value) in decision.fields) probe.putExtra(key, value)
       context.sendBroadcast(probe)
       Log.i(TAG, "forward $kind to the calls plugin")
       return
     }
+    val why = if (decision is RingDecision.Refuse) decision.reason else "no calls receiver"
     when (kind) {
       "call_ring" -> {
-        // Somebody is calling and this build cannot ring for it (no calls
-        // plugin, or a body it cannot open): the generic alert, on `calls`.
-        Log.i(TAG, "ring shown as the generic incoming call (${if (fields == null) "unopened" else "no calls receiver"})")
+        // Somebody may be calling and this build cannot ring for it (no
+        // calls plugin, or a body it cannot or may not open): the generic
+        // alert, on `calls`. Rows A-52 and A-53 read this line.
+        Log.i(TAG, "ring shown as the generic incoming call ($why)")
         PushRenderer.show(context, "call", null)
       }
-      // Row A-52 reads this line.
-      else -> Log.i(TAG, "drop ring_ended (${if (fields == null) "unopened" else "no calls receiver"})")
+      // Rows A-52 and A-53 read this line.
+      else -> Log.i(TAG, "drop ring_ended ($why)")
     }
   }
 
