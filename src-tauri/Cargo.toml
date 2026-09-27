@@ -43,6 +43,11 @@ tauri-plugin-opener = "2"
 # client/src/sync/native-push.ts.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-wherry-push = { path = "plugins/wherry-push" }
+# wherry-calls: PushKit and CallKit on iOS, the call service and the ring on
+# Android (docs/prompts/phone-calls-plan.md §5). Mechanism behind
+# client/src/voice/phone-calls.ts; its capability, capabilities/calls-mobile.json,
+# names it and so cannot exist without this line.
+tauri-plugin-wherry-calls = { path = "plugins/wherry-calls" }
 
 # Desktop only -- there is no second instance to guard against on mobile.
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]

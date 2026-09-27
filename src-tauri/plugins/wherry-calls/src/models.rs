@@ -47,7 +47,21 @@ pub struct LabelsArgs {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PushToken {
+    /// The PushKit token, hex.
     pub token: Option<String>,
+    /// "sandbox" or "production": the APNs host of this signed build, which
+    /// the page passes to `registerNativeToken` itself (hunk H4). A string,
+    /// like `ring_ui`, so an unexpected value reaches the page to be refused
+    /// there rather than failing this answer.
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// The public half of the key pair the plugin decrypts rings with
+    /// (M-1 = E): an uncompressed P-256 point and a 16-byte auth secret,
+    /// unpadded base64url.
+    #[serde(default)]
+    pub p256dh: Option<String>,
+    #[serde(default)]
+    pub auth: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

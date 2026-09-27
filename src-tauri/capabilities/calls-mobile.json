@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "calls-mobile",
+  "description": "the phones' call plugin (docs/prompts/phone-calls-plan.md §5.1)",
+  "platforms": [
+    "iOS",
+    "android"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "wherry-calls:default"
+  ]
+}

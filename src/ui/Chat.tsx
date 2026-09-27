@@ -15,6 +15,7 @@ import { IncomingCall } from "./voice/IncomingCall";
 import { CallPage } from "./voice/CallPage";
 import { VoiceRoom } from "./voice/VoiceRoom";
 import { useVoice, useVoiceSignals } from "../voice/hooks";
+import { usePhoneCallBridge } from "../voice/phone-bridge";
 import { voice } from "../voice/session";
 import { Presence, Timeline, TypingLine } from "./Timeline";
 import { Composer } from "./Composer";
@@ -358,6 +359,7 @@ export function Chat({
     session.user.id,
     features.voice,
   );
+  usePhoneCallBridge({ rings, onDismiss: dismissRing });
   // The video stage: opened by the bar's "Show video", closed by the X, the
   // back gesture or Escape, and closed automatically when a call ends -- a
   // stage left open would otherwise cover the next conversation opened. It

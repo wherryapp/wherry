@@ -178,6 +178,10 @@ pub fn run() {
   // would be dropped (docs/prompts/native-push-plan.md §5.2).
   #[cfg(mobile)]
   let builder = builder.plugin(tauri_plugin_wherry_push::init());
+  // wherry-calls (PushKit, CallKit, the Android call service) wraps no
+  // delegate another plugin installs, so its place in the order is free.
+  #[cfg(mobile)]
+  let builder = builder.plugin(tauri_plugin_wherry_calls::init());
 
   // One `generate_handler!` per platform shape: the macro takes a single
   // list, and the voice commands exist only where the media crate does.
