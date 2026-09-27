@@ -16,6 +16,15 @@
             </intent-filter>
         </service>
 
+        <!-- Installs the activity callbacks that catch a notification tap
+             at process start, before Tauri creates any plugin (a tap that
+             re-creates the activity after a background kill reaches
+             onNewIntent first). Serves no data. See PushLifecycle.kt. -->
+        <provider
+            android:name="app.wherry.push.PushInitProvider"
+            android:authorities="${applicationId}.wherry-push-init"
+            android:exported="false" />
+
         <!-- No token until the person turns push on: without this, Firebase
              asks Google for one at the first launch, whether or not push is
              ever used. `register` turns it on and `unregister` off. -->

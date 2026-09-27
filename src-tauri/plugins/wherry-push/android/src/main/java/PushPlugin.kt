@@ -56,31 +56,29 @@ class PushPlugin(private val activity: Activity) : Plugin(activity) {
   override fun load(webView: WebView) {
     super.load(webView)
     PushState.plugin = this
-    // The webview is created after the activity is already resumed, so the
-    // first onResume can come before this plugin exists.
-    PushState.resumed = activityResumed()
+    // Taps and the foreground flag are PushLifecycle's, installed at process
+    // start by PushInitProvider, because this plugin exists only once the
+    // webview does. Should the provider not have run, install it now; the
+    // resumed activity and its launch intent are then taken as they stand.
+    if (!PushLifecycle.installed) {
+      PushLifecycle.install(activity.application)
+      PushState.resumed = activityResumed()
+      PushLifecycle.capture(activity.intent, "launch (late)")
+    }
+    Log.i(TAG, "loaded (resumed=${PushState.resumed})")
     PushRenderer.ensureChannels(activity)
-    // A tap that launched the app (cold start) is the launch intent.
-    readOpen(activity.intent, "launch")
   }
 
   override fun onNewIntent(intent: Intent) {
-    // MainActivity is singleTask: a tap while the app runs arrives here.
-    readOpen(intent, "new intent")
-  }
-
-  override fun onResume() {
-    PushState.resumed = true
-  }
-
-  override fun onPause() {
-    PushState.resumed = false
+    // MainActivity is singleTask: a tap while the app runs arrives here too.
+    // PushLifecycle's listener normally saw it first, and a captured intent
+    // is marked read, so this opens nothing twice.
+    PushLifecycle.capture(intent, "new intent")
   }
 
   @Suppress("OVERRIDE_DEPRECATION")
   override fun onDestroy() {
     if (PushState.plugin === this) PushState.plugin = null
-    PushState.resumed = false
   }
 
   // MARK: - Commands
@@ -230,6 +228,11 @@ class PushPlugin(private val activity: Activity) : Plugin(activity) {
     trigger("token", tokenAnswer(token))
   }
 
+  /** A tap was stored; the page calls `take_open`, which keeps it idempotent. */
+  internal fun emitOpened() {
+    trigger("opened", JSObject())
+  }
+
   internal fun emitReceived(kind: String) {
     val payload = JSObject()
     payload.put("kind", kind)
@@ -268,28 +271,5 @@ class PushPlugin(private val activity: Activity) : Plugin(activity) {
   private fun activityResumed(): Boolean {
     val owner = activity as? androidx.lifecycle.LifecycleOwner ?: return false
     return owner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
-  }
-
-  /** Stores a tap on one of our notifications for `take_open`, and tells
-   *  the page. The intent is then marked read, so a later re-delivery of
-   *  the same Intent object (the activity re-created) cannot open it twice;
-   *  and one relaunched from recents carries the old extras, so it is
-   *  ignored. */
-  private fun readOpen(intent: Intent?, source: String) {
-    if (intent == null || intent.action != PushRenderer.ACTION_OPEN) return
-    if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) {
-      Log.i(TAG, "tap ignored: relaunched from recents")
-      return
-    }
-    val kind = intent.getStringExtra(PushRenderer.EXTRA_KIND) ?: "message"
-    val ref = intent.getStringExtra(PushRenderer.EXTRA_REF)
-    intent.action = ACTION_READ
-    Log.i(TAG, "tap via $source")
-    PendingOpen.store(kind, ref)
-    trigger("opened", JSObject())
-  }
-
-  companion object {
-    private const val ACTION_READ = "app.wherry.push.OPENED"
   }
 }

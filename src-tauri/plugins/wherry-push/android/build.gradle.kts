@@ -39,6 +39,9 @@ dependencies {
     // NotificationCompat and the channels. Already in the app through
     // AppCompat; declared because this module compiles against it alone.
     implementation("androidx.core:core-ktx:1.9.0")
+    // ComponentActivity.addOnNewIntentListener (PushLifecycle), the version
+    // the app already uses (gen/android/app/build.gradle.kts).
+    implementation("androidx.activity:activity:1.10.1")
     // RingEnvelopeTest runs RingEnvelope (no Android API) on the JVM.
     testImplementation("junit:junit:4.13.2")
 }
