@@ -3,13 +3,33 @@
   Merged into the app's manifest by the manifest merger, so the app's own
   AndroidManifest.xml is never edited for calls (coordination §2).
 
-  PC1 declares nothing yet. A1 adds CallService (foregroundServiceType
-  "microphone", exported false, stopWithTask true) with FOREGROUND_SERVICE,
-  FOREGROUND_SERVICE_MICROPHONE and WAKE_LOCK; A2 adds the receivers and
-  USE_FULL_SCREEN_INTENT (docs/prompts/phone-calls-plan.md §6).
+  A1 (docs/prompts/phone-calls-plan.md §6.1): CallService, the call's
+  foreground service, and CallActionReceiver, which takes the ongoing
+  notification's Hang up. A2 adds the ring's receivers and
+  USE_FULL_SCREEN_INTENT (§6.2).
+
   POST_NOTIFICATIONS is already merged in from tauri-plugin-notification
-  and is not declared again here.
+  and is not declared again here. RECORD_AUDIO is the app's own (voice);
+  Android 14+ requires it to be granted before a microphone foreground
+  service may start, which CallService checks rather than assumes.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- The proximity wake lock (screen off at the ear) on an audio-only call. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application>
+        <!-- stopWithTask: a webview-engine call dies with its task, and a
+             notification outliving it would say a call is up that is not. -->
+        <service
+            android:name="app.wherry.calls.CallService"
+            android:exported="false"
+            android:stopWithTask="true"
+            android:foregroundServiceType="microphone" />
+        <!-- Only this app's own PendingIntents reach it (explicit, immutable). -->
+        <receiver
+            android:name="app.wherry.calls.CallActionReceiver"
+            android:exported="false" />
+    </application>
 </manifest>
