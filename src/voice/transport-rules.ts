@@ -3,7 +3,13 @@
 // (docs/prompts/native-media-plan.md §0.4: policy in TypeScript, mechanism
 // in Rust). Nothing here imports a media SDK or the Tauri API.
 
-import type { AudioKind, TransportConnectionState, VoiceQuality } from "./transport";
+import type {
+  AudioKind,
+  RoomEndpoint,
+  TransportConnectionState,
+  TransportEnd,
+  VoiceQuality,
+} from "./transport";
 
 /**
  * The account behind a participant. The server puts `{ userId }` in each
@@ -202,8 +208,9 @@ export function roomProbeVerdict(status: number, body: string): RoomProbeVerdict
  * and nothing to tell the server.
  *
  * Everything else -- no reason, a server shutdown, a signal close, a join
- * failure, a timeout -- leaves the room's fate unknown, and the transport
- * asks `rtc/validate` before it reports the end. Asking is harmless: a room
+ * failure, a timeout -- leaves the room's fate unknown. The transport reports
+ * the end at once and hands the session what it needs to keep asking
+ * `rtc/validate` afterwards (`roomFollowUpStep`). Asking is harmless: a room
  * that still exists answers "present" and the page leaves as it always did.
  *
  * Spelled as each SDK spells it: livekit-client's `PARTICIPANT_REMOVED`, the
@@ -223,6 +230,20 @@ export function disconnectWasTold(reason: string | null | undefined): boolean {
   return TOLD_DISCONNECTS.has(reason.replace(/[^a-z]/gi, "").toLowerCase());
 }
 
+/**
+ * The end a transport reports when the SDK gave up by itself, with `reason`
+ * as the SDK spells it: nothing to ask after a reason somebody was told,
+ * otherwise the session's follow-up gets the call's endpoint. Never
+ * `roomGone`: only an answer the transport already holds says that.
+ */
+export function transportEndFor(
+  reason: string | null | undefined,
+  endpoint: RoomEndpoint | null,
+): TransportEnd {
+  if (!endpoint || disconnectWasTold(reason)) return { roomGone: false, unsettled: null };
+  return { roomGone: false, unsettled: { endpoint, sfuStopping: disconnectSfuStopping(reason) } };
+}
+
 /** How long a reconnect runs before the native transport first asks whether
  *  the room still exists, and how often it asks again. The first wait lets a
  *  resume after a network blip land without a request; the SDK's own attempts
@@ -232,6 +253,64 @@ export const ROOM_PROBE_FIRST_MS = 2_000;
 export const ROOM_PROBE_EVERY_MS = 5_000;
 /** One validate request's bound: an SFU that is still down never answers. */
 export const ROOM_PROBE_TIMEOUT_MS = 4_000;
+
+/**
+ * The disconnect reasons that say the SFU itself was going away: a graceful
+ * stop sends every participant `SERVER_SHUTDOWN` (the Rust SDK's
+ * `ServerShutdown`) while it is still running. The room is lost with the
+ * process, but a probe sent the moment that leave arrives can still find it
+ * (the SFU has not finished stopping) or find nothing listening at all. So
+ * after this reason an early "present" is not believed; see
+ * `roomFollowUpStep`.
+ */
+export function disconnectSfuStopping(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return reason.replace(/[^a-z]/gi, "").toLowerCase() === "servershutdown";
+}
+
+/**
+ * After a call ended with nobody told, how often the session asks the SFU
+ * whether the room still exists, and for how long. The asking starts when the
+ * transport gives up, which is already the client's own retry budget (about
+ * 45 s for livekit-client, about 62 s for the Rust SDK) into an outage, so
+ * five more minutes covers an SFU host's reboot as well as a container
+ * restart. Past that the server's sweep is the backstop, and it gives a room
+ * the SFU does not hold an hour (`server/src/services/voice-rules.ts`).
+ */
+export const ROOM_FOLLOW_UP_EVERY_MS = 5_000;
+export const ROOM_FOLLOW_UP_FOR_MS = 5 * 60_000;
+
+/** What the session does with one follow-up answer. */
+export type RoomFollowUpStep =
+  /** The room is gone: tell the server this device left. */
+  | "leave"
+  /** Stop asking and tell nobody: the room is there (its SFU will send this
+   *  device's `participant_left` itself), or the token was refused and no
+   *  later answer can say anything, or time ran out. */
+  | "stop"
+  /** Ask again after `ROOM_FOLLOW_UP_EVERY_MS`. */
+  | "again";
+
+/**
+ * One step of the follow-up. `elapsedMs` counts from the end of the call;
+ * `sfuStopping` is `disconnectSfuStopping` of its reason.
+ *
+ * "present" ends the asking, except while the SFU said it was stopping: then
+ * a room that answers is one the stopping process has not dropped yet, and
+ * the next answers settle it (gone once it restarts, or a room that stays
+ * present, which the bound lets go of). Treating "present" as final there
+ * would lose the leave in exactly the forced-stop case.
+ */
+export function roomFollowUpStep(
+  verdict: RoomProbeVerdict,
+  elapsedMs: number,
+  sfuStopping: boolean,
+): RoomFollowUpStep {
+  if (verdict === "gone") return "leave";
+  if (verdict === "refused") return "stop";
+  if (verdict === "present" && !sfuStopping) return "stop";
+  return elapsedMs + ROOM_FOLLOW_UP_EVERY_MS <= ROOM_FOLLOW_UP_FOR_MS ? "again" : "stop";
+}
 
 /**
  * A stored device id is only worth sending if the shell can still see it:

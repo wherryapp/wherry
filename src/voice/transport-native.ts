@@ -64,7 +64,6 @@ import type {
 } from "./transport";
 import {
   connectionFromWord,
-  disconnectWasTold,
   isEncryptionFailure,
   knownDeviceId,
   nativeErrorName,
@@ -78,6 +77,7 @@ import {
   screenAudioMode,
   screenOptionsFor,
   tileRect,
+  transportEndFor,
   userIdFromMetadata,
   volumeKey,
   type Rect,
@@ -193,10 +193,11 @@ export class NativeTransport implements VoiceTransport {
   /** Playout moves in order: a second device event never overtakes the
    *  first's command. */
   #playoutQueue: Promise<void> = Promise.resolve();
-  /** The call's SFU URL and its latest token, for `probeRoom`. */
+  /** The call's SFU URL and its latest token: the reconnect watch probes
+   *  with it, and an end nobody reported hands it to the session. */
   #endpoint: { url: string; token: string } | null = null;
-  /** This call's end has been reported, or is being decided: the session
-   *  hears one `disconnected`, whichever path got there first. */
+  /** This call's end has been reported: the session hears one
+   *  `disconnected`, whichever path got there first. */
   #ended = false;
   /** Whether the reconnect watch is running, its pending timer, and the
    *  episode it belongs to -- bumped whenever the connection word moves on,
@@ -674,7 +675,7 @@ export class NativeTransport implements VoiceTransport {
         const state = connectionFromWord(payload.state);
         if (!state || this.#ended) break;
         if (state === "disconnected") {
-          void this.#end(payload.reason ?? null);
+          this.#end(payload.reason ?? null);
           break;
         }
         if (state === "reconnecting") this.#watchReconnect();
@@ -722,7 +723,7 @@ export class NativeTransport implements VoiceTransport {
       const verdict = await probeRoom(endpoint.url, endpoint.token);
       if (episode !== this.#episode || this.#ended || this.#session === null) return;
       if (verdict === "gone") {
-        this.#report({ roomGone: true });
+        this.#report({ roomGone: true, unsettled: null });
         return;
       }
       this.#watchTimer = setTimeout(() => void tick(), ROOM_PROBE_EVERY_MS);
@@ -738,21 +739,15 @@ export class NativeTransport implements VoiceTransport {
   }
 
   /**
-   * The shell says the call is over. Unless the reason says somebody already
-   * knows (`disconnectWasTold`), ask whether the room still exists first: the
-   * SDK gives up on a vanished room with no reason at all.
+   * The shell says the call is over, reported at once. Unless the reason says
+   * somebody already knows, the end is unsettled (`transportEndFor`) and the
+   * session keeps asking whether the room still exists: the SDK gives up on
+   * a vanished room with no reason at all, and it gives up on an SFU that is
+   * still down, which a single question at this moment could not reach.
    */
-  async #end(reason: string | null): Promise<void> {
+  #end(reason: string | null): void {
     if (this.#ended) return;
-    this.#ended = true;
-    this.#stopWatch();
-    const endpoint = this.#endpoint;
-    let roomGone = false;
-    if (endpoint && !disconnectWasTold(reason)) {
-      roomGone = (await probeRoom(endpoint.url, endpoint.token)) === "gone";
-    }
-    // A leave pressed meanwhile has already cleared the handlers.
-    this.#events.connection?.("disconnected", this.#quality, { roomGone });
+    this.#report(transportEndFor(reason, this.#endpoint));
   }
 
   /** The end, decided here and reported once. The session's teardown then

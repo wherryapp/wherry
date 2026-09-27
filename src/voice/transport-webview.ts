@@ -38,13 +38,12 @@ import {
   type VideoPreset,
 } from "livekit-client";
 import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
-import { probeRoom } from "./room-probe";
 import {
-  disconnectWasTold,
   publishErrorMessage,
   screenAudioCapture,
   screenAudioPublish,
   screenOptionsFor,
+  transportEndFor,
   userIdFromMetadata,
   volumeKey,
 } from "./transport-rules";
@@ -224,8 +223,8 @@ export class WebviewTransport implements VoiceTransport {
    * element the tile handed over on mount is still the right element.
    */
   #elements = new Map<string, Set<HTMLVideoElement>>();
-  /** The call's SFU URL and its latest token, for `probeRoom` when the room
-   *  ends. */
+  /** The call's SFU URL and its latest token, handed to the session with an
+   *  end nobody reported (`TransportEnd.unsettled`). */
   #endpoint: { url: string; token: string } | null = null;
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
@@ -799,29 +798,25 @@ export class WebviewTransport implements VoiceTransport {
         if (state === ConnectionState.Reconnecting) ev().connection?.("reconnecting", this.#quality);
         else if (state === ConnectionState.Connected) ev().connection?.("connected", this.#quality);
       })
-      .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => void this.#ended(reason))
+      .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => this.#ended(reason))
       .on(RoomEvent.EncryptionError, (error) => {
         ev().encryptionError?.(error instanceof Error ? error.message : String(error));
       });
   }
 
   /**
-   * The room ended without this device asking. livekit-client already stops
-   * reconnecting at "requested room does not exist", but it reports that end
-   * with no reason, the same as a network it gave up on. So unless the reason
-   * says the server already knows (`disconnectWasTold`), ask the SFU whether
-   * the room still exists; a room that is gone will never produce this
-   * device's `participant_left`, and the session has to tell the server.
+   * The room ended without this device asking (our own leave clears the
+   * handlers before it disconnects, so it never lands here). livekit-client
+   * already stops reconnecting at "requested room does not exist", but it
+   * reports that end with no reason, the same as a network it gave up on.
+   * So unless the reason says the server already knows, the end goes out at
+   * once as unsettled (`transportEndFor`), and the session keeps asking the
+   * SFU whether the room still exists: a room that is gone will never produce
+   * this device's `participant_left`, and the session has to tell the server.
    */
-  async #ended(reason: DisconnectReason | undefined): Promise<void> {
-    const endpoint = this.#endpoint;
+  #ended(reason: DisconnectReason | undefined): void {
     const name = reason === undefined ? null : (DisconnectReason[reason] ?? null);
-    let roomGone = false;
-    if (endpoint && !disconnectWasTold(name)) {
-      roomGone = (await probeRoom(endpoint.url, endpoint.token)) === "gone";
-    }
-    // Read after the answer: a leave pressed meanwhile cleared the handlers.
-    this.#events.connection?.("disconnected", this.#quality, { roomGone });
+    this.#events.connection?.("disconnected", this.#quality, transportEndFor(name, this.#endpoint));
   }
 
   /** The live track for one tile, local or remote; null when not (yet)

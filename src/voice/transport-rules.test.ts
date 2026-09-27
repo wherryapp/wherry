@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   cameraCeilingFor,
   connectionFromWord,
+  disconnectSfuStopping,
   disconnectWasTold,
   isEncryptionFailure,
   knownDeviceId,
@@ -13,6 +14,9 @@ import {
   playoutReadingChanged,
   publishErrorMessage,
   qualityFromWord,
+  ROOM_FOLLOW_UP_EVERY_MS,
+  ROOM_FOLLOW_UP_FOR_MS,
+  roomFollowUpStep,
   roomProbeUrl,
   roomProbeVerdict,
   SCREEN_AUDIENCE_STEP,
@@ -24,6 +28,7 @@ import {
   screenOptionsFor,
   screenSourceKind,
   tileRect,
+  transportEndFor,
   volumeKey,
   userIdFromMetadata,
   videoCodecFor,
@@ -602,8 +607,10 @@ describe("disconnectWasTold", () => {
   });
 
   it("asks about everything else, the SFU restart's reasons included", () => {
-    // The rig's SFU restart ended the native call with UnknownReason; a
-    // graceful shutdown says ServerShutdown, and forgets the room as surely.
+    // The rig's SFU restart ended the native call with UnknownReason. A
+    // graceful stop says ServerShutdown while the SFU is still stopping, so
+    // the room's fate is unknown at that moment too (roomFollowUpStep keeps
+    // asking, and does not believe an early "present" after it).
     for (const reason of [
       null,
       undefined,
@@ -619,5 +626,77 @@ describe("disconnectWasTold", () => {
     ]) {
       assert.equal(disconnectWasTold(reason), false, String(reason));
     }
+  });
+});
+
+describe("disconnectSfuStopping", () => {
+  it("reads a server shutdown in either SDK's spelling", () => {
+    assert.equal(disconnectSfuStopping("SERVER_SHUTDOWN"), true);
+    assert.equal(disconnectSfuStopping("ServerShutdown"), true);
+  });
+
+  it("reads nothing else as the SFU stopping", () => {
+    for (const reason of [null, undefined, "", "UnknownReason", "SignalClose", "ROOM_DELETED"]) {
+      assert.equal(disconnectSfuStopping(reason), false, String(reason));
+    }
+  });
+});
+
+describe("transportEndFor", () => {
+  const endpoint = { url: "wss://voice.wherry.app", token: "tok" };
+
+  it("hands the session the endpoint when nobody was told", () => {
+    assert.deepEqual(transportEndFor("UnknownReason", endpoint), {
+      roomGone: false,
+      unsettled: { endpoint, sfuStopping: false },
+    });
+    assert.deepEqual(transportEndFor(null, endpoint), {
+      roomGone: false,
+      unsettled: { endpoint, sfuStopping: false },
+    });
+    assert.deepEqual(transportEndFor("SERVER_SHUTDOWN", endpoint), {
+      roomGone: false,
+      unsettled: { endpoint, sfuStopping: true },
+    });
+  });
+
+  it("leaves nothing to ask after a reason somebody already reported", () => {
+    assert.deepEqual(transportEndFor("ParticipantRemoved", endpoint), { roomGone: false, unsettled: null });
+    assert.deepEqual(transportEndFor("CLIENT_INITIATED", endpoint), { roomGone: false, unsettled: null });
+  });
+
+  it("has nothing to hand over without an endpoint, and never says gone itself", () => {
+    assert.deepEqual(transportEndFor("UnknownReason", null), { roomGone: false, unsettled: null });
+  });
+});
+
+describe("roomFollowUpStep", () => {
+  it("leaves on gone, whenever it comes", () => {
+    assert.equal(roomFollowUpStep("gone", 0, false), "leave");
+    assert.equal(roomFollowUpStep("gone", ROOM_FOLLOW_UP_FOR_MS, true), "leave");
+  });
+
+  it("keeps asking an SFU it cannot reach, for a bounded time", () => {
+    // Both clients used up their retries while the SFU was down, so the
+    // first question after the end goes unanswered (review, 2026-09-27).
+    assert.equal(roomFollowUpStep("unknown", 0, false), "again");
+    assert.equal(roomFollowUpStep("unknown", 60_000, false), "again");
+    const last = ROOM_FOLLOW_UP_FOR_MS - ROOM_FOLLOW_UP_EVERY_MS;
+    assert.equal(roomFollowUpStep("unknown", last, false), "again");
+    assert.equal(roomFollowUpStep("unknown", last + 1, false), "stop");
+    assert.equal(roomFollowUpStep("unknown", ROOM_FOLLOW_UP_FOR_MS * 2, false), "stop");
+  });
+
+  it("stops at a room that is there, unless the SFU said it was stopping", () => {
+    assert.equal(roomFollowUpStep("present", 0, false), "stop");
+    // A forced stop's leave arrives while the SFU still holds the room; the
+    // restart that follows forgets it.
+    assert.equal(roomFollowUpStep("present", 0, true), "again");
+    assert.equal(roomFollowUpStep("present", ROOM_FOLLOW_UP_FOR_MS, true), "stop");
+  });
+
+  it("stops on a refused token, which no later answer can change", () => {
+    assert.equal(roomFollowUpStep("refused", 0, false), "stop");
+    assert.equal(roomFollowUpStep("refused", 0, true), "stop");
   });
 });

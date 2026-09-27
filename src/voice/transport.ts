@@ -108,16 +108,32 @@ export type TransportConnectOptions = {
 
 export type TransportConnectionState = "connected" | "reconnecting" | "disconnected";
 
+/** Where a call's room can be asked about: the SFU URL and the latest token
+ *  (`room-probe.ts`). */
+export type RoomEndpoint = { url: string; token: string };
+
 /**
- * What the transport learned about a `disconnected` it did not ask for.
+ * What the transport learned about a `disconnected` it did not ask for. It
+ * reports the end at once; it does not wait on the SFU to say more.
  *
- * `roomGone` is the SFU's own answer that this call's room no longer exists
- * (`transport-rules.ts`'s `roomProbeVerdict`): the SFU restarted, which
- * forgets every room and everybody in it, or the room closed. No
- * `participant_left` will ever reach the server for this device then, so the
- * session tells it. False covers everything else, including "could not ask".
+ * `roomGone` is the SFU's own answer, already had, that this call's room no
+ * longer exists (`transport-rules.ts`'s `roomProbeVerdict`): the SFU
+ * restarted, which forgets every room and everybody in it, or the room
+ * closed. No `participant_left` will ever reach the server for this device
+ * then, so the session tells it.
+ *
+ * `unsettled` is set when the room's fate is unknown -- the reason is not one
+ * somebody else already reported (`disconnectWasTold`) and nobody has asked
+ * yet, or the SFU could not be reached. The session keeps asking there after
+ * the call is gone from the screen (`roomFollowUpStep`), because the moment
+ * a client gives up on an SFU that is down is exactly when it cannot answer.
+ * `sfuStopping` is `disconnectSfuStopping` of the reason. Null with
+ * `roomGone`, and after a reason that was told.
  */
-export type TransportEnd = { roomGone: boolean };
+export type TransportEnd = {
+  roomGone: boolean;
+  unsettled: { endpoint: RoomEndpoint; sfuStopping: boolean } | null;
+};
 
 /**
  * Which of somebody's audio tracks is meant.
@@ -181,7 +197,8 @@ export type TransportEvents = {
   speakersChanged?: () => void;
   /** `end` comes only with `disconnected`, and only once per call: a
    *  transport that reconnects to a room the SFU no longer holds reports it
-   *  as terminal (`end.roomGone`) rather than retrying into it. */
+   *  as terminal (`end.roomGone`) rather than retrying into it, and one that
+   *  cannot tell says so (`end.unsettled`). */
   connection?: (
     state: TransportConnectionState,
     quality: VoiceQuality,

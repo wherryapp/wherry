@@ -66,6 +66,7 @@ import {
   type VideoQualityRequest,
   type VideoSource,
 } from "./rules";
+import { followUpRoom, type RoomFollowUp } from "./room-probe";
 import { videoOptionsFor, volumeKey } from "./transport-rules";
 import { blip, startRingback } from "./sounds";
 import type {
@@ -73,6 +74,7 @@ import type {
   ScreenChoice,
   ScreenSource,
   TransportCapabilities,
+  TransportEnd,
   VoiceQuality,
   VoiceTransport,
   VideoSurface,
@@ -343,6 +345,10 @@ class VoiceSession {
   #watchingTabs = false;
   /** The join that is running, kept so the engine switch can re-run it. */
   #plan: JoinPlan | null = null;
+  /** A call that ended with nobody told, whose room is still being asked
+   *  about after the call left the screen (`#followUpRoom`). One at a time:
+   *  a newer end replaces it. */
+  #followUp: { callId: string; run: RoomFollowUp } | null = null;
   /** Which tiles are on screen, keyed `identity/source` -- the input to
    *  `subscriptionFor`, held here rather than in state because it changes
    *  on every scroll and must not re-render the roster. */
@@ -786,6 +792,13 @@ class VoiceSession {
       await this.#teardown({ tellServer: true, error: connectError(error) });
       return;
     }
+    // Back in the call whose room was being asked about: the room exists
+    // after all (a gone room refuses the connect), and this device's row is
+    // live again, which a late leave must not close.
+    if (this.#followUp?.callId === result.call.id) {
+      this.#followUp.run.cancel();
+      this.#followUp = null;
+    }
     for (const set of this.#volumes.values()) {
       transport.setParticipantVolume(set.userId, set.volume, set.kind);
     }
@@ -923,7 +936,13 @@ class VoiceSession {
           // Leaving is safe only because the room is gone: `leaveCall` acts
           // on this *user's* row, and while the room exists that row may
           // be this account's other device, which took the call over.
+          //
+          // And when nobody could say yet (`end.unsettled`), the call leaves
+          // the screen now and the question keeps being asked: a client
+          // gives up on an SFU exactly when it cannot reach it.
+          const call = this.#state.call;
           void this.#teardown({ tellServer: end?.roomGone === true, error: "The call ended" });
+          if (call && end?.unsettled) this.#followUpRoom(call.id, end.unsettled);
         }
       },
       playbackChanged: (blocked) => this.#set({ playbackBlocked: blocked }),
@@ -1266,6 +1285,37 @@ class VoiceSession {
       this.#announce();
       if (transport) blip("leave");
     }
+  }
+
+  /**
+   * Keeps asking the SFU the ended call's token names whether its room still
+   * exists, on `followUpRoom`'s bounded schedule, and tells the server this
+   * device left once the SFU says the room is gone.
+   *
+   * The leave is `leaveCall` by the call's id for both kinds, never
+   * `leaveVoiceRoom`: this answer can arrive minutes later, and the room
+   * leave acts on whichever call the channel has open by then, which may be
+   * a new one this account has joined since. The call id is the one the
+   * probed room belongs to (a room is named after its call), and a room the
+   * SFU has forgotten is never recreated for that call, so nobody can be in
+   * it for this leave to take out.
+   */
+  #followUpRoom(callId: string, unsettled: NonNullable<TransportEnd["unsettled"]>): void {
+    this.#followUp?.run.cancel();
+    const run = followUpRoom(unsettled.endpoint, unsettled.sfuStopping, {
+      onGone: async () => {
+        try {
+          await leaveCall(callId);
+        } catch {
+          // Nothing left to heal it but the server's sweep.
+        }
+      },
+    });
+    const entry = { callId, run };
+    this.#followUp = entry;
+    void run.done.finally(() => {
+      if (this.#followUp === entry) this.#followUp = null;
+    });
   }
 
   #stopRingback(): void {
