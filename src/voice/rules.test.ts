@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { Call } from "../api/types";
 import {
   audioPresetFor,
+  callerIsRinging,
   callKeyContext,
   cameraOnVisibility,
   grantLine,
@@ -177,6 +178,36 @@ test("shouldJoinMuted: calls never; rooms follow the preference, Automatic follo
   assert.equal(shouldJoinMuted({ kind: "room", preference: "auto", serverJoinMuted: false }), false);
   assert.equal(shouldJoinMuted({ kind: "room", preference: "unmuted", serverJoinMuted: true }), false);
   assert.equal(shouldJoinMuted({ kind: "room", preference: "muted", serverJoinMuted: false }), true);
+});
+
+test("callerIsRinging: a callee already in the room at connect is an answer (W-58)", () => {
+  // The rig's case: the peer answered ~2.0 s after Start, the caller's
+  // connect took ~2.3 s, so the join answer still said "ringing" but the
+  // roster at connect already held the peer. No event follows for somebody
+  // present at connect, so this read is the only chance to stop ringing.
+  assert.equal(callerIsRinging({ kind: "call", status: "ringing", othersInRoom: 1 }), false);
+});
+
+test("callerIsRinging: an answer's frame heard during the connect is an answer (W-58)", () => {
+  // The callee answered, the frame arrived while connecting, and their own
+  // connect to the SFU is still in flight: the room is empty, the status is not.
+  assert.equal(callerIsRinging({ kind: "call", status: "active", othersInRoom: 0 }), false);
+});
+
+test("callerIsRinging: rings while nobody has answered and nobody is in", () => {
+  assert.equal(callerIsRinging({ kind: "call", status: "ringing", othersInRoom: 0 }), true);
+});
+
+test("callerIsRinging: never for a room, never for an ended call", () => {
+  assert.equal(callerIsRinging({ kind: "room", status: "ringing", othersInRoom: 0 }), false);
+  assert.equal(callerIsRinging({ kind: "room", status: "active", othersInRoom: 0 }), false);
+  assert.equal(callerIsRinging({ kind: "call", status: "ended", othersInRoom: 0 }), false);
+});
+
+test("callerIsRinging: in a group call, the first answer stops the ringback", () => {
+  // Parity with the participant-joined path, which has always cleared the
+  // flag on anybody's arrival: the caller is no longer waiting alone.
+  assert.equal(callerIsRinging({ kind: "call", status: "ringing", othersInRoom: 2 }), false);
 });
 
 test("callNotice is per viewer", () => {

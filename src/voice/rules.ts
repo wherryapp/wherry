@@ -177,6 +177,36 @@ export function shouldJoinMuted(input: {
 }
 
 // ---------------------------------------------------------------------------
+// The caller's "Calling…"
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the caller's side is still ringing: the call bar's "Calling…" and
+ * the ringback tone, which share one flag.
+ *
+ * A state, not an event. The session used to set the flag from the join
+ * answer's status once the transport connected, and clear it only on an
+ * *event* -- a later participant joining, or a `call_state` `active` frame --
+ * so a callee who answered while the caller was still connecting cleared
+ * nothing: they were already in the room (no participant-joined event is
+ * sent for somebody present at connect, on either engine), and their answer's
+ * frame arrived before the session listened. The bar then read "Calling…"
+ * for the whole call (row W-58, 3 of 3 on the Windows rig, 2026-09-27).
+ * Read instead from what is true now: the call's latest status, and whether
+ * anybody else is in the room.
+ */
+export function callerIsRinging(input: {
+  kind: CallKind;
+  /** The newest status this device holds: the join answer's, or a
+   *  `call_state` frame's since. */
+  status: Call["status"];
+  /** Remote participants the transport sees in the room. */
+  othersInRoom: number;
+}): boolean {
+  return input.kind === "call" && input.status === "ringing" && input.othersInRoom === 0;
+}
+
+// ---------------------------------------------------------------------------
 // Notice lines
 // ---------------------------------------------------------------------------
 

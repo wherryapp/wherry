@@ -49,6 +49,7 @@ import { listVideoDevices } from "./devices";
 import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
 import {
   audioPresetFor,
+  callerIsRinging,
   cameraOnVisibility,
   grantLine,
   micStatus,
@@ -746,6 +747,13 @@ class VoiceSession {
       return;
     }
     this.#set({ call: result.call });
+    // Listening from here rather than from the end of the join: a callee who
+    // answers while this device is still deriving the key or connecting sends
+    // their `active` frame now, and a frame nobody heard is repaired only by
+    // the next transition -- often the hang-up (row W-58). Until `joined()`
+    // the handler records what it hears and acts on none of it but the
+    // ringing; the join reads the record once it is in the room.
+    const joined = this.#watchSync(result.call.id);
 
     let derived: { epoch: number; secret: Uint8Array } | null = null;
     if (e2ee) {
@@ -795,7 +803,14 @@ class VoiceSession {
       connectedAt: Date.now(),
       keyEpoch: derived?.epoch ?? null,
       playbackBlocked: transport.playbackBlocked(),
-      ringing: plan.kind === "call" && result.call.status === "ringing",
+      // From what is true now, not the join answer's snapshot: the callee
+      // may have answered during the connect, and be in the room already --
+      // which no participant-joined event reports on either engine.
+      ringing: callerIsRinging({
+        kind: plan.kind,
+        status: this.#state.call?.status ?? result.call.status,
+        othersInRoom: transport.participants().length,
+      }),
       grant,
       // Read after connect, never guessed from a platform: the same
       // transport answers differently on a browser without
@@ -829,8 +844,8 @@ class VoiceSession {
     this.#liveVideo = liveVideoKeys(this.#transport?.participants() ?? []);
 
     if (e2ee) this.#watchEpoch(plan.conversation.id, result.call.id);
-    this.#watchSync(result.call.id);
     this.#watchVisibility();
+    joined();
     blip("join");
   }
 
@@ -985,6 +1000,7 @@ class VoiceSession {
       encryptionErrors: this.#encryptionErrors,
       lastEncryptionError: this.#lastEncryptionError,
     });
+    this.#settleRinging();
     this.#chimeForNewVideo(participants);
   }
 
@@ -1153,7 +1169,17 @@ class VoiceSession {
 
   // -- the server's view -----------------------------------------------------
 
-  #watchSync(callId: string): void {
+  /**
+   * Follows the server's `call_state` frames for this call. Returns
+   * `joined`, which the join calls once it has finished: before that a frame
+   * is recorded (the status, and the ringing it may settle) but an `ended` is
+   * held rather than acted on, because tearing down under a join that is
+   * still awaiting the transport or the microphone would let the join carry
+   * on into a session that no longer exists.
+   */
+  #watchSync(callId: string): () => void {
+    let settled = false;
+    let endedWhileJoining = false;
     const handle = (event: SyncEvent): void => {
       if (event.type !== "call_state" || event.callId !== callId) return;
       if (event.error === "VIDEO_OVER_GRANT") {
@@ -1169,16 +1195,33 @@ class VoiceSession {
       const call = this.#state.call;
       if (call) this.#set({ call: { ...call, status: event.status, endReason: event.reason } });
       if (event.status === "ended" && !this.#leaving) {
-        void this.#teardown({ tellServer: false, error: null });
-      } else if (event.status === "active" && this.#state.ringing) {
-        this.#stopRingback();
-        this.#set({ ringing: false });
+        if (settled) void this.#teardown({ tellServer: false, error: null });
+        else endedWhileJoining = true;
+      } else {
+        this.#settleRinging();
       }
     };
     this.#unsubscribeSync = sync.subscribe(handle);
     this.#unsubscribeBroadcasts = subscribeToBroadcasts((message) => {
       if (message.type === "call_state") handle(message);
     });
+    return () => {
+      settled = true;
+      if (endedWhileJoining && !this.#leaving) void this.#teardown({ tellServer: false, error: null });
+    };
+  }
+
+  /** Stops the caller's ringing -- the bar's "Calling…" and the ringback --
+   *  once `callerIsRinging` no longer holds. Called wherever either of its
+   *  inputs can move: a `call_state` frame and every roster read. */
+  #settleRinging(): void {
+    if (!this.#state.ringing) return;
+    const status = this.#state.call?.status;
+    if (!status || !this.#state.kind) return;
+    const othersInRoom = this.#transport?.participants().length ?? 0;
+    if (callerIsRinging({ kind: this.#state.kind, status, othersInRoom })) return;
+    this.#stopRingback();
+    this.#set({ ringing: false });
   }
 
   // -- tabs ------------------------------------------------------------------
