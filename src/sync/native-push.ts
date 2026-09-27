@@ -31,19 +31,25 @@ import {
 import { loadSession } from "../api/session";
 import {
   NATIVE_PUSH_STORAGE_KEY,
+  afterAlertRegistration,
   alertEntry,
+  carryOver,
   computeRef,
   encodeBase64Url,
   nativeStateFrom,
+  normaliseKeys,
   parseOpen,
   parseStored,
   reregisterReason,
   resolveRefAmong,
+  signedOut,
   withEntry,
+  withPending,
   withoutEntry,
   type NativeOpen,
   type NativePushState,
   type PluginStatus,
+  type PushKeys,
   type ServerProviders,
   type StoredNative,
 } from "./native-push-rules";
@@ -66,12 +72,13 @@ async function invokePlugin<T>(
 
 /** What `register` and the `token` event carry. `p256dh` and `auth` are
  *  the device's RFC 8291 key material (decision M-1 = E): optional in the
- *  §5.1 contract, supplied by the native half that holds the private key. */
+ *  §5.1 contract, supplied by the native half that holds the private key.
+ *  Read through `takeKeys`, never sent as given. */
 type TokenAnswer = {
   token: string;
   environment: "sandbox" | "production" | null;
-  p256dh?: string;
-  auth?: string;
+  p256dh?: unknown;
+  auth?: unknown;
 };
 
 /**
@@ -92,24 +99,33 @@ async function pluginStatus(): Promise<PluginStatus | null> {
           ? raw.environment
           : null,
     };
-    lastKeys = keysOf(raw) ?? lastKeys;
+    takeKeys(raw);
     return status;
   } catch {
     return null;
   }
 }
 
-function keysOf(value: { p256dh?: unknown; auth?: unknown }): {
-  p256dh: string;
-  auth: string;
-} | null {
-  return typeof value.p256dh === "string" && typeof value.auth === "string"
-    ? { p256dh: value.p256dh, auth: value.auth }
-    : null;
+/**
+ * Folds the key material in a plugin answer into `lastKeys`, in the
+ * server's spelling (`normaliseKeys`). An answer that carries none leaves
+ * `lastKeys` alone; one that carries material which is not a P-256 point
+ * and a 16-byte secret clears it, and says so in the console -- the
+ * registration it would have gone into then fails with a message naming
+ * the fields, instead of sending the previous pair or a bare 400.
+ */
+function takeKeys(value: { p256dh?: unknown; auth?: unknown }): void {
+  if (value.p256dh === undefined && value.auth === undefined) return;
+  lastKeys = normaliseKeys(value);
+  if (lastKeys === null) {
+    console.warn(
+      "native push: the plugin's p256dh/auth are not a 65-byte P-256 point and a 16-byte secret; ignored",
+    );
+  }
 }
 
 /** The key material the plugin last reported, if it reports any. */
-let lastKeys: { p256dh: string; auth: string } | null = null;
+let lastKeys: PushKeys | null = null;
 
 // ---------------------------------------------------------------------------
 // The server and the permission
@@ -153,6 +169,36 @@ function writeStored(value: StoredNative | null): void {
     else window.localStorage.setItem(NATIVE_PUSH_STORAGE_KEY, JSON.stringify(value));
   } catch {
     // Lost memory costs one re-registration, which returns the same ref key.
+  }
+}
+
+/**
+ * The record as this sign-in sees it: what an earlier sign-in of this
+ * device left is carried over (`carryOver` decides how), and the result is
+ * written back, so the carry-over happens once. Every read that is about
+ * the current sign-in goes through here.
+ */
+function readStoredFor(owner: string): StoredNative | null {
+  const stored = readStored();
+  const carried = carryOver(stored, owner);
+  if (carried !== stored) writeStored(carried);
+  return carried;
+}
+
+/**
+ * An explicit sign-out is under way: this device's registrations stop
+ * counting, and the next sign-in on it makes sure the server forgot them
+ * (`signedOut`). Called by the shell just before it signs out; the logout
+ * route forgets the tokens when it succeeds, and this covers the times it
+ * does not (offline). Needs no session. Never throws.
+ */
+export function noteSignOut(): void {
+  try {
+    const stored = readStored();
+    if (stored) writeStored(signedOut(stored));
+  } catch {
+    // The next sign-in on this device re-registers instead, which is the
+    // lesser failure (push stays on, and nothing is shown twice).
   }
 }
 
@@ -210,7 +256,7 @@ export async function nativeAvailability(): Promise<NativePushState> {
       currentOwner(),
     ]);
     if (owner === null) return publishState("unsupported");
-    const stored = readStored();
+    const stored = readStoredFor(owner);
     rememberServer(stored, owner, status, server);
     return publishState(
       nativeStateFrom({ status, server, permissionGranted: granted, stored, owner }),
@@ -242,14 +288,28 @@ function rememberServer(
  * launch, the `token` event, and the phone-calls plan's PushKit token
  * (`registerNativeToken("apns_voip", token, …)`) all come through here.
  *
- * `environment` defaults to what this plugin reports for an APNs provider
- * -- an app's alert and VoIP tokens come from the same signed build, so
- * they share the APNs host. `keys` defaults to what this plugin last
- * reported, which is right for the alert provider only; a caller whose
- * native half holds a different key pair (the calls plugin) passes its own.
+ * `environment` is required for the two APNs providers. It defaults to what
+ * the wherry-push plugin's `status` reports -- an app's alert and VoIP
+ * tokens come from the same signed build, so they share the APNs host --
+ * **but that status reports an environment only once the plugin holds an
+ * alert token this process** (ng/push-p2's `PushPlugin.swift`), which it
+ * never does for somebody who has not turned notifications on. A PushKit
+ * token needs no notification permission, so the calls plugin must pass
+ * `environment` itself (or §5.1 must be amended so `status` always reports
+ * it; hunk H6). Without one, this throws before sending, rather than
+ * sending what the server refuses with 400 INVALID_PUSH_TOKEN.
  *
- * Throws on failure (an ApiError, a NetworkError, "signed out"): the caller
- * decides whether that is a state or a shrug.
+ * `keys` are required for `fcm` and `apns_voip`, the providers whose rings
+ * are encrypted (M-1 = E), and dropped for `apns`. They default to what
+ * this plugin last reported, which is right for `fcm` only; the calls
+ * plugin passes the pair it holds for `apns_voip`. Either way they go
+ * through `normaliseKeys`, so a padded or standard-alphabet spelling is
+ * sent as the unpadded base64url the server's schema takes, and material
+ * that is not a P-256 point and a 16-byte secret throws here, naming the
+ * fields, instead of coming back as a bare 400.
+ *
+ * Throws on failure (an ApiError, a NetworkError, "signed out", or one of
+ * the two above): the caller decides whether that is a state or a shrug.
  */
 export async function registerNativeToken(
   provider: NativePushProvider,
@@ -266,16 +326,24 @@ export async function registerNativeToken(
   if (environment === null && provider !== "fcm") {
     environment = (await pluginStatus())?.environment ?? null;
   }
+  if (provider !== "fcm" && environment === null) {
+    throw new Error(
+      `native push: ${provider} needs an APNs environment, and the wherry-push plugin reported none; pass options.environment`,
+    );
+  }
+
   // Only the providers that carry encrypted rings take key material (plan
   // §4.3); an APNs alert is fixed text and needs none.
-  const keys =
-    provider === "apns"
-      ? null
-      : options.keys !== undefined
-        ? options.keys
-        : provider === "fcm"
-          ? lastKeys
-          : null;
+  let keys: PushKeys | null = null;
+  if (provider !== "apns") {
+    const given = options.keys !== undefined ? options.keys : provider === "fcm" ? lastKeys : null;
+    keys = given ? normaliseKeys(given) : null;
+    if (keys === null) {
+      throw new Error(
+        `native push: ${provider} needs p256dh and auth (a 65-byte uncompressed P-256 point and a 16-byte secret), and ${given ? "those given are not" : "none were given"}`,
+      );
+    }
+  }
 
   const body: RegisterNativePushBody = { provider, token };
   if (provider !== "fcm" && environment !== null) body.environment = environment;
@@ -285,7 +353,7 @@ export async function registerNativeToken(
   }
 
   const { refKey } = await registerNativePush(body);
-  writeStored(withEntry(readStored(), owner, provider, { token, environment, refKey }));
+  writeStored(withEntry(readStoredFor(owner), owner, provider, { token, environment, refKey }));
   return { refKey };
 }
 
@@ -319,14 +387,16 @@ export async function enableNative(): Promise<NativePushState> {
     }
 
     const answer = await invokePlugin<TokenAnswer>("register");
-    lastKeys = keysOf(answer) ?? lastKeys;
+    takeKeys(answer);
     await registerNativeToken(status.provider, answer.token, {
       environment: answer.environment,
     });
-    const stored = readStored();
-    if (stored && server.kind === "known") {
-      writeStored({ ...stored, serverEnabled: server[status.provider] });
-    }
+    writeStored(
+      afterAlertRegistration(
+        readStored(),
+        server.kind === "known" ? server[status.provider] : null,
+      ),
+    );
     return publishState("on");
   } catch (error) {
     console.warn("native push: enable failed", error);
@@ -337,9 +407,8 @@ export async function enableNative(): Promise<NativePushState> {
 function rememberDeclined(): void {
   void currentOwner().then((owner) => {
     if (owner === null) return;
-    const stored = readStored();
-    const base: StoredNative =
-      stored && stored.owner === owner ? stored : { v: 1, owner, entries: {} };
+    const stored = readStoredFor(owner);
+    const base: StoredNative = stored ?? { v: 1, owner, entries: {} };
     writeStored({ ...base, declined: true });
   });
 }
@@ -356,23 +425,57 @@ export async function disableNative(): Promise<NativePushState> {
   try {
     const status = await pluginStatus();
     if (status === null) return publishState("unsupported");
+    const owner = await currentOwner();
+    let reached = true;
     try {
       await unregisterNativePush(status.provider);
-    } catch {
-      // Best effort: a stale row is marked failed the first time a send to
-      // it is refused, and forgetting locally is what was asked for.
+    } catch (error) {
+      // Not reached (offline, a 5xx): the server keeps its row and keeps
+      // sending, and an iOS token is not invalidated by the plugin's
+      // `unregister` (P2 only forgets its cached copy). So it is queued and
+      // retried at every start until the server answers.
+      reached = !unregisterWorthRetrying(error);
     }
     try {
       await invokePlugin("unregister");
     } catch {
-      // As above.
+      // Best effort: forgetting locally is what was asked for.
     }
-    const stored = withoutEntry(readStored(), status.provider);
+    let stored = withoutEntry(owner ? readStoredFor(owner) : readStored(), status.provider);
+    if (!reached && owner) stored = withPending(stored, owner, status.provider, true);
     writeStored(stored);
   } catch {
     // Fall through to whatever the state now is.
   }
   return nativeAvailability();
+}
+
+/** Whether an unregister that failed this way can still succeed later. A
+ *  404 (a server older than the routes, so no row) or a 400 will not. */
+function unregisterWorthRetrying(error: unknown): boolean {
+  return !(error instanceof ApiError && (error.status === 404 || error.status === 400));
+}
+
+/**
+ * Tells the server to forget what this device queued for forgetting: the
+ * registrations of a sign-in that ended with a sign-out, and a Turn off the
+ * server never heard (`StoredNative.pendingUnregister`). Each provider comes
+ * off the list once the server answers. Run at every start.
+ */
+async function flushPendingUnregisters(owner: string): Promise<void> {
+  const pending = readStoredFor(owner)?.pendingUnregister ?? [];
+  for (const provider of pending) {
+    // Re-read: a Turn on since the list was read takes the provider off it,
+    // and its fresh row must not be forgotten.
+    if (!readStoredFor(owner)?.pendingUnregister?.includes(provider)) continue;
+    try {
+      await unregisterNativePush(provider);
+    } catch (error) {
+      if (unregisterWorthRetrying(error)) continue;
+    }
+    console.info(`native-push unregistered (${provider}, queued)`);
+    writeStored(withPending(readStoredFor(owner), owner, provider, false));
+  }
 }
 
 /** Opens this app's page in the system settings: the way out of blocked. */
@@ -402,10 +505,12 @@ export type NativePushHooks = {
  * sign-in; returns the stop function its effect cleans up with.
  *
  * Listens for the plugin's `token`, `opened` and `received` events, takes a
- * tap that happened before anything listened (a cold start) once, and, for
+ * tap that happened before anything listened (a cold start) once, sends
+ * any unregister this device queued (`flushPendingUnregisters`), and, for
  * a device that already turned push on, re-registers silently when the
- * rules say this launch owes it (a rotated token, a server that gained its
- * key, or every launch on iOS). It never turns push on by itself.
+ * rules say this launch owes it (a registration carried over from a
+ * session that expired, a rotated token, a server that gained its key, or
+ * every launch on iOS). It never turns push on by itself.
  */
 export function startNativePush(hooks: NativePushHooks): () => void {
   let stopped = false;
@@ -448,7 +553,7 @@ export function startNativePush(hooks: NativePushHooks): () => void {
       };
 
       await listen<TokenAnswer>("token", (answer) => {
-        lastKeys = keysOf(answer) ?? lastKeys;
+        takeKeys(answer);
         void reregisterIfOwed(run, status.provider, answer.token);
       });
       await listen<unknown>("opened", () => {
@@ -461,6 +566,8 @@ export function startNativePush(hooks: NativePushHooks): () => void {
       });
 
       await takeOpen();
+      const owner = await currentOwner();
+      if (owner !== null && !stopped) await flushPendingUnregisters(owner);
       await reregisterIfOwed(run, status.provider, status.token);
       if (!stopped) await nativeAvailability();
     } catch {
@@ -492,7 +599,7 @@ async function reregisterIfOwed(
     const owner = await currentOwner();
     if (owner === null) return;
     const [server, granted] = await Promise.all([serverProviders(), permissionGranted()]);
-    const stored = readStored();
+    const stored = readStoredFor(owner);
     const reason = reregisterReason({
       stored,
       owner,
@@ -509,10 +616,9 @@ async function reregisterIfOwed(
     // default): the build decides it, not what was stored.
     await registerNativeToken(provider, token);
     run.launchRegistered = true;
-    if (server.kind === "known") {
-      const now = readStored();
-      if (now) writeStored({ ...now, serverEnabled: server[provider] });
-    }
+    writeStored(
+      afterAlertRegistration(readStored(), server.kind === "known" ? server[provider] : null),
+    );
     console.info(`native-push re-registered (${reason})`);
   } catch {
     // The next launch asks again.
@@ -526,7 +632,7 @@ async function reregisterIfOwed(
 async function alertRefKey(): Promise<string | null> {
   const owner = await currentOwner();
   if (owner === null) return null;
-  const stored = readStored();
+  const stored = readStoredFor(owner);
   const entry =
     alertEntry(stored, owner, "apns") ?? alertEntry(stored, owner, "fcm");
   return entry?.refKey ?? null;

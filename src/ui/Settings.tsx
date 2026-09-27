@@ -889,6 +889,7 @@ function NotificationSetting() {
 function NativeNotificationSetting() {
   const [state, setState] = useState<NativePushState | null>(null);
   const [busy, setBusy] = useState(false);
+  const [notTurnedOn, setNotTurnedOn] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -935,28 +936,40 @@ function NativeNotificationSetting() {
   const on = state === "on";
 
   return (
-    <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
-      <input
-        type="checkbox"
-        checked={on}
-        disabled={busy}
-        onChange={() => {
-          setBusy(true);
-          // The permission prompt answers this press and nothing else, as
-          // on the web. The OS prompt is native, so unlike a browser's it
-          // does not need the gesture to survive the module load.
-          withNativePush(async (native) => {
-            try {
-              setState(await (on ? native.disableNative() : native.enableNative()));
-            } finally {
-              setBusy(false);
-            }
-          });
-        }}
-        className="h-4 w-4"
-      />
-      Notify me about new messages on this device
-    </label>
+    <div className="space-y-1">
+      <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={busy}
+          onChange={() => {
+            setBusy(true);
+            setNotTurnedOn(false);
+            // The permission prompt answers this press and nothing else, as
+            // on the web. The OS prompt is native, so unlike a browser's it
+            // does not need the gesture to survive the module load.
+            withNativePush(async (native) => {
+              try {
+                const next = await (on ? native.disableNative() : native.enableNative());
+                setState(next);
+                // Turn on that lands back on "ready" did not work: a failed
+                // registration (the reason is in the console), or a prompt
+                // dismissed without an answer. Without this line the box
+                // just springs back.
+                setNotTurnedOn(!on && next === "ready");
+              } finally {
+                setBusy(false);
+              }
+            });
+          }}
+          className="h-4 w-4"
+        />
+        Notify me about new messages on this device
+      </label>
+      {notTurnedOn && (
+        <p className={muted}>Notifications could not be turned on. Try again later.</p>
+      )}
+    </div>
   );
 }
 

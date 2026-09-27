@@ -19,6 +19,8 @@ import type { Shell } from "../api/shell";
  *  it but never uses its ref key. */
 export type NativeProvider = "apns" | "apns_voip" | "fcm";
 
+const PROVIDERS: readonly NativeProvider[] = ["apns", "apns_voip", "fcm"];
+
 /** The provider that carries alerts on this platform. The only one whose
  *  ref key resolves a tapped notification to a conversation. */
 export type AlertProvider = "apns" | "fcm";
@@ -91,11 +93,10 @@ export type StoredNative = {
   v: 1;
   /** The sign-in the entries were registered under: the Wherry device id
    *  and a fingerprint of that sign-in's session (native-push.ts
-   *  `currentOwner`). The device id alone is not enough, because it
-   *  deliberately outlives a sign-out (api/session.ts) while the server
-   *  forgets the device's native tokens at logout (plan §4.3). A different
-   *  owner means none of the entries apply any more, and push stays off
-   *  until somebody turns it on again: a sign-out means stop. */
+   *  `currentOwner`), `<deviceId>:<fingerprint>`. The fingerprint is what
+   *  tells a new sign-in from the old one; what a new sign-in *does* with
+   *  the old one's entries is `carryOver`'s decision, and it depends on how
+   *  the old sign-in ended. Another device's entries never apply. */
   owner: string;
   entries: Partial<Record<NativeProvider, StoredEntry>>;
   /** The last permission request on this device answered "denied". */
@@ -103,6 +104,19 @@ export type StoredNative = {
   /** Whether the server reported the alert provider enabled the last time
    *  it was asked -- a flip to true is worth one re-registration. */
   serverEnabled?: boolean;
+  /** The entries were carried over from an earlier sign-in of this device
+   *  that ended without a sign-out (a 401: an expired or revoked session).
+   *  The server's row most likely survived, but nothing proves it, so this
+   *  sign-in registers the alert token once more (`reregisterReason`'s
+   *  `sign-in`), which returns the same ref key. */
+  resync?: boolean;
+  /** Providers the server may still hold a row for although this device no
+   *  longer wants pushes through them: an explicit sign-out (whose logout
+   *  is best effort, so the server may never have forgotten), or a Turn off
+   *  whose unregister did not reach the server. Retried at every start on
+   *  this device until the server answers; registering the same provider
+   *  again takes it off the list. */
+  pendingUnregister?: NativeProvider[];
 };
 
 export const NATIVE_PUSH_STORAGE_KEY = "wherry.nativePush";
@@ -209,6 +223,7 @@ export function nativeOwnsAlerts(state: NativePushState): boolean {
 // ---------------------------------------------------------------------------
 
 export type ReregisterReason =
+  | "sign-in"
   | "token-changed"
   | "server-enabled"
   | "ios-launch";
@@ -221,6 +236,9 @@ export type ReregisterReason =
  * have been granted to the *local* notifications (desktop-notify.ts asks at
  * the first message), not to push. Turning push on is the person's choice.
  *
+ * - `sign-in`: the registration was carried over from a sign-in that
+ *   ended without a sign-out (`carryOver`), so this one tells the server
+ *   again rather than trusting that its row survived.
  * - `token-changed`: the provider rotated the token (FCM does, and APNs
  *   can after a restore). The old one is dead weight on the server.
  * - `server-enabled`: the server said "off" last time and "on" now. The
@@ -244,6 +262,7 @@ export function reregisterReason(input: {
   if (entry === null) return null;
   if (!input.permissionGranted) return null;
   if (input.currentToken === null) return null;
+  if (input.stored?.resync === true) return "sign-in";
   if (input.currentToken !== entry.token) return "token-changed";
 
   const enabledNow =
@@ -276,7 +295,7 @@ export function parseStored(raw: string | null): StoredNative | null {
     return null;
   }
   const entries: Partial<Record<NativeProvider, StoredEntry>> = {};
-  for (const provider of ["apns", "apns_voip", "fcm"] as const) {
+  for (const provider of PROVIDERS) {
     const entry = (record.entries as Record<string, unknown>)[provider];
     if (typeof entry !== "object" || entry === null) continue;
     const candidate = entry as Partial<StoredEntry>;
@@ -291,6 +310,11 @@ export function parseStored(raw: string | null): StoredNative | null {
       refKey: typeof candidate.refKey === "string" ? candidate.refKey : null,
     };
   }
+  const pending = Array.isArray(record.pendingUnregister)
+    ? PROVIDERS.filter((provider) =>
+        (record.pendingUnregister as unknown[]).includes(provider),
+      )
+    : [];
   return {
     v: 1,
     owner: record.owner,
@@ -299,21 +323,116 @@ export function parseStored(raw: string | null): StoredNative | null {
     ...(typeof record.serverEnabled === "boolean"
       ? { serverEnabled: record.serverEnabled }
       : {}),
+    ...(record.resync === true ? { resync: true } : {}),
+    ...(pending.length > 0 ? { pendingUnregister: pending } : {}),
   };
 }
 
-/** The record with one provider's entry set, re-based on `owner` (a
- *  record left by an earlier sign-in keeps nothing). */
+/** The device id part of an owner (`<deviceId>:<fingerprint>`). */
+export function ownerDevice(owner: string): string {
+  const colon = owner.indexOf(":");
+  return colon === -1 ? owner : owner.slice(0, colon);
+}
+
+/**
+ * The record as the sign-in `owner` should see it, from whatever an earlier
+ * sign-in left. native-push.ts runs it before anything reads the record.
+ *
+ * - The same sign-in: unchanged.
+ * - Another device (another account -- a device belongs to one user -- or
+ *   a device whose site data was cleared): nothing applies. Null.
+ * - The same device, a new sign-in: the record is re-based onto it, and
+ *   what its entries mean depends on how the old sign-in ended:
+ *   - after an explicit sign-out, `signedOut` has already emptied the
+ *     entries and queued the providers in `pendingUnregister`, so push
+ *     stays off and the server is told again to forget (the logout that
+ *     should have done it is best effort, and fails offline);
+ *   - otherwise the sign-in ended without anybody asking (the 30-day
+ *     expiry, or any other 401), the server forgot nothing, and this
+ *     device's person turned push on, so it stays on: the entries are kept
+ *     and marked `resync`, and this sign-in registers once more.
+ *   Reading that second case as "off" is what made the server's pushes and
+ *   the engine's local notification both fire (its gate read "ready"),
+ *   with taps that resolved nothing and nothing ever cleared.
+ */
+export function carryOver(
+  stored: StoredNative | null,
+  owner: string,
+): StoredNative | null {
+  if (!stored || stored.owner === owner) return stored;
+  if (ownerDevice(stored.owner) !== ownerDevice(owner)) return null;
+  const carried: StoredNative = { ...stored, owner };
+  delete carried.resync;
+  if (Object.keys(stored.entries).length > 0) carried.resync = true;
+  return carried;
+}
+
+/**
+ * The record after an explicit sign-out: no entries, and every provider it
+ * held queued for the next sign-in on this device to unregister. The
+ * logout route forgets the device's tokens when it succeeds; this covers
+ * the times it does not. Needs no session, so it can run while the sign-out
+ * is under way.
+ */
+export function signedOut(stored: StoredNative | null): StoredNative | null {
+  if (!stored) return null;
+  const pending = new Set<NativeProvider>(stored.pendingUnregister ?? []);
+  for (const provider of PROVIDERS) {
+    if (stored.entries[provider]) pending.add(provider);
+  }
+  const next: StoredNative = { ...stored, entries: {} };
+  delete next.resync;
+  delete next.pendingUnregister;
+  const list = PROVIDERS.filter((provider) => pending.has(provider));
+  if (list.length > 0) next.pendingUnregister = list;
+  return next;
+}
+
+/** The record with `provider` added to, or taken off, the unregister
+ *  retry list. A record left by another owner keeps nothing. */
+export function withPending(
+  stored: StoredNative | null,
+  owner: string,
+  provider: NativeProvider,
+  pending: boolean,
+): StoredNative {
+  const base: StoredNative =
+    stored && stored.owner === owner ? stored : { v: 1, owner, entries: {} };
+  const set = new Set<NativeProvider>(base.pendingUnregister ?? []);
+  if (pending) set.add(provider);
+  else set.delete(provider);
+  const next: StoredNative = { ...base };
+  delete next.pendingUnregister;
+  const list = PROVIDERS.filter((known) => set.has(known));
+  if (list.length > 0) next.pendingUnregister = list;
+  return next;
+}
+
+/** The record after the alert provider registered: a carried-over
+ *  registration is settled, and the server's answer about the provider is
+ *  remembered when there was one. */
+export function afterAlertRegistration(
+  stored: StoredNative | null,
+  serverEnabled: boolean | null,
+): StoredNative | null {
+  if (!stored) return null;
+  const next: StoredNative = { ...stored };
+  delete next.resync;
+  if (serverEnabled !== null) next.serverEnabled = serverEnabled;
+  return next;
+}
+
+/** The record with one provider's entry set. A record left by another
+ *  owner keeps nothing (callers run `carryOver` first, so that is another
+ *  device's). The provider comes off the unregister retry list: the row
+ *  the server now holds is one this device wants. */
 export function withEntry(
   stored: StoredNative | null,
   owner: string,
   provider: NativeProvider,
   entry: StoredEntry,
 ): StoredNative {
-  const base: StoredNative =
-    stored && stored.owner === owner
-      ? stored
-      : { v: 1, owner, entries: {} };
+  const base = withPending(stored, owner, provider, false);
   return {
     ...base,
     entries: { ...base.entries, [provider]: entry },
@@ -440,4 +559,46 @@ export function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// Key material (M-1 = E)
+// ---------------------------------------------------------------------------
+
+/** RFC 8291 key material as the server's schema takes it (P1's
+ *  routes/push.ts): unpadded base64url, `p256dh` the 65-byte uncompressed
+ *  P-256 point (87 characters), `auth` the 16-byte secret (22). */
+export type PushKeys = { p256dh: string; auth: string };
+
+/**
+ * Key material a native half reported, in the one spelling the server
+ * accepts; null when there is none, or when it is not a 65-byte
+ * uncompressed point (leading 0x04) and a 16-byte secret.
+ *
+ * Normalises rather than refuses the spellings a native half reaches for
+ * first -- padding, the standard alphabet's `+` and `/`, and line breaks,
+ * which is Android's `Base64.DEFAULT` -- because the server's patterns take
+ * exactly unpadded base64url, and anything else is a 400 that reads, on the
+ * phone, as a toggle that springs back.
+ */
+export function normaliseKeys(value: {
+  p256dh?: unknown;
+  auth?: unknown;
+}): PushKeys | null {
+  const p256dh = keyBytes(value.p256dh);
+  const auth = keyBytes(value.auth);
+  if (p256dh === null || auth === null) return null;
+  if (p256dh.length !== 65 || p256dh[0] !== 0x04) return null;
+  if (auth.length !== 16) return null;
+  return { p256dh: encodeBase64Url(p256dh), auth: encodeBase64Url(auth) };
+}
+
+function keyBytes(value: unknown): Uint8Array | null {
+  if (typeof value !== "string") return null;
+  const urlSafe = value
+    .replace(/\s+/g, "")
+    .replace(/=+$/, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  return urlSafe.length === 0 ? null : decodeBase64Url(urlSafe);
 }

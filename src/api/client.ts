@@ -732,9 +732,11 @@ export type NativePushProvider = "apns" | "apns_voip" | "fcm";
 /**
  * The register body. The device comes from the session, never from here.
  *
- * `p256dh` and `auth` (base64url) are the device's RFC 8291 key material,
- * which the server encrypts ring payloads to (decision M-1 = E,
- * 2026-09-27); required by the server for `apns_voip` and `fcm`, the
+ * `p256dh` and `auth` are the device's RFC 8291 key material, unpadded
+ * base64url of the 65-byte uncompressed P-256 point and the 16-byte secret
+ * (the server's patterns take exactly 87 and 22 characters;
+ * native-push-rules.ts `normaliseKeys` produces that spelling), which the
+ * server encrypts ring payloads to (decision M-1 = E, 2026-09-27); required by the server for `apns_voip` and `fcm`, the
  * providers that carry encrypted rings, and omitted for `apns`. The
  * private half never leaves the native side, which is where a ring is
  * decrypted. `environment` is required for the two APNs providers and

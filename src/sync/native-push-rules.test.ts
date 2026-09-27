@@ -4,19 +4,25 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   REF_PATTERN,
+  afterAlertRegistration,
   alertEntry,
+  carryOver,
   computeRef,
   decodeBase64Url,
   encodeBase64Url,
   nativeOwnsAlerts,
   nativePushCandidate,
   nativeStateFrom,
+  normaliseKeys,
   openTarget,
+  ownerDevice,
   parseOpen,
   parseStored,
   reregisterReason,
   resolveRefAmong,
+  signedOut,
   withEntry,
+  withPending,
   withoutEntry,
   type NativePushState,
   type PluginStatus,
@@ -244,6 +250,128 @@ test("withEntry starts over for a new sign-in and clears a remembered refusal", 
   });
   assert.deepEqual(Object.keys(both.entries).sort(), ["apns", "apns_voip"]);
   assert.deepEqual(Object.keys(withoutEntry(both, "apns")!.entries), ["apns_voip"]);
+});
+
+// ---------------------------------------------------------------------------
+// Carrying a record across sign-ins
+// ---------------------------------------------------------------------------
+
+const OTHER_DEVICE = "0199aaaa-0000-7000-8000-000000000002:fingerprint";
+
+test("ownerDevice is the part before the fingerprint", () => {
+  assert.equal(ownerDevice(OWNER), "0199aaaa-0000-7000-8000-000000000001");
+  assert.equal(ownerDevice("no-fingerprint"), "no-fingerprint");
+});
+
+test("a session that ended without a sign-out carries its registration over, marked for one re-registration", () => {
+  const stored = { ...registered("fcm", fcmStatus.token!), serverEnabled: true };
+  const carried = carryOver(stored, OTHER_OWNER);
+  assert.equal(carried?.owner, OTHER_OWNER);
+  assert.deepEqual(carried?.entries, stored.entries);
+  assert.equal(carried?.resync, true);
+  assert.equal(carried?.serverEnabled, true);
+  // So the new sign-in reads on (the engine's gate) and resolves taps...
+  assert.equal(
+    nativeStateFrom({ status: fcmStatus, server: bothOn, permissionGranted: true, stored: carried, owner: OTHER_OWNER }),
+    "on",
+  );
+  assert.equal(alertEntry(carried, OTHER_OWNER, "fcm")?.refKey, REF_KEY);
+  // ...and tells the server once, although the token did not change.
+  assert.equal(
+    reason({ stored: carried, owner: OTHER_OWNER }),
+    "sign-in",
+  );
+  const settled = afterAlertRegistration(carried, true);
+  assert.equal(settled?.resync, undefined);
+  assert.equal(reason({ stored: settled, owner: OTHER_OWNER }), null);
+});
+
+test("carryOver leaves the same sign-in alone and drops another device's record", () => {
+  const stored = registered("apns");
+  assert.equal(carryOver(stored, OWNER), stored);
+  assert.equal(carryOver(null, OWNER), null);
+  assert.equal(carryOver(stored, OTHER_DEVICE), null);
+});
+
+test("an explicit sign-out empties the entries and queues every provider for the next sign-in to forget", () => {
+  const both = withEntry(registered("apns"), OWNER, "apns_voip", {
+    token: TOKEN,
+    environment: "sandbox",
+    refKey: REF_KEY,
+  });
+  const out = signedOut({ ...both, resync: true });
+  assert.deepEqual(out?.entries, {});
+  assert.deepEqual(out?.pendingUnregister, ["apns", "apns_voip"]);
+  assert.equal(out?.resync, undefined);
+  assert.equal(signedOut(null), null);
+  // The next sign-in on this device: off, with the queue kept.
+  const next = carryOver(out, OTHER_OWNER);
+  assert.equal(next?.resync, undefined);
+  assert.deepEqual(next?.pendingUnregister, ["apns", "apns_voip"]);
+  assert.equal(
+    nativeStateFrom({ status: apnsStatus, server: bothOn, permissionGranted: true, stored: next, owner: OTHER_OWNER }),
+    "ready",
+  );
+  assert.equal(reason({ stored: next, owner: OTHER_OWNER, provider: "apns", currentToken: TOKEN }), null);
+});
+
+test("the unregister queue: added to, taken off, and cleared by registering the same provider", () => {
+  const queued = withPending(registered("apns"), OWNER, "fcm", true);
+  assert.deepEqual(queued.pendingUnregister, ["fcm"]);
+  assert.deepEqual(withPending(queued, OWNER, "apns", true).pendingUnregister, ["apns", "fcm"]);
+  assert.equal(withPending(queued, OWNER, "fcm", false).pendingUnregister, undefined);
+  const again = withEntry(queued, OWNER, "fcm", { token: "t", environment: null, refKey: REF_KEY });
+  assert.equal(again.pendingUnregister, undefined);
+});
+
+test("the new fields round-trip through storage, and junk in them is dropped", () => {
+  const stored: StoredNative = {
+    ...registered("apns"),
+    resync: true,
+    pendingUnregister: ["apns_voip", "fcm"],
+  };
+  assert.deepEqual(parseStored(JSON.stringify(stored)), stored);
+  const junk = parseStored(
+    JSON.stringify({ v: 1, owner: OWNER, entries: {}, resync: "yes", pendingUnregister: ["nope", "fcm", 3] }),
+  );
+  assert.equal(junk?.resync, undefined);
+  assert.deepEqual(junk?.pendingUnregister, ["fcm"]);
+});
+
+// ---------------------------------------------------------------------------
+// Key material
+// ---------------------------------------------------------------------------
+
+test("key material is sent as unpadded base64url of a 65-byte point and a 16-byte secret", () => {
+  const point = new Uint8Array(65).map((_, i) => (i === 0 ? 4 : i));
+  const secret = new Uint8Array(16).map((_, i) => 250 - i);
+  const expected = { p256dh: encodeBase64Url(point), auth: encodeBase64Url(secret) };
+  assert.match(expected.p256dh, /^[A-Za-z0-9_-]{87}$/);
+  assert.match(expected.auth, /^[A-Za-z0-9_-]{22}$/);
+  assert.deepEqual(normaliseKeys(expected), expected);
+  // Padded standard base64 with line breaks (Android's Base64.DEFAULT).
+  const standard = Buffer.from(point).toString("base64");
+  assert.deepEqual(
+    normaliseKeys({
+      p256dh: `${standard.slice(0, 76)}\n${standard.slice(76)}\n`,
+      auth: Buffer.from(secret).toString("base64"),
+    }),
+    expected,
+  );
+});
+
+test("key material of the wrong shape is refused", () => {
+  const point = new Uint8Array(65).map((_, i) => (i === 0 ? 4 : i));
+  const secret = new Uint8Array(16);
+  const auth = encodeBase64Url(secret);
+  assert.equal(normaliseKeys({}), null);
+  assert.equal(normaliseKeys({ p256dh: encodeBase64Url(point) }), null);
+  // A compressed point, or one without the 0x04 prefix.
+  assert.equal(normaliseKeys({ p256dh: encodeBase64Url(point.subarray(0, 33)), auth }), null);
+  assert.equal(normaliseKeys({ p256dh: encodeBase64Url(point.map((b, i) => (i === 0 ? 2 : b))), auth }), null);
+  assert.equal(normaliseKeys({ p256dh: encodeBase64Url(point), auth: encodeBase64Url(secret.subarray(0, 15)) }), null);
+  assert.equal(normaliseKeys({ p256dh: "not base64 at all!", auth }), null);
+  assert.equal(normaliseKeys({ p256dh: 5, auth }), null);
 });
 
 // ---------------------------------------------------------------------------

@@ -64,11 +64,13 @@ async function invoke(command: string, args: Json = {}): Promise<unknown> {
   plugin.calls.push({ command: name, args });
   switch (name) {
     case "status":
+      // As ng/push-p2's PushPlugin.swift answers: no environment until the
+      // plugin holds an alert token this process.
       return {
         provider: plugin.provider,
         configured: plugin.configured,
         token: plugin.token,
-        environment: plugin.environment,
+        environment: plugin.token === null ? null : plugin.environment,
         ...(plugin.keys ?? {}),
       };
     case "register":
@@ -106,13 +108,33 @@ const notification = {
   },
 };
 
-// The server's §4.3 routes, with the validation the plan names.
+// The server's §4.3 routes, with the validation ng/push-p1's routes/push.ts
+// and services/push.ts apply. Rows are keyed by provider: one device.
 const server = {
   mode: "known" as "known" | "absent",
   providers: { apns: true, fcm: true },
   rows: new Map<string, Json & { refKey: string }>(),
   registers: [] as Json[],
   unregisters: [] as Json[],
+  /** The unregister route cannot be reached (offline). */
+  unregisterOffline: false,
+};
+
+/** A successful POST /auth/logout: forgetNativeTokens(deviceId). */
+function serverLogout(): void {
+  server.rows.clear();
+}
+
+function b64url(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
+}
+/** Real-shaped RFC 8291 material: a 65-byte uncompressed point, 16 bytes. */
+const P256DH_BYTES = new Uint8Array(65).map((_, i) => (i === 0 ? 4 : (i * 29 + 7) % 256));
+const AUTH_BYTES = new Uint8Array(16).map((_, i) => (i * 13 + 5) % 256);
+const KEYS = { p256dh: b64url(P256DH_BYTES), auth: b64url(AUTH_BYTES) };
+const VOIP_KEYS = {
+  p256dh: b64url(P256DH_BYTES.map((byte, i) => (i === 0 ? 4 : byte ^ 0x5a))),
+  auth: b64url(AUTH_BYTES.map((byte) => byte ^ 0x33)),
 };
 let refKeySeed = 1;
 
@@ -144,8 +166,15 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
     if (provider === "fcm" && body["environment"] !== undefined) {
       return reply(400, { error: "INVALID_PUSH_TOKEN" });
     }
-    if ((provider === "fcm" || provider === "apns_voip") && (!body["p256dh"] || !body["auth"])) {
+    // The schema's patterns: unpadded base64url of 65 and 16 bytes.
+    if (body["p256dh"] !== undefined && !/^[A-Za-z0-9_-]{87}$/.test(String(body["p256dh"]))) {
       return reply(400, { error: "VALIDATION" });
+    }
+    if (body["auth"] !== undefined && !/^[A-Za-z0-9_-]{22}$/.test(String(body["auth"]))) {
+      return reply(400, { error: "VALIDATION" });
+    }
+    if ((provider === "fcm" || provider === "apns_voip") && (!body["p256dh"] || !body["auth"])) {
+      return reply(400, { error: "INVALID_PUSH_KEYS" });
     }
     const existing = server.rows.get(provider);
     const refKey =
@@ -155,6 +184,7 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
     return reply(200, { refKey });
   }
   if (path === "/api/push/native/unregister") {
+    if (server.unregisterOffline) throw new TypeError("Load failed");
     server.unregisters.push(body);
     server.rows.delete(String(body["provider"]));
     return reply(204);
@@ -230,6 +260,7 @@ beforeEach(() => {
   server.rows.clear();
   server.registers = [];
   server.unregisters = [];
+  server.unregisterOffline = false;
   listeners.length = 0;
   signIn("session-token-1");
 });
@@ -279,14 +310,43 @@ test("Android: the FCM body carries the device's key material and no environment
   plugin.provider = "fcm";
   plugin.token = "fcm:" + "x".repeat(150);
   plugin.environment = null;
-  plugin.keys = { p256dh: "BPublicKeyBase64url", auth: "AuthSecret16" };
+  plugin.keys = KEYS;
   assert.equal(await quiet(() => native.enableNative()), "on");
   assert.deepEqual(server.registers.at(-1), {
     provider: "fcm",
     token: "fcm:" + "x".repeat(150),
-    p256dh: "BPublicKeyBase64url",
-    auth: "AuthSecret16",
+    p256dh: KEYS.p256dh,
+    auth: KEYS.auth,
   });
+});
+
+test("Android: padded standard base64 with a line break is sent as unpadded base64url", async () => {
+  plugin.provider = "fcm";
+  plugin.token = "fcm:" + "x".repeat(150);
+  plugin.environment = null;
+  // What Kotlin's Base64.DEFAULT produces: '+', '/', '=' and a newline.
+  const standard = Buffer.from(P256DH_BYTES).toString("base64");
+  plugin.keys = {
+    p256dh: standard.slice(0, 40) + "\n" + standard.slice(40),
+    auth: Buffer.from(AUTH_BYTES).toString("base64"),
+  };
+  assert.match(plugin.keys.auth, /=$/);
+  assert.equal(await quiet(() => native.enableNative()), "on");
+  assert.equal(server.registers.at(-1)!["p256dh"], KEYS.p256dh);
+  assert.equal(server.registers.at(-1)!["auth"], KEYS.auth);
+});
+
+test("Android: key material that is not a P-256 point and a 16-byte secret is never sent, and Turn on says it did not work", async () => {
+  plugin.provider = "fcm";
+  plugin.token = "fcm:" + "x".repeat(150);
+  plugin.environment = null;
+  plugin.keys = { p256dh: KEYS.p256dh, auth: b64url(AUTH_BYTES.subarray(0, 15)) };
+  assert.equal(await quiet(() => native.enableNative()), "ready");
+  assert.equal(server.registers.length, 0);
+  // No key material at all (P3 not yet supplying it) is the same answer.
+  plugin.keys = null;
+  assert.equal(await quiet(() => native.enableNative()), "ready");
+  assert.equal(server.registers.length, 0);
 });
 
 test("a refused prompt is blocked, stays blocked, and Open settings reaches the plugin", async () => {
@@ -311,32 +371,48 @@ test("Turn off tells the server first, then the plugin, and forgets locally", as
 // The calls plan's contract: registerNativeToken(provider, token)
 // ---------------------------------------------------------------------------
 
-test("registerNativeToken('apns_voip', token) takes the APNs environment from the plugin", async () => {
+test("registerNativeToken('apns_voip', token) takes the APNs environment from the plugin once it has an alert token", async () => {
   await quiet(() => native.enableNative());
   const voip = "cd".repeat(32);
-  const keys = { p256dh: "BVoipKey", auth: "VoipAuth" };
-  await native.registerNativeToken("apns_voip", voip, { keys });
+  await native.registerNativeToken("apns_voip", voip, { keys: VOIP_KEYS });
   assert.deepEqual(server.registers.at(-1), {
     provider: "apns_voip",
     token: voip,
     environment: "sandbox",
-    p256dh: "BVoipKey",
-    auth: "VoipAuth",
+    p256dh: VOIP_KEYS.p256dh,
+    auth: VOIP_KEYS.auth,
   });
   // The alert registration is untouched: still on, same ref key.
   assert.equal(await native.nativeAvailability(), "on");
 });
 
-test("the two-argument call the calls plan names reaches the server without key material", async () => {
-  // Recorded, not endorsed: under M-1 = E the server requires keys for
-  // apns_voip, so this 400s until the calls plugin supplies them (stage log).
-  signIn("session-token-voip");
-  await assert.rejects(native.registerNativeToken("apns_voip", "ef".repeat(32)));
-  assert.deepEqual(server.registers.at(-1), {
-    provider: "apns_voip",
-    token: "ef".repeat(32),
-    environment: "sandbox",
+test("apns_voip for somebody who never turned notifications on needs the environment passed", async () => {
+  // PushKit needs no notification permission, so the calls plugin can hold
+  // a VoIP token while wherry-push has never obtained an alert token -- and
+  // P2's status then reports no environment.
+  plugin.token = null;
+  const voip = "cd".repeat(32);
+  await assert.rejects(
+    native.registerNativeToken("apns_voip", voip, { keys: VOIP_KEYS }),
+    /needs an APNs environment/,
+  );
+  assert.equal(server.registers.length, 0, "nothing the server would refuse is sent");
+  await native.registerNativeToken("apns_voip", voip, {
+    keys: VOIP_KEYS,
+    environment: "production",
   });
+  assert.equal(server.registers.at(-1)!["environment"], "production");
+  assert.equal(server.rows.has("apns_voip"), true);
+});
+
+test("the two-argument call the calls plan first named fails here, naming the keys", async () => {
+  // Under M-1 = E the server requires keys for apns_voip; the calls plugin
+  // must pass the pair it holds (H4). Refused before a request, not by a 400.
+  await assert.rejects(
+    native.registerNativeToken("apns_voip", "ef".repeat(32)),
+    /needs p256dh and auth/,
+  );
+  assert.equal(server.registers.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -428,7 +504,7 @@ test("Android does not re-register an unchanged token at launch", async () => {
   plugin.provider = "fcm";
   plugin.token = "fcm:" + "y".repeat(150);
   plugin.environment = null;
-  plugin.keys = { p256dh: "BKey", auth: "Auth" };
+  plugin.keys = KEYS;
   await quiet(() => native.enableNative());
   server.registers = [];
   const stop = native.startNativePush({ onOpen: () => {}, poke: () => {} });
@@ -437,20 +513,134 @@ test("Android does not re-register an unchanged token at launch", async () => {
   stop();
 });
 
-test("after a sign-out and back in, push is off until turned on again", async () => {
-  await quiet(() => native.enableNative());
-  // Same device id (it outlives a sign-out), new session.
-  signIn("session-token-2");
-  server.registers = [];
+function startRecording(): { states: string[]; stop: () => void } {
   const states: string[] = [];
   const stop = native.startNativePush({
     onOpen: () => {},
     poke: () => {},
     onState: (state) => states.push(state),
   });
+  return { states, stop };
+}
+
+test("after a sign-out and back in, push is off until turned on again", async () => {
+  await quiet(() => native.enableNative());
+  native.noteSignOut();
+  serverLogout();
+  // Same device id (it outlives a sign-out), new session.
+  signIn("session-token-2");
+  server.registers = [];
+  const { states, stop } = startRecording();
   await quiet(settle);
   assert.equal(server.registers.length, 0);
+  // The queued forget is sent once, harmlessly, to a server that already did.
+  assert.deepEqual(server.unregisters, [{ provider: "apns" }]);
   assert.equal(states.at(-1), "ready");
+  stop();
+  // And only once.
+  const again = startRecording();
+  await quiet(settle);
+  assert.equal(server.unregisters.length, 1);
+  again.stop();
+});
+
+test("a sign-out whose logout never reached the server still stops the pushes", async () => {
+  await quiet(() => native.enableNative());
+  native.noteSignOut();
+  // Offline: POST /auth/logout failed and signOut swallowed it, so the
+  // server still holds the row and still pushes to this device.
+  assert.equal(server.rows.has("apns"), true);
+  signIn("session-token-2");
+  const { states, stop } = startRecording();
+  await quiet(settle);
+  assert.equal(server.rows.has("apns"), false);
+  assert.equal(states.at(-1), "ready");
+  assert.equal(await native.refFor("c1"), null);
+  stop();
+});
+
+test("a session that expired (a 401, no sign-out) keeps push on, and the new sign-in re-registers", async () => {
+  plugin.provider = "fcm";
+  plugin.token = "fcm:" + "z".repeat(150);
+  plugin.environment = null;
+  plugin.keys = KEYS;
+  await quiet(() => native.enableNative());
+  const refKey = server.rows.get("fcm")!.refKey;
+  // 30 days on: App.tsx's 401 path signs out locally and sends no logout,
+  // so the server keeps the row. The same device signs in again.
+  signIn("session-token-after-expiry");
+  server.registers = [];
+  const { states, stop } = startRecording();
+  await quiet(settle);
+  assert.equal(server.registers.length, 1, "told the server once, although the token is unchanged");
+  assert.equal(server.rows.get("fcm")!.refKey, refKey);
+  assert.equal(server.unregisters.length, 0);
+  // The engine's gate is on, so the phone alerts once, not twice; taps
+  // resolve and reads clear.
+  assert.equal(states.at(-1), "on");
+  const ref = await computeRef(refKey, "c-b");
+  assert.equal(await native.resolveRef(ref!, ["c-a", "c-b"]), "c-b");
+  await native.clearNative("c-b");
+  assert.deepEqual(pluginCalls("clear").at(-1), { ref });
+  stop();
+  // Settled: the next launch does not register again (Android, same token).
+  server.registers = [];
+  const again = startRecording();
+  await quiet(settle);
+  assert.equal(server.registers.length, 0);
+  again.stop();
+});
+
+test("iOS, after an expired session: the launch registration is the carried-over one", async () => {
+  await quiet(() => native.enableNative());
+  signIn("session-token-after-expiry");
+  server.registers = [];
+  const { states, stop } = startRecording();
+  await quiet(settle);
+  assert.equal(server.registers.length, 1);
+  assert.equal(states.at(-1), "on");
+  stop();
+});
+
+test("another device's record (another account, or cleared site data) applies to nothing", async () => {
+  await quiet(() => native.enableNative());
+  signIn("session-token-other", "0199aaaa-0000-7000-8000-00000000d002");
+  server.registers = [];
+  const { states, stop } = startRecording();
+  await quiet(settle);
+  assert.equal(server.registers.length, 0);
+  assert.equal(server.unregisters.length, 0);
+  assert.equal(states.at(-1), "ready");
+  stop();
+});
+
+test("Turn off that cannot reach the server is retried at the next start", async () => {
+  await quiet(() => native.enableNative());
+  server.unregisterOffline = true;
+  assert.equal(await native.disableNative(), "ready");
+  assert.equal(server.rows.has("apns"), true, "the server still holds it");
+  const first = startRecording();
+  await quiet(settle);
+  assert.equal(server.rows.has("apns"), true, "still offline");
+  first.stop();
+  server.unregisterOffline = false;
+  const second = startRecording();
+  await quiet(settle);
+  assert.deepEqual(server.unregisters, [{ provider: "apns" }]);
+  assert.equal(server.rows.has("apns"), false);
+  second.stop();
+});
+
+test("turning push on again before the queued forget runs keeps the new registration", async () => {
+  await quiet(() => native.enableNative());
+  native.noteSignOut();
+  signIn("session-token-2");
+  assert.equal(await quiet(() => native.enableNative()), "on");
+  const { states, stop } = startRecording();
+  await quiet(settle);
+  assert.equal(server.unregisters.length, 0);
+  assert.equal(server.rows.has("apns"), true);
+  assert.equal(states.at(-1), "on");
   stop();
 });
 

@@ -430,6 +430,17 @@ export function Chat({
       sync.setNativePushOwnsAlerts(false);
     };
   }, []);
+  // An explicit sign-out means this phone stops buzzing. The logout route
+  // forgets its native tokens, but only when it gets there (it is best
+  // effort and fails offline), so native push also queues them for the next
+  // sign-in on this device to forget. A session that merely expired does
+  // not come through here, and push stays on across it
+  // (native-push-rules.ts `carryOver`). noteSignOut needs no session, so
+  // the order against App's teardown does not matter.
+  const signOut = (): void => {
+    withNativePush((native) => native.noteSignOut());
+    onSignOut();
+  };
 
   // Global keys. Ctrl/Cmd+K opens the switcher from anywhere in the main
   // view, composer included; it stays out of the full-screen panels because
@@ -773,7 +784,7 @@ export function Chat({
             setSelfMenu(null);
             setSettingsOpen(true);
           }}
-          onSignOut={onSignOut}
+          onSignOut={signOut}
         />
       )}
     </>
@@ -949,7 +960,7 @@ export function Chat({
         onClose={() => setSettingsOpen(false)}
         // Revoking this device already invalidated the session server-side, so
         // the only honest thing left is the same local teardown as a sign-out.
-        onSignedOut={onSignOut}
+        onSignedOut={signOut}
       />
     );
   }
