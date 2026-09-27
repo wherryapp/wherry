@@ -29,10 +29,13 @@
 // **Windows shares a screen and, since 2026-09-10, draws (stages W1 and
 // W3).** The three capabilities used to be one probe field and now are
 // three, because that platform came apart: it captures a screen and its
-// sound through a picker of our own -- WebView2 opens none and
-// `getDisplayMedia` hangs there (row S-00), so the shell is the only thing
-// that can -- and it puts every received tile in a child window over the
-// page. What it still has no path to is a **camera**, so that one button
+// sound in the shell through a picker of our own, and it puts every
+// received tile in a child window over the page. Capturing natively is a
+// choice, not a necessity: on Windows 11 WebView2 opens its own chooser and
+// `getDisplayMedia` settles both ways (row S-00, re-checked 2026-09-26), so
+// the webview engine can share there too. The shell's capture is what gives
+// per-application audio and Windows 10, where a bare wry window opened no
+// picker on 2026-09-09 (still unexplained). What it still has no path to is a **camera**, so that one button
 // stays the engine switch while the screen button shares in place. Which
 // made a third shape the rules had never met: an engine that renders and
 // cannot capture. `rules.ts`'s `nativeEngine` is what tells it from a

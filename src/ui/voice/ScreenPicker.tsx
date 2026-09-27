@@ -1,10 +1,14 @@
-// Our own screen picker, for the platform that has none.
+// Our own screen picker, for the one capture path that brings none.
 //
-// Every other surface has one already: `getDisplayMedia` opens Chromium's
-// in a browser, and macOS opens the system sheet. Windows under WebView2
-// opens neither -- no picker appears and `getDisplayMedia` never settles
-// (regression row S-00) -- so the shell enumerates the displays and windows
-// itself (`voice_screen_sources`) and this draws them.
+// Every other path has one already: `getDisplayMedia` opens Chromium's in a
+// browser and WebView2's own chooser in the Windows 11 shell (regression
+// row S-00, re-checked 2026-09-26 on WebView2 153 -- it opens, and settles
+// on both Share and Cancel), and macOS opens the system sheet. The native
+// engine on Windows captures in the shell instead of through the page --
+// chosen for per-application audio and for Windows 10, where a bare wry
+// window opened no picker on 2026-09-09 (still unexplained) -- so nothing
+// arrives with a chooser attached: the shell enumerates the displays and
+// windows itself (`voice_screen_sources`) and this draws them.
 //
 // Three things it is deliberately *not*:
 //
