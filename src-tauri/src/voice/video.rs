@@ -90,6 +90,15 @@ struct Published {
 /// memory. A muted publication is never stopped, so it never gets there.
 /// `client/src-tauri/patches/libwebrtc-external-audio-source-stop.md` has
 /// the evidence.
+///
+/// **Muting it touches the microphone** (rows D-68 and D-69): libwebrtc's
+/// `MuteStream` starts or stops the one device module's recording whenever
+/// a transceiver's streams go all-muted or not, and this publication is its
+/// transceiver's only stream. `mod.rs`'s microphone gate and
+/// `after_pushed_audio_toggled`, called beside each mute and unmute here,
+/// keep the microphone where the page put it;
+/// `client/src-tauri/patches/libwebrtc-mutestream-stops-recording.md` is the
+/// upstream half.
 struct ScreenAudioPublication {
   publication: LocalTrackPublication,
   source: NativeAudioSource,
@@ -489,6 +498,14 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
       capture
     })
   });
+  if sound.is_some() {
+    // That mute was the last unmuted stream on the share's transceiver, and
+    // libwebrtc answers that by stopping the device's recording -- the
+    // microphone's (row D-68; mod.rs, above `set_microphone_gate`). Put it
+    // back before anything else, so the microphone loses milliseconds rather
+    // than the time the capture thread takes to stop.
+    super::after_pushed_audio_toggled("after the share's sound was muted");
+  }
   if let Some(capture) = sound {
     let frames = capture.frames();
     tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
@@ -572,7 +589,15 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   // did not happen.
   let audio = if args.audio {
     match start_screen_audio(session, &room, &args, picked).await {
-      Ok(sid) => Some(sid),
+      Ok(sid) => {
+        // Publishing or unmuting the share's sound is an unmuted stream on
+        // its transceiver, which libwebrtc answers by starting the device's
+        // recording if it was not running. The microphone gate turns that
+        // into nothing while the microphone is muted (row D-69); this reads
+        // the state back into the log either way.
+        super::after_pushed_audio_toggled("after the share's sound was published or unmuted");
+        Some(sid)
+      }
       Err(error) => {
         log::warn!("voice: screen audio not started: {}", error.message);
         None
