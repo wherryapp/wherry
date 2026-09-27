@@ -1,0 +1,8 @@
+{
+  "aps": {
+    "alert": { "body": "New message" },
+    "sound": "default",
+    "thread-id": "AAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "w": { "k": "message", "r": "AAAAAAAAAAAAAAAAAAAAAA" }
+}

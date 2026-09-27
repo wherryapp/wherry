@@ -1,0 +1,8 @@
+{
+  "aps": {
+    "alert": { "body": "Incoming call" },
+    "sound": "default",
+    "thread-id": "AAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "w": { "k": "call", "r": "AAAAAAAAAAAAAAAAAAAAAA" }
+}
