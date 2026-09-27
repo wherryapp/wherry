@@ -403,6 +403,16 @@ export function Chat({
   // they early-return their own trees and the dialog could not render over
   // them. Escape is not here: it is the back stack's (ui/back.ts), and the
   // thread's share of it is the layer registered below.
+  //
+  // Both also stay out while the call page or a ring covers the screen.
+  // Either one paints above what the shortcut would open -- Search is a
+  // screen, the switcher and the thread it picks are in the main tree --
+  // but the new layer would register *after* it, and the back stack's top
+  // is the layer registered last. One Escape would then close something
+  // nobody can see and leave the page or ring that is showing, which reads
+  // as a dead key (review of W-103's fix, 2026-09-26). Paint order and
+  // registration order have to agree for Escape to mean "the thing on top".
+  const coveredByCall = callPageOpen || rings.length > 0;
   useEffect(() => {
     const panelOpen =
       settingsOpen ||
@@ -445,7 +455,7 @@ export function Chat({
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        if (panelOpen) return;
+        if (panelOpen || coveredByCall) return;
         event.preventDefault();
         setSwitcherOpen((open) => !open);
         return;
@@ -458,7 +468,7 @@ export function Chat({
         event.shiftKey &&
         event.key.toLowerCase() === "f"
       ) {
-        if (panelOpen) return;
+        if (panelOpen || coveredByCall) return;
         event.preventDefault();
         setSwitcherOpen(false);
         openSearch(selected);
@@ -477,6 +487,7 @@ export function Chat({
     hubDetailsFor,
     pinsFor,
     searchOpen,
+    coveredByCall,
     voiceState.grant,
     voiceState.capabilities,
     voiceState.phase,
@@ -709,20 +720,6 @@ export function Chat({
         )}
         <div className="min-h-0 flex-1">{screen}</div>
       </div>
-      {/*
-        An incoming call rings over every screen too, and for the same
-        reason the bar does: it used to render only in the main return, so
-        a call arriving while somebody was in Settings or a hub panel was
-        invisible and simply went unanswered.
-      */}
-      {rings[0] && (
-        <IncomingCall
-          ring={rings[0]}
-          conversation={conversations.find((c) => c.id === rings[0]!.conversationId)}
-          selfUserId={session.user.id}
-          onDismiss={dismissRing}
-        />
-      )}
       {overlays}
       {features.voice && voiceState.phase === "connected" && callPageOpen && (
         <CallPage
@@ -731,6 +728,29 @@ export function Chat({
           selfName={session.user.displayName}
           selfUserId={session.user.id}
           onClose={() => setCallPageOpen(false)}
+        />
+      )}
+      {/*
+        An incoming call rings over every screen too, and for the same
+        reason the bar does: it used to render only in the main return, so
+        a call arriving while somebody was in Settings or a hub panel was
+        invisible and simply went unanswered.
+
+        Last, so that it paints over everything already open. The overlays
+        are z-50 like the sheet, and at equal z the later sibling wins; the
+        sheet used to come first, so a profile card or the account menu open
+        when a call arrived was drawn over the ring while the ring's layer
+        was the back stack's top, and Escape -- which the ring holds -- could
+        not close the card that was showing (review of W-64b, 2026-09-26).
+        The sheet's backdrop takes every click, so nothing new can open over
+        it by pointer, and the keyboard shortcuts stand down while it rings.
+      */}
+      {rings[0] && (
+        <IncomingCall
+          ring={rings[0]}
+          conversation={conversations.find((c) => c.id === rings[0]!.conversationId)}
+          selfUserId={session.user.id}
+          onDismiss={dismissRing}
         />
       )}
     </>
