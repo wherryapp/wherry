@@ -95,6 +95,40 @@
 //   &devvideo=1                      With ?devcall: turn the camera on a few
 //                                    seconds after the call connects.
 //
+//   ?devtone=<hz>                    Substitutes a sine at <hz> for the
+//                                    microphone, the way ?devcamera=canvas
+//                                    substitutes the camera: the dev Mac has
+//                                    no microphone, and every background row
+//                                    of the phone-calls plan reads whether a
+//                                    *known* tone still reaches the far end
+//                                    (phone-calls-plan.md §12: the peer runs
+//                                    440, the phone 660). Webview engine
+//                                    only -- the native engine never calls
+//                                    getUserMedia. The tone comes from an
+//                                    AudioContext, which a page without a
+//                                    user gesture may be handed suspended;
+//                                    the state is logged, and
+//                                    window.__devtone.resume() is there for
+//                                    a CDP Runtime.evaluate with
+//                                    userGesture: true.
+//   ?devring=<json>                  Calls the phone shells' debug-only
+//   &devringafter=<s>                `debugIncoming` command <s> seconds
+//                                    (default 5) after boot, with the JSON
+//                                    as its plaintext ring payload
+//                                    (phone-calls-plan.md §4.2) -- how the
+//                                    iOS simulator is rung with nobody to
+//                                    tap. An absent "exp" is filled in as
+//                                    now + 45 s, so a payload kept in an
+//                                    environment variable does not arrive
+//                                    already expired. Outside a shell, or
+//                                    before the wherry-calls plugin exists,
+//                                    it logs why and does nothing.
+//
+//   Both are dev-server only, like everything here: `pnpm tauri android
+//   dev`, `pnpm tauri ios dev` and the browser pane, never an installed
+//   build, debug APKs and IPAs included. Installed debug builds inject
+//   through the plugin's debug-only native paths instead (§12).
+//
 //   ?devui=1                         Posts a snapshot of the call surface to
 //                                    the ?trace= collector every few seconds
 //                                    (kind __dev-ui): every button with its
@@ -122,14 +156,16 @@
 //   VITE_TRACE / VITE_DEVUI          environment rather than the URL, for a
 //   VITE_DEVCLICK                    shell in `tauri ios dev` -- which loads
 //   VITE_DEVCLICKAFTER               the dev server's root and takes no query
-//                                    string. Vite inlines VITE_* at serve
+//   VITE_DEVTONE / VITE_DEVRING      string. Vite inlines VITE_* at serve
 //                                    time, so they are read exactly where the
-//                                    URL params are. The last four were added
-//                                    2026-09-08: without them the iOS
-//                                    simulator is the one platform that
-//                                    cannot report what it rendered, since it
-//                                    can neither take a query string nor be
-//                                    tapped.
+//                                    URL params are. VITE_TRACE to
+//                                    VITE_DEVCLICKAFTER were added 2026-09-08:
+//                                    without them the iOS simulator is the
+//                                    one platform that cannot report what it
+//                                    rendered, since it can neither take a
+//                                    query string nor be tapped. The tone and
+//                                    the ring followed on 2026-09-27 for the
+//                                    same reason (phone-calls-plan.md §5.3).
 //
 // The voice session is also exposed as window.__voice for an inspector.
 
@@ -510,6 +546,210 @@ function maybeDevCamera(params: URLSearchParams): void {
   console.error("[devcamera] canvas source installed");
 }
 
+/** `?devtone=`'s accepted range: audible, and inside Opus's band. */
+const DEV_TONE_MIN_HZ = 20;
+const DEV_TONE_MAX_HZ = 20_000;
+/** Loud enough to read clearly above the floor, well short of clipping. */
+const DEV_TONE_GAIN = 0.2;
+
+declare global {
+  interface Window {
+    /** ?devtone's generator, for an inspector: its context and a resume()
+     *  a CDP `Runtime.evaluate` with `userGesture: true` can call. */
+    __devtone?: { hz: number; context: AudioContext; resume(): Promise<string> };
+  }
+}
+
+/**
+ * `?devtone=<hz>` (or `VITE_DEVTONE`): the microphone becomes a sine.
+ *
+ * The phone rows read whether a *known* sound still reaches the far end once
+ * the app is backgrounded, and the dev Mac has no microphone to make one.
+ * An `OscillatorNode` into a `MediaStreamAudioDestinationNode` gives a real
+ * `MediaStreamTrack`, so it goes through the same publish options, encoder
+ * and frame cryptor a microphone would; what it cannot answer is the
+ * microphone permission prompt, which is a device row either way.
+ *
+ * It wraps whatever `getUserMedia` is current, so it composes with
+ * `?devcamera=canvas` in either order: a request for audio and video asks
+ * the inner function for the video alone and adds the tone.
+ *
+ * One oscillator for the life of the page, and every request gets a clone of
+ * its track: the SDK stops the track it was given on unpublish, and a
+ * stopped clone must not silence the next call's.
+ *
+ * The context is the one fragile part. A page with no user gesture yet may
+ * be handed a suspended `AudioContext`, and a suspended context produces
+ * silence that reads exactly like a background-suspended page -- the very
+ * thing the rows measure. So its state is logged at every request and on
+ * every change, it is resumed at every request and at the first touch or
+ * key, and `window.__devtone.resume()` is exposed for CDP.
+ */
+function maybeDevTone(params: URLSearchParams): void {
+  const raw = params.get("devtone") ?? devEnv("VITE_DEVTONE");
+  if (raw === null) return;
+  const hz = Number(raw);
+  if (!Number.isFinite(hz) || hz < DEV_TONE_MIN_HZ || hz > DEV_TONE_MAX_HZ) {
+    console.error(`[devtone] ignored: ${JSON.stringify(raw)} is not a frequency in Hz`);
+    return;
+  }
+  if (params.has("devtone")) {
+    params.delete("devtone");
+    const query = params.size > 0 ? `?${params}` : "";
+    window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+  }
+
+  const media = navigator.mediaDevices as MediaDevices | undefined;
+  if (!media || typeof media.getUserMedia !== "function") {
+    console.error("[devtone] no getUserMedia to substitute");
+    return;
+  }
+
+  let generator: { context: AudioContext; track: MediaStreamTrack } | null = null;
+  const resume = async (): Promise<string> => {
+    if (!generator) return "not-started";
+    if (generator.context.state !== "running") {
+      try {
+        await generator.context.resume();
+      } catch {
+        // Still suspended; the state logged below is the reading.
+      }
+    }
+    return generator.context.state;
+  };
+  const source = (): MediaStreamTrack => {
+    if (!generator) {
+      const context = new AudioContext();
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.value = hz;
+      const gain = context.createGain();
+      gain.gain.value = DEV_TONE_GAIN;
+      const destination = context.createMediaStreamDestination();
+      oscillator.connect(gain).connect(destination);
+      oscillator.start();
+      const track = destination.stream.getAudioTracks()[0];
+      if (!track) throw new Error("devtone: the destination produced no audio track");
+      context.addEventListener("statechange", () => {
+        console.error(`[devtone] context ${context.state}`);
+      });
+      generator = { context, track };
+      window.__devtone = { hz, context, resume };
+      const onGesture = (): void => {
+        void resume();
+      };
+      for (const type of ["pointerdown", "touchstart", "keydown"]) {
+        window.addEventListener(type, onGesture, { capture: true, once: true });
+      }
+    }
+    // The state now, not after resume(): a resume refused for want of a
+    // gesture can stay pending, and a log line waiting on it would never
+    // come. The statechange listener reports it reaching `running`.
+    console.error(`[devtone] ${hz} Hz track handed out, context ${generator.context.state}`);
+    void resume();
+    return generator.track.clone();
+  };
+
+  const inner = media.getUserMedia.bind(media);
+  media.getUserMedia = async (constraints?: MediaStreamConstraints): Promise<MediaStream> => {
+    if (!constraints?.audio) return inner(constraints);
+    const tone = source();
+    if (!constraints.video) return new MediaStream([tone]);
+    const stream = await inner({ video: constraints.video });
+    stream.addTrack(tone);
+    return stream;
+  };
+
+  // As ?devcamera does for the camera: a picker or a device check that sees
+  // no audio input at all would refuse before it ever asked for a track.
+  const innerEnumerate = media.enumerateDevices.bind(media);
+  media.enumerateDevices = async (): Promise<MediaDeviceInfo[]> => {
+    const devices = await innerEnumerate();
+    if (devices.some((device) => device.kind === "audioinput" && device.deviceId !== "")) {
+      return devices;
+    }
+    return [
+      ...devices.filter((device) => device.kind !== "audioinput"),
+      {
+        deviceId: "devtone",
+        kind: "audioinput",
+        label: `Tone ${hz} Hz (devtools)`,
+        groupId: "devtone",
+        toJSON: () => ({}),
+      } as MediaDeviceInfo,
+    ];
+  };
+  console.error(`[devtone] ${hz} Hz source installed`);
+}
+
+/** ?devring: how long after boot the ring is injected, by default. */
+const DEV_RING_DELAY_S = 5;
+/** ?devring: the ring's lifetime when the payload names no `exp`, as the
+ *  server's own ring TTL (phone-calls-plan.md §4.2). */
+const DEV_RING_TTL_S = 45;
+
+/**
+ * `?devring=<json>` (or `VITE_DEVRING`): ring this shell as a push would.
+ *
+ * It calls the wherry-calls plugin's debug-only `debugIncoming` command with
+ * `{ payload }`, where `payload` is the plaintext ring or dismissal object of
+ * phone-calls-plan.md §4.2 (`{"w":1,"k":"call_ring","call":...}`) -- the
+ * handler body PushKit or the FCM broadcast reaches after decryption. That is
+ * the whole contract this file holds with the plugin; the plugin's own
+ * `debugIncoming` is compiled only into debug builds.
+ *
+ * After a delay rather than at once, so the page's bridge is listening for
+ * the plugin's `action` event by the time a ring can produce one. Out of the
+ * URL first, so a reload does not ring twice.
+ */
+function maybeDevRing(params: URLSearchParams): void {
+  const raw = params.get("devring") ?? devEnv("VITE_DEVRING");
+  if (raw === null) return;
+  const afterS = Number(params.get("devringafter") ?? DEV_RING_DELAY_S);
+  if (params.has("devring")) {
+    params.delete("devring");
+    params.delete("devringafter");
+    const query = params.size > 0 ? `?${params}` : "";
+    window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("not a JSON object");
+    }
+    payload = parsed as Record<string, unknown>;
+  } catch (error) {
+    console.error(`[devring] ignored: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  if (payload["exp"] === undefined) {
+    payload["exp"] = Math.floor(Date.now() / 1000) + DEV_RING_TTL_S;
+  }
+
+  const ring = async (): Promise<void> => {
+    const { isTauriShell } = await import("./api/shell");
+    if (!isTauriShell()) {
+      console.error("[devring] not in a shell: nothing to ring");
+      return;
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("plugin:wherry-calls|debug_incoming", { payload });
+      console.error(`[devring] debugIncoming(${String(payload["k"])}, ${String(payload["call"])}) accepted`);
+      record("call", { method: "__dev-ring", args: [{ accepted: true, kind: payload["k"] }] });
+    } catch (error) {
+      // Before PC1's plugin exists, and in a build without it, this is the
+      // expected answer: the command is not registered.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[devring] debugIncoming refused: ${message}`);
+      record("call", { method: "__dev-ring", args: [{ accepted: false, error: message }] });
+    }
+  };
+  setTimeout(() => void ring(), Math.max(0, Number.isFinite(afterS) ? afterS : DEV_RING_DELAY_S) * 1_000);
+}
+
 /** An element's box in CSS pixels, rounded -- the frame `tileRect` works in. */
 function boxOf(element: Element): { x: number; y: number; w: number; h: number } {
   const rect = element.getBoundingClientRect();
@@ -801,7 +1041,9 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   // Before the call: the substitution has to be in place when the SDK
   // first asks for a track.
   maybeDevCamera(params);
+  maybeDevTone(params);
   maybeDevCall(params);
+  maybeDevRing(params);
   maybeDevUi(params);
   maybeDevClick(params);
   maybeDevScreen(params);
