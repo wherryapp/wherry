@@ -741,6 +741,11 @@ export type NativePushProvider = "apns" | "apns_voip" | "fcm";
  * private half never leaves the native side, which is where a ring is
  * decrypted. `environment` is required for the two APNs providers and
  * refused for `fcm`.
+ *
+ * `alerts` (migration 0033, hunk H7) is whether the row receives the
+ * ordinary notifications; `false` keeps the row for rings only, which is
+ * Android's Turn off. Absent leaves the row's value as it is (`true` for a
+ * new row).
  */
 export type RegisterNativePushBody = {
   provider: NativePushProvider;
@@ -748,6 +753,7 @@ export type RegisterNativePushBody = {
   environment?: "sandbox" | "production";
   p256dh?: string;
   auth?: string;
+  alerts?: boolean;
 };
 
 /** Which native providers this server has keys for. */
@@ -761,10 +767,12 @@ export function fetchNativePushProviders(): Promise<{
  * Registers (or re-registers) this device's token for one provider. The
  * `refKey` is stable per device and provider across token rotation: it is
  * the key for the opaque conversation reference a payload carries.
+ * `alerts` is the row's value after the call (a server from before
+ * migration 0033 does not send it).
  */
 export function registerNativePush(
   body: RegisterNativePushBody,
-): Promise<{ refKey: string }> {
+): Promise<{ refKey: string; alerts?: boolean }> {
   return request(`${API}/push/native/register`, { method: "POST", body });
 }
 

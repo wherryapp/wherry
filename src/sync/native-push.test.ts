@@ -118,6 +118,10 @@ const server = {
   unregisters: [] as Json[],
   /** The unregister route cannot be reached (offline). */
   unregisterOffline: false,
+  /** The register route cannot be reached (offline). */
+  registerOffline: false,
+  /** A server with P1's routes and without migration 0033 (H7). */
+  before0033: false,
 };
 
 /** A successful POST /auth/logout: forgetNativeTokens(deviceId). */
@@ -155,9 +159,10 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
     return reply(200, { providers: server.providers });
   }
   if (path === "/api/push/native/register") {
+    if (server.registerOffline) throw new TypeError("Load failed");
     server.registers.push(body);
     const provider = body["provider"] as string;
-    const allowed = new Set(["provider", "token", "environment", "p256dh", "auth"]);
+    const allowed = new Set(["provider", "token", "environment", "p256dh", "auth", "alerts"]);
     if (Object.keys(body).some((key) => !allowed.has(key))) return reply(400, { error: "VALIDATION" });
     const apns = provider === "apns" || provider === "apns_voip";
     if (apns && (!body["environment"] || !/^[0-9a-f]+$/i.test(String(body["token"])))) {
@@ -176,12 +181,25 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
     if ((provider === "fcm" || provider === "apns_voip") && (!body["p256dh"] || !body["auth"])) {
       return reply(400, { error: "INVALID_PUSH_KEYS" });
     }
+    if (body["alerts"] !== undefined && typeof body["alerts"] !== "boolean") {
+      return reply(400, { error: "VALIDATION" });
+    }
+    // A server from before migration 0033 knows no `alerts` field.
+    if (server.before0033 && body["alerts"] !== undefined) {
+      return reply(400, { error: "INVALID_REQUEST" });
+    }
     const existing = server.rows.get(provider);
     const refKey =
       existing?.refKey ??
       Buffer.alloc(32, refKeySeed++).toString("base64url");
-    server.rows.set(provider, { ...body, refKey });
-    return reply(200, { refKey });
+    // 0033's upsert: an absent field keeps the row's value, true for a new row.
+    const alerts =
+      typeof body["alerts"] === "boolean"
+        ? body["alerts"]
+        : ((existing?.["alerts"] as boolean | undefined) ?? true);
+    const row: Json & { refKey: string } = { ...body, refKey, alerts };
+    server.rows.set(provider, row);
+    return reply(200, server.before0033 ? { refKey } : { refKey, alerts });
   }
   if (path === "/api/push/native/unregister") {
     if (server.unregisterOffline) throw new TypeError("Load failed");
@@ -261,6 +279,8 @@ beforeEach(() => {
   server.registers = [];
   server.unregisters = [];
   server.unregisterOffline = false;
+  server.registerOffline = false;
+  server.before0033 = false;
   listeners.length = 0;
   signIn("session-token-1");
 });
@@ -317,6 +337,7 @@ test("Android: the FCM body carries the device's key material and no environment
     token: "fcm:" + "x".repeat(150),
     p256dh: KEYS.p256dh,
     auth: KEYS.auth,
+    alerts: true,
   });
 });
 
@@ -365,6 +386,119 @@ test("Turn off tells the server first, then the plugin, and forgets locally", as
   assert.deepEqual(server.unregisters, [{ provider: "apns" }]);
   assert.equal(pluginCalls("unregister").length, 1);
   assert.equal(await native.refFor("c1"), null);
+});
+
+// ---------------------------------------------------------------------------
+// Android: alerts off keeps the row, because it is also the ring's (H7)
+// ---------------------------------------------------------------------------
+
+function android(letter = "k"): void {
+  plugin.provider = "fcm";
+  plugin.token = "fcm:" + letter.repeat(150);
+  plugin.environment = null;
+  plugin.keys = KEYS;
+}
+
+test("Android: Turn off keeps the row with alerts off, and keeps the Firebase token", async () => {
+  android();
+  await quiet(() => native.enableNative());
+  const refKey = server.rows.get("fcm")!.refKey;
+  assert.equal(await quiet(() => native.disableNative()), "ready");
+  assert.equal(server.unregisters.length, 0, "the row is not forgotten");
+  assert.equal(pluginCalls("unregister").length, 0, "the plugin keeps its token");
+  assert.deepEqual(server.registers.at(-1), { provider: "fcm", token: plugin.token, ...KEYS, alerts: false });
+  assert.equal(server.rows.get("fcm")!["alerts"], false);
+  assert.equal(server.rows.get("fcm")!.refKey, refKey, "the same row");
+  // The engine's gate reads "ready", so the app's own local notification is
+  // the alert again while it runs; a notification delivered before still
+  // resolves and clears.
+  assert.equal(await native.nativeAvailability(), "ready");
+  const ref = await computeRef(refKey, "c-b");
+  assert.equal(await native.resolveRef(ref!, ["c-a", "c-b"]), "c-b");
+});
+
+test("Android: every launch re-registers a kept row with alerts still off", async () => {
+  android();
+  await quiet(() => native.enableNative());
+  await quiet(() => native.disableNative());
+  server.rows.get("fcm")!["failed"] = true;
+  server.registers = [];
+  const { states, stop } = startRecording();
+  await quiet(settle);
+  assert.deepEqual(server.registers, [{ provider: "fcm", token: plugin.token, ...KEYS, alerts: false }]);
+  assert.equal(server.rows.get("fcm")!["failed"], undefined, "a failed row is revived for the ring");
+  assert.equal(states.at(-1), "ready");
+  // A rotated token is registered with alerts off too.
+  emit("token", { token: "fcm:" + "r".repeat(150), environment: null, ...KEYS });
+  await quiet(settle);
+  assert.equal(server.registers.at(-1)!["alerts"], false);
+  assert.equal(server.registers.at(-1)!["token"], "fcm:" + "r".repeat(150));
+  stop();
+});
+
+test("Android: Turn on after Turn off sends alerts: true on the same row", async () => {
+  android();
+  await quiet(() => native.enableNative());
+  const refKey = server.rows.get("fcm")!.refKey;
+  await quiet(() => native.disableNative());
+  notification.permission = "granted";
+  assert.equal(await quiet(() => native.enableNative()), "on");
+  assert.equal(server.registers.at(-1)!["alerts"], true);
+  assert.equal(server.rows.get("fcm")!["alerts"], true);
+  assert.equal(server.rows.get("fcm")!.refKey, refKey);
+});
+
+test("Android: a Turn off the server did not hear is remembered, and the next launch sends it", async () => {
+  android();
+  await quiet(() => native.enableNative());
+  server.registerOffline = true;
+  assert.equal(await quiet(() => native.disableNative()), "ready");
+  assert.equal(server.rows.get("fcm")!["alerts"], true, "the server has not heard yet");
+  assert.equal(server.unregisters.length, 0);
+  assert.equal(pluginCalls("unregister").length, 0);
+  server.registerOffline = false;
+  const { states, stop } = startRecording();
+  await quiet(settle);
+  assert.equal(server.rows.get("fcm")!["alerts"], false);
+  assert.equal(states.at(-1), "ready");
+  stop();
+});
+
+test("Android: a server from before 0033 refuses the field, so Turn off unregisters as it used to", async () => {
+  android();
+  // Turned on while the server still took the field (that server would
+  // refuse this client's Turn on too, which is why H7 must reach `main`
+  // no later than P1's routes do).
+  await quiet(() => native.enableNative());
+  server.before0033 = true;
+  assert.equal(await quiet(() => native.disableNative()), "ready");
+  assert.deepEqual(server.unregisters, [{ provider: "fcm" }]);
+  assert.equal(server.rows.has("fcm"), false);
+  assert.equal(pluginCalls("unregister").length, 1);
+});
+
+test("Android: the calls plan's registration of the fcm row never turns alerts on by itself", async () => {
+  android();
+  // Somebody who never turned message alerts on: the ring path registers
+  // the row (coordination §4), through the one registration path.
+  await native.registerNativeToken("fcm", plugin.token!);
+  assert.equal(server.registers.at(-1)!["alerts"], false);
+  assert.equal(await native.nativeAvailability(), "ready", "Settings still reads off");
+  // After a Turn on, the same call keeps the person's choice.
+  notification.permission = "granted";
+  await quiet(() => native.enableNative());
+  await native.registerNativeToken("fcm", plugin.token!);
+  assert.equal(server.registers.at(-1)!["alerts"], true);
+  assert.equal(await native.nativeAvailability(), "on");
+});
+
+test("iOS sends no alerts field: its Turn off still deletes the apns row, and apns_voip rings on", async () => {
+  await quiet(() => native.enableNative());
+  await native.registerNativeToken("apns_voip", "cd".repeat(32), { keys: VOIP_KEYS });
+  assert.equal(server.registers.every((body) => !("alerts" in body)), true);
+  await quiet(() => native.disableNative());
+  assert.equal(server.rows.has("apns"), false);
+  assert.equal(server.rows.has("apns_voip"), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -514,7 +648,7 @@ test("Android re-registers at every launch, which revives a row the server marke
   const stop = native.startNativePush({ onOpen: () => {}, poke: () => {} });
   await quiet(settle);
   assert.equal(server.registers.length, 1, "the launch registration");
-  assert.deepEqual(server.registers[0], { provider: "fcm", token: plugin.token, ...KEYS });
+  assert.deepEqual(server.registers[0], { provider: "fcm", token: plugin.token, ...KEYS, alerts: true });
   assert.equal(server.rows.get("fcm")!["failed"], undefined, "a registration clears failed_at");
   assert.equal(server.rows.get("fcm")!.refKey, refKey);
 

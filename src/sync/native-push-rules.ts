@@ -80,6 +80,12 @@ export type StoredEntry = {
   /** base64url, 32 bytes. Present for every provider the server returned
    *  one for; only the alert provider's is ever used. */
   refKey: string | null;
+  /** `false` when the server's row is kept with alerts off (migration
+   *  0033, hunk H7): on Android the `fcm` row also carries the phone-calls
+   *  plan's ring, so Turn off keeps it and says `alerts: false` instead of
+   *  unregistering. Absent means on, which is every entry written before
+   *  the flag existed. */
+  alerts?: false;
 };
 
 /**
@@ -199,10 +205,70 @@ export function alertEntry(
   owner: string,
   provider: AlertProvider,
 ): StoredEntry | null {
+  const entry = rowEntry(stored, owner, provider);
+  return entry === null || entry.alerts === false ? null : entry;
+}
+
+/**
+ * The stored entry for a provider whose server row this device keeps,
+ * alerts on or off: what the launch re-registration maintains, and whose
+ * ref key still resolves a notification delivered before alerts went off.
+ * `alertEntry` is the narrower "registered **and** alerting", which is
+ * what the state and the engine's gate read.
+ */
+export function rowEntry(
+  stored: StoredNative | null,
+  owner: string,
+  provider: NativeProvider,
+): StoredEntry | null {
   if (!stored || stored.owner !== owner) return null;
   const entry = stored.entries[provider];
   if (!entry || !entry.refKey) return null;
   return entry;
+}
+
+// ---------------------------------------------------------------------------
+// Alerts off without losing the ring (hunk H7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether Turn off keeps this provider's server row, registered with
+ * `alerts: false`, instead of unregistering it.
+ *
+ * Only `fcm`. On Android the one `fcm` row and Firebase token carry both
+ * message alerts and the phone-calls plan's ring (`call_ring`,
+ * `ring_ended`); forgetting them would stop the phone ringing too. The
+ * server skips a row with alerts off for every ordinary notification, so
+ * Google stops seeing when messages arrive, and the ring (sent to the row
+ * directly) still comes. On iOS the ring is its own `apns_voip` row, so
+ * Turn off can and does forget the `apns` row and its token as before.
+ */
+export function turnOffKeepsRow(provider: AlertProvider): boolean {
+  return provider === "fcm";
+}
+
+/**
+ * The `alerts` field a registration sends, or undefined to send none.
+ *
+ * Sent for `fcm` only, and always explicitly there: what the caller asked
+ * for (Turn on says `true`, Turn off `false`), otherwise what the stored
+ * entry says, so the launch re-registration, a rotated token and the
+ * phone-calls plan's calls through the one registration path all keep the
+ * person's choice. With no entry at all the row is being created by
+ * something other than Turn on -- the calls plan's ring registration on
+ * Android -- and alerts stay off until the person turns them on. (The
+ * server's own rule for an absent field is "leave the row as it is", so
+ * this is belt and braces against a caller that forgets.)
+ */
+export function alertsToSend(
+  provider: NativeProvider,
+  requested: boolean | undefined,
+  existing: StoredEntry | null,
+): boolean | undefined {
+  if (provider !== "fcm") return undefined;
+  if (requested !== undefined) return requested;
+  if (existing === null) return false;
+  return existing.alerts !== false;
 }
 
 /**
@@ -231,8 +297,8 @@ export type ReregisterReason =
 /**
  * Whether this launch owes the server a fresh registration, and why.
  *
- * Only for a device that already turned push on: a launch never registers
- * on its own initiative, because a granted OS permission on a phone may
+ * Only for a device that already holds a row (turned push on, or kept its
+ * row with alerts off, H7): a launch never registers on its own initiative, because a granted OS permission on a phone may
  * have been granted to the *local* notifications (desktop-notify.ts asks at
  * the first message), not to push. Turning push on is the person's choice.
  *
@@ -266,7 +332,10 @@ export function reregisterReason(input: {
   permissionGranted: boolean;
   server: ServerProviders;
 }): ReregisterReason | null {
-  const entry = alertEntry(input.stored, input.owner, input.provider);
+  // A row kept with alerts off is maintained too (H7): on Android it is
+  // still how the phone rings, and a rotated or failed token would lose
+  // the ring as surely as the alerts.
+  const entry = rowEntry(input.stored, input.owner, input.provider);
   if (entry === null) return null;
   if (!input.permissionGranted) return null;
   if (input.currentToken === null) return null;
@@ -315,6 +384,7 @@ export function parseStored(raw: string | null): StoredNative | null {
           ? candidate.environment
           : null,
       refKey: typeof candidate.refKey === "string" ? candidate.refKey : null,
+      ...(candidate.alerts === false ? { alerts: false as const } : {}),
     };
   }
   const pending = Array.isArray(record.pendingUnregister)
