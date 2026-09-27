@@ -95,15 +95,25 @@ class PushPlugin: Plugin {
 
   // MARK: - Commands
 
+  /// `environment` is reported whether or not a token has been obtained
+  /// (hunk H6, native-push-plan.md §16): it is a property of the signed
+  /// build, not of the token, and the calls plugin's VoIP registration can
+  /// happen before, or without, any alert token.
+  ///
+  /// No `p256dh` / `auth` here, on purpose (hunk H3): an APNs alert token is
+  /// registered without key material, and the VoIP token's keys are the
+  /// calls plugin's. Android's answer carries them.
   @objc func status(_ invoke: Invoke) {
     onMain {
-      var result: JsonObject = ["provider": "apns", "configured": true]
+      var result: JsonObject = [
+        "provider": "apns",
+        "configured": true,
+        "environment": ApsEnvironment.current,
+      ]
       if let token = self.token {
         result["token"] = token
-        result["environment"] = ApsEnvironment.current
       } else {
         result["token"] = NSNull()
-        result["environment"] = NSNull()
       }
       invoke.resolve(result)
     }
