@@ -58,7 +58,8 @@
 //   audio mute, judging one transceiver at a time, so muting a share's sound
 //   stopped the microphone and sharing while muted opened it (rows D-68,
 //   D-69). The shell gates recording on the microphone's own state and
-//   restarts it after the share's sound is muted. See `set_microphone_gate`.
+//   restarts it after the share's sound is muted, after a share stops or
+//   starts, and after a reconnect. See `set_microphone_gate`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -359,8 +360,7 @@ fn before_init_recording(
 //   share's sound rather than unpublishing it; that mute is its channel's
 //   last stream muted, so the module's recording stops while the microphone
 //   is unmuted, and the far end hears digital silence for the rest of the
-//   call. The log reads `MuteStream: ADM:1` then `StopRecording` right after
-//   `screen audio muted after N frame(s), kept published`.
+//   call.
 // - **Sharing while muted opens the microphone (D-69).** Publishing or
 //   unmuting the share's sound is an unmuted stream in its channel with the
 //   module not recording, so libwebrtc runs `InitRecording` -- through the
@@ -368,11 +368,32 @@ fn before_init_recording(
 //   built-in canceller accepted, and without `before_init_recording` in
 //   front of it -- and `StartRecording`, capturing the muted microphone.
 //
+// **What the rig's log shows, and in what order.** The fix-build run of
+// 2026-09-27 (`0812575`, `WHERRY_WEBRTC_LOG=1`, three shares with audio in
+// one process) reads, at every *Stop sharing* with the microphone unmuted:
+// `AudioRtpSender::OnChanged reapplying send state, enabled_changed=1`, then
+// `WebRtcVoiceSendChannel::MuteStream: ADM:1` (the value printed is
+// `is_all_muted`: true, under an unmuted microphone), then
+// `AudioDeviceModuleImpl::StopRecording` and `total recording time:` (the
+// whole call) -- all *before* the shell's `screen audio muted after N
+// frame(s), kept published`, which is logged only once the capture thread
+// has stopped. So the stop happens inside the mute, synchronously: `mute()`
+// -> `set_enabled` -> `OnChanged` -> `SetSend` -> `MuteStream`, with the log
+// sink forwarding on the calling thread. A share *started* while muted reads
+// `MuteStream: ADM:0`, `InitRecording`, `StartRecording`, and those come
+// **after** `screen published ... with audio`: a new sender's send state is
+// applied at the publisher's next `SetLocalDescription` (`SetSsrc` ->
+// `SetSend`), which the SDK runs after its 150 ms negotiation debounce, not
+// inside `publish_track`. Read in that log: the order, and `is_all_muted`
+// true under an unmuted microphone. Believed from the source: that the
+// reason is the per-channel `send_streams_` (the log does not print which
+// streams a channel holds).
+//
 // The right fix is libwebrtc's: a pushed source has nothing to do with the
 // device, so its mute should not start or stop the device, and the decision
 // should count every channel. That is outward-facing, so it is a patch note
 // (`client/src-tauri/patches/libwebrtc-mutestream-stops-recording.md`), and
-// the shell does two things instead, both mechanism behind `voice_set_mic`
+// the shell does three things instead, all mechanism behind `voice_set_mic`
 // and `voice_set_screen`, which already carry the page's decisions:
 //
 // 1. **The gate.** The SDK's `AdmProxy` already has a switch that makes every
@@ -382,20 +403,56 @@ fn before_init_recording(
 //    call's microphone is published and unmuted, and closed from the connect,
 //    on mute and at hang-up. So whatever libwebrtc starts while the
 //    microphone is closed -- the share's unmute, a renegotiation's
-//    `AddSendingStream` -- opens nothing, and the next `InitRecording` is the
-//    shell's own on unmute, with the repair in front of it. Opening the gate
-//    starts nothing by itself (`SwitchRecordingAdm` returns early unless the
-//    proxy was recording), so the unmute's order stays: open, repair, start.
-// 2. **Restarting after the share's sound is muted.** The gate cannot stop
-//    the stop: the microphone is open, so the proxy passes `StopRecording`
-//    through. `after_pushed_audio_toggled` starts recording again at once,
-//    with the repair in front, when the microphone is open and recording was
-//    stopped. The microphone loses the few milliseconds between the two.
+//    `AddSendingStream`, a reconnect's republish -- opens nothing, and the
+//    next `InitRecording` is the shell's own on unmute, with the repair in
+//    front of it. Opening the gate starts nothing by itself
+//    (`SwitchRecordingAdm` returns early unless the proxy was recording), so
+//    the unmute's order stays: open, repair, start. The gate is also the
+//    shell's record of what the page asked for, so the checks below read it
+//    rather than the microphone's publication, which a reconnect replaces.
+// 2. **Restarting.** The gate cannot refuse the stop: the microphone is open,
+//    so the proxy passes `StopRecording` through.
+//    `ensure_microphone_recording` starts recording again, with the repair in
+//    front, when the microphone is open and recording was stopped. It runs
+//    straight after the share's sound is muted, which is when the log above
+//    says the stop happens, so the microphone loses milliseconds.
+// 3. **Checking again once a renegotiation has landed.** A (re)published
+//    sender's `MuteStream` comes with the next offer, so a check when a
+//    command returns is too early to see it. `recheck_microphone` checks at
+//    once and again at each of `RECHECK_AFTER_MS`: after a share stops (its
+//    video's unpublish renegotiates), after the share's sound is published
+//    or unmuted, and after `RoomEvent::Reconnected`. A full reconnect
+//    republishes every local track (the SDK's `handle_restarted`), the
+//    parked, muted share's sound included, and that republish's
+//    `MuteStream` would stop recording under an unmuted microphone as the
+//    share's stop does.
 //
-// Believed from the source of `webrtc-89d790b` (`media/engine/
-// webrtc_voice_engine.cc`, `MuteStream`) and the SDK's `adm_proxy.cpp`, and
-// consistent with every line the rig logged; not yet read on Windows with the
-// fix in.
+// Every check, and `voice_set_mic`'s mute and unmute, hold `MIC_RECORDING`,
+// so a check can never start recording between a mute's stop and the gate
+// closing behind it.
+//
+// Not yet read on Windows with the fix in. The reconnect case is believed
+// from the SDK's `handle_restarted` and the order above; it has never been
+// read at all.
+
+/// Serialises the shell's own recording sequences: `voice_set_mic`'s mute and
+/// unmute, `ensure_microphone_recording`, and the stop at hang-up. Each device
+/// call is already serialised on libwebrtc's worker thread
+/// (`AdmProxy::RunOnWorker`); this keeps a *sequence* of them whole.
+static MIC_RECORDING: Mutex<()> = Mutex::new(());
+
+fn mic_recording_lock() -> std::sync::MutexGuard<'static, ()> {
+  MIC_RECORDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// When `recheck_microphone` looks again, after its first look. The SDK hands
+/// a publish or an unpublish to libwebrtc at a publisher offer debounced
+/// 150 ms after the call returns (`PUBLISHER_NEGOTIATION_FREQUENCY`,
+/// `rtc_session.rs`). On the rig the share's `MuteStream` was logged in the
+/// same second as `screen published` (the log has one-second stamps), two
+/// offers later. 1 s is past that with room; 3 s covers a slower round or a
+/// slower machine.
+const RECHECK_AFTER_MS: [u64; 2] = [1000, 3000];
 
 /// Opens or closes the microphone gate (see above). Idempotent in the proxy,
 /// and logged only when it changes.
@@ -415,10 +472,13 @@ fn set_microphone_gate(open: bool, when: &str) {
   );
 }
 
-/// After the share's sound is muted or unmuted (`video.rs`), put the
-/// microphone back where the page left it: libwebrtc's `MuteStream` has just
-/// started or stopped the device's recording by looking at that one
-/// transceiver (see the gate above).
+fn microphone_gate_open() -> bool {
+  LkRuntime::instance().pc_factory().adm_recording_enabled()
+}
+
+/// Put the microphone back where the page left it, after something that
+/// libwebrtc answers by starting or stopping the device's recording from one
+/// transceiver's view (see the gate above).
 ///
 /// - Microphone open and recording stopped: the D-68 case. Start it again,
 ///   with `before_init_recording` in front, as an unmute would.
@@ -426,23 +486,31 @@ fn set_microphone_gate(open: bool, when: &str) {
 /// - Microphone muted or never published: the gate kept libwebrtc's start
 ///   from reaching the device, and this only says so.
 ///
+/// "Open" is the gate (published, then unmuted, by `voice_set_mic`) with a
+/// microphone publication in the session. Not `publication.is_muted()`: a
+/// full reconnect republishes the track under a new publication and leaves
+/// the session's copy without one.
+///
 /// The log line carries whether recording was still initialised at this
 /// point, which is the reading that tells the mechanism above from anything
 /// else: `false` right after `screen audio muted` with the microphone open.
-pub(crate) fn after_pushed_audio_toggled(when: &str) {
+pub(crate) fn ensure_microphone_recording(when: &str) {
+  // Before the snapshot, so a hang-up or a mute is either wholly before this
+  // or wholly after it.
+  let _sequence = mic_recording_lock();
   let snapshot = SESSION
     .lock()
     .unwrap()
     .as_ref()
-    .map(|session| (session.mic.clone(), session.processing, session.engine_held));
-  let Some((mic, processing, engine_held)) = snapshot else { return };
+    .map(|session| (session.mic.is_some(), session.processing, session.engine_held));
+  let Some((published, processing, engine_held)) = snapshot else { return };
   let Ok(audio) = platform_audio() else { return };
   let recording = audio.is_recording_initialized();
-  let open = mic.as_ref().is_some_and(|publication| !publication.is_muted());
+  let open = published && microphone_gate_open();
   if !open {
     log::info!(
       "voice: {when} -- microphone {}, left closed (recording initialised {recording})",
-      if mic.is_some() { "muted" } else { "not published" }
+      if published { "muted" } else { "not published" }
     );
     return;
   }
@@ -453,9 +521,6 @@ pub(crate) fn after_pushed_audio_toggled(when: &str) {
   log::info!(
     "voice: {when} -- microphone open but its recording was stopped (recording initialised false): starting it again"
   );
-  // The gate is open while the microphone is (`voice_set_mic`); saying so
-  // again costs nothing and keeps this start from being a silent no-op.
-  set_microphone_gate(true, when);
   before_init_recording(&audio, processing, engine_held, when);
   match audio.start_recording() {
     Ok(()) => log::info!(
@@ -464,6 +529,26 @@ pub(crate) fn after_pushed_audio_toggled(when: &str) {
     ),
     Err(error) => log::warn!("voice: start_recording {when}: {error:?}"),
   }
+}
+
+/// `ensure_microphone_recording` now, and again at each of `RECHECK_AFTER_MS`
+/// while the same call lasts: for anything whose effect on the device arrives
+/// with the publisher's next offer rather than inside the command (point 3
+/// above).
+pub(crate) fn recheck_microphone(when: &'static str) {
+  ensure_microphone_recording(when);
+  let Some(id) = session_id() else { return };
+  tauri::async_runtime::spawn(async move {
+    let mut waited = 0;
+    for at in RECHECK_AFTER_MS {
+      tokio::time::sleep(std::time::Duration::from_millis(at - waited)).await;
+      waited = at;
+      if session_id() != Some(id) {
+        return;
+      }
+      ensure_microphone_recording(&format!("{when} (+{at} ms)"));
+    }
+  });
 }
 
 // -- the session ------------------------------------------------------------
@@ -821,6 +906,11 @@ async fn pump(
       RoomEvent::Reconnected => {
         emit(&app, session, Event::Connection { state: "connected".into(), quality: quality() });
         emit(&app, session, Event::Roster { roster: roster(&room) });
+        // A full reconnect has just republished every local track, a parked
+        // share's sound (muted) included, and the new senders' `MuteStream`
+        // comes with the next offer: see point 3 above
+        // `set_microphone_gate`. After a resume this finds nothing to do.
+        recheck_microphone("after a reconnect");
       }
       RoomEvent::Disconnected { reason } => {
         log::info!("voice: disconnected ({reason:?})");
@@ -1347,6 +1437,9 @@ pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
     log::info!("voice: microphone unpublished");
   }
   if let Ok(audio) = platform_audio() {
+    // After any check already under way, which read the session before it
+    // was taken above; every later one finds no session.
+    let _sequence = mic_recording_lock();
     if let Err(error) = audio.stop_recording() {
       log::debug!("voice: stop_recording on disconnect: {error:?}");
     }
@@ -1382,6 +1475,10 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
   let audio = platform_audio()?;
 
   if let Some(publication) = existing {
+    // Whole, against `ensure_microphone_recording`: a check that started
+    // recording between the mute's stop and the gate closing would leave a
+    // muted microphone open.
+    let _sequence = mic_recording_lock();
     if enabled {
       // The gate first: opening it starts nothing, and a closed one would
       // turn the start below into a no-op that reports success.

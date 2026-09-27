@@ -94,9 +94,9 @@ struct Published {
 /// **Muting it touches the microphone** (rows D-68 and D-69): libwebrtc's
 /// `MuteStream` starts or stops the one device module's recording whenever
 /// a transceiver's streams go all-muted or not, and this publication is its
-/// transceiver's only stream. `mod.rs`'s microphone gate and
-/// `after_pushed_audio_toggled`, called beside each mute and unmute here,
-/// keep the microphone where the page put it;
+/// transceiver's only stream. `mod.rs`'s microphone gate, and
+/// `ensure_microphone_recording` / `recheck_microphone` called beside each
+/// mute, unmute and publish here, keep the microphone where the page put it;
 /// `client/src-tauri/patches/libwebrtc-mutestream-stops-recording.md` is the
 /// upstream half.
 struct ScreenAudioPublication {
@@ -501,17 +501,20 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   if sound.is_some() {
     // That mute was the last unmuted stream on the share's transceiver, and
     // libwebrtc answers that by stopping the device's recording -- the
-    // microphone's (row D-68; mod.rs, above `set_microphone_gate`). Put it
-    // back before anything else, so the microphone loses milliseconds rather
-    // than the time the capture thread takes to stop.
-    super::after_pushed_audio_toggled("after the share's sound was muted");
+    // microphone's -- inside the mute (row D-68; the rig's log has the
+    // `StopRecording` before the line below). Put it back before anything
+    // else, so the microphone loses milliseconds rather than the time the
+    // capture thread takes to stop. mod.rs, above `set_microphone_gate`.
+    super::ensure_microphone_recording("after the share's sound was muted");
   }
+  let stopped_a_share = sound.is_some();
   if let Some(capture) = sound {
     let frames = capture.frames();
     tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
     log::info!("voice: screen audio muted after {frames} frame(s), kept published");
   }
   let existing = with_state(session, |state| state.screen.take());
+  let stopped_a_share = stopped_a_share || existing.is_some();
   if let Some(published) = existing {
     if let Err(error) = room.local_participant().unpublish_track(&published.publication.sid()).await {
       log::warn!("voice: unpublish screen: {error}");
@@ -521,6 +524,13 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
     }
     log::info!("voice: screen unpublished");
     rebind_tiles(session, &room);
+  }
+  if stopped_a_share {
+    // Whichever step stops the microphone, it is back after this: the
+    // picture's unpublish renegotiates about 150 ms after it returns, and the
+    // look again at +1 s and +3 s is after that. The rig's log has shown no
+    // stop from it; this costs a log line if there is none.
+    super::recheck_microphone("after the share stopped");
   }
   if !args.enabled {
     return Ok(());
@@ -593,9 +603,12 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
         // Publishing or unmuting the share's sound is an unmuted stream on
         // its transceiver, which libwebrtc answers by starting the device's
         // recording if it was not running. The microphone gate turns that
-        // into nothing while the microphone is muted (row D-69); this reads
-        // the state back into the log either way.
-        super::after_pushed_audio_toggled("after the share's sound was published or unmuted");
+        // into nothing while the microphone is muted (row D-69). An unmute
+        // does it inside the call; a first publish does it with the next
+        // offer, after this returns (the rig's log has `MuteStream: ADM:0`
+        // after `screen published`), so the log gets the state now and again
+        // once that offer has landed.
+        super::recheck_microphone("after the share's sound was published or unmuted");
         Some(sid)
       }
       Err(error) => {

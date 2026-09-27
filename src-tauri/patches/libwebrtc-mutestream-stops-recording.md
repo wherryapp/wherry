@@ -62,9 +62,9 @@ build, with `WHERRY_WEBRTC_LOG=1`:
 - **Muting the second track stops the microphone (D-68).** The shell keeps a
   share's sound published and mutes it when the share stops. It cannot
   unpublish mid-call, because of `libwebrtc-external-audio-source-stop.md`
-  (row S-18). The mute is that channel's last stream, so the module logs
-  `StopRecording` (`total recording time:` the whole call) straight after it.
-  The unmuted microphone then reaches the far end as digital silence (−140 dB)
+  (row S-18). The mute is that channel's last stream, so the module stops
+  recording inside the mute (`total recording time:` the whole call). The
+  unmuted microphone then reaches the far end as digital silence (−140 dB)
   for the rest of the call.
 - **Unmuting it while the microphone is muted opens the microphone (D-69).**
   Publishing or unmuting the second track makes its channel not-all-muted
@@ -75,11 +75,35 @@ build, with `WHERRY_WEBRTC_LOG=1`:
   (`Capture device index: 0, render device index: 0`,
   `SetRecordingSampleRate(16000)`).
 
-**Status of these claims.** The two failures are verified on the rig. The
-mechanism is **believed**: it was read from the tree at `89d790b`, and it
-accounts for every line the rig logged, but no one has yet stepped through it.
-The line to look for is `WebRtcVoiceSendChannel::MuteStream: ADM:1`, logged
-just before the `StopRecording`.
+**What the log shows.** The fix build's run of 2026-09-27 (`0812575`, three
+shares with audio in one process, microphone unmuted) logged this at every
+*Stop sharing*, in this order:
+
+```
+AudioRtpSender::OnChanged reapplying send state, enabled_changed=1, options_changed=0
+WebRtcVoiceSendChannel::MuteStream: APM:1
+WebRtcVoiceSendChannel::MuteStream: ADM:1
+virtual webrtc::AudioDeviceModuleImpl::Recording
+virtual webrtc::AudioDeviceModuleImpl::StopRecording
+total recording time: 14155
+voice: screen audio muted after 451 frame(s), kept published      <- the shell's line
+```
+
+`ADM:` prints `is_all_muted`, so the channel judged itself all-muted while
+the microphone was unmuted. The shell's line comes last because the shell logs
+it after the capture thread has stopped; the stop itself happened inside the
+mute. A share started with the microphone muted logged `MuteStream: ADM:0`,
+`InitRecording`, `Capture device index: 0, render device index: 0`,
+`SetRecordingSampleRate(16000)` and `StartRecording`. Those came after the
+shell's `screen published … with audio`, during a later publisher offer. A
+new sender's send state is applied at `SetLocalDescription` (`SetSsrc` →
+`SetSend`), not when the track is added.
+
+**Status of these claims.** The two failures are verified on the rig, and so
+is the order above. That the cause is one channel's `send_streams_` is
+**believed**: it follows from the source at `89d790b` and from `ADM:1`
+being logged under an unmuted microphone. The log does not print which streams
+a channel holds, and no one has stepped through it.
 
 ## What the shell does instead
 
@@ -92,9 +116,17 @@ just before the `StopRecording`.
   the proxy was recording). The unmute therefore still runs the D-67 repair
   before its own `InitRecording`.
 - **A restart.** The gate cannot refuse a stop while the microphone is open.
-  Right after muting the share's sound, `after_pushed_audio_toggled` finds
+  Right after muting the share's sound, `ensure_microphone_recording` finds
   recording uninitialised and starts it again, with the repair in front. The
   microphone loses the milliseconds in between.
+- **A second look after each renegotiation.** A (re)published sender's
+  `MuteStream` arrives with the next offer, after the SDK call returns.
+  `recheck_microphone` therefore checks at once and again after 1 s and 3 s.
+  It runs after a share stops, after the share's sound is published or
+  unmuted, and after `RoomEvent::Reconnected`. A full reconnect republishes
+  every local track, including the parked, muted share's sound, and that
+  republish is a mute on its own channel. The reconnect case is believed from
+  the SDK's `handle_restarted` and has not been read.
 
 ## Upstream issue — drafted, not filed
 
@@ -116,8 +148,12 @@ even while the microphone track is muted.
 
 **Reproduction:** with a platform ADM, publish a device microphone track and a
 `NativeAudioSource` track on one PeerConnection. Mute the second with
-`set_enabled(false)`. The log shows `MuteStream: ADM:1` and then
-`StopRecording`, and the microphone track goes silent at the far end.
+`set_enabled(false)`. On our Windows build (webrtc-sdk `89d790b` through
+LiveKit's Rust SDK) the log then shows `MuteStream: ADM:1` and
+`AudioDeviceModuleImpl::StopRecording`, both inside that call, while the
+microphone track is still enabled. The microphone track then reaches the far
+end as digital silence. We have not reproduced it outside the Rust SDK or on
+another platform.
 
 **Suggested fix, smallest first:**
 
