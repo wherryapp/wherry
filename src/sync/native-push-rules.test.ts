@@ -256,6 +256,26 @@ test("withEntry starts over for a new sign-in and clears a remembered refusal", 
   assert.deepEqual(Object.keys(withoutEntry(both, "apns")!.entries), ["apns_voip"]);
 });
 
+test("withEntry keeps a remembered refusal when the registration is VoIP (PushKit needs no permission)", () => {
+  // The prompt was refused, so no alert entry exists; only the refusal is remembered.
+  const refused: StoredNative = { v: 1, owner: OWNER, entries: {}, declined: true };
+  const next = withEntry(refused, OWNER, "apns_voip", {
+    token: TOKEN,
+    environment: "sandbox",
+    refKey: REF_KEY,
+  });
+  assert.equal(next.declined, true);
+  assert.deepEqual(Object.keys(next.entries), ["apns_voip"]);
+  assert.equal(
+    nativeStateFrom({ status: apnsStatus, server: bothOn, permissionGranted: false, stored: next, owner: OWNER }),
+    "blocked",
+  );
+  // A new sign-in still starts with no remembered refusal (withPending drops
+  // another owner's record), and an alert registration still clears it.
+  assert.equal(withEntry(refused, OTHER_OWNER, "apns_voip", next.entries.apns_voip!).declined, undefined);
+  assert.equal(withEntry(next, OWNER, "apns", next.entries.apns_voip!).declined, false);
+});
+
 // ---------------------------------------------------------------------------
 // Carrying a record across sign-ins
 // ---------------------------------------------------------------------------

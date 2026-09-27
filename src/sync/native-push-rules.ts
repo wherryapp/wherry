@@ -510,12 +510,13 @@ export function withEntry(
   entry: StoredEntry,
 ): StoredNative {
   const base = withPending(stored, owner, provider, false);
-  return {
-    ...base,
-    entries: { ...base.entries, [provider]: entry },
-    // A successful registration means permission was granted.
-    declined: false,
-  };
+  const next: StoredNative = { ...base, entries: { ...base.entries, [provider]: entry } };
+  // Only an alert registration is evidence the notification prompt was
+  // granted; PushKit (apns_voip) needs no permission, so a VoIP token
+  // registered after a refused prompt must not erase the refusal (it would
+  // turn "blocked" into a "ready" whose Turn on cannot prompt again).
+  if (provider === "apns" || provider === "fcm") next.declined = false;
+  return next;
 }
 
 /** The record with one provider's entry removed. */
