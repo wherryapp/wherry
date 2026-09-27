@@ -45,6 +45,7 @@
 
 import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules";
 import { nativeMediaProbe } from "./native-media";
+import { settledShellReading, type ShellReading } from "./handoff";
 import { probeRoom } from "./room-probe";
 import type {
   AdoptOptions,
@@ -148,6 +149,15 @@ type NativeCurrent = {
   screen: boolean;
 };
 
+/** voice/mod.rs `CurrentReading`: `voice_current`'s whole answer. */
+type NativeReading = ShellReading<NativeCurrent>;
+
+/** How long a page waits for a connect it finds in flight to land (the rig's
+ *  connects take about 2 s). Past it the page reads "no call", and the
+ *  join-time re-check (session.ts) is what catches a connect that late. */
+const CONNECT_LANDING_WAIT_MS = 20_000;
+const CONNECT_LANDING_POLL_MS = 250;
+
 function orphanedFrom(current: NativeCurrent): OrphanedCall {
   return {
     handoff: current.handoff,
@@ -168,6 +178,11 @@ async function tauriInvoke(): Promise<Invoke> {
 /**
  * The call the shell kept running across a page reload, or null.
  *
+ * A connect still in flight when this asks -- the old page's, which a reload
+ * does not cancel -- is waited for rather than read as "no call"
+ * (`settledShellReading`), or its call would land a moment later with no page
+ * to hang it up.
+ *
  * Null outside a desktop shell (no command to answer), and from a shell built
  * before `voice_current` existed -- which a shipped page never meets, since
  * the desktop bundle is packaged inside its own shell.
@@ -177,7 +192,10 @@ export async function findNativeOrphan(): Promise<OrphanedTransport | null> {
   let current: NativeCurrent | null;
   try {
     invoke = await tauriInvoke();
-    current = await invoke<NativeCurrent | null>("voice_current");
+    current = await settledShellReading(() => invoke<NativeReading>("voice_current"), {
+      waitMs: CONNECT_LANDING_WAIT_MS,
+      pollMs: CONNECT_LANDING_POLL_MS,
+    });
   } catch {
     return null;
   }
@@ -364,7 +382,7 @@ export class NativeTransport implements VoiceTransport {
     this.#pending = [];
     this.#unlisten = await event.listen<NativeEvent>("voice", (e) => this.#onEvent(e.payload));
     try {
-      const current = await invoke<NativeCurrent | null>("voice_current");
+      const current = (await invoke<NativeReading>("voice_current")).call;
       if (!current || current.session !== session) throw new Error("the call is no longer running");
       await invoke("voice_forget_page");
       let devices: NativeDevices = { inputs: [], outputs: [] };

@@ -672,6 +672,32 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
+/// `voice_connect`s that have started and not yet returned. A session is
+/// stored only at the end of its connect (about 2 s on the rig), so this is
+/// how a reading taken meanwhile (`voice_current`) learns that a call is on
+/// its way. It matters across a page reload: Tauri does not cancel a command
+/// when the page that invoked it goes, so the old page's connect can land
+/// after the new page has asked -- and leave a call no page knows about.
+static CONNECTS_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+
+/// One connect counted in `CONNECTS_IN_FLIGHT` for as long as this lives:
+/// dropped on every way out of `voice_connect`, including its future being
+/// dropped unfinished.
+struct ConnectInFlight;
+
+impl ConnectInFlight {
+  fn start() -> Self {
+    CONNECTS_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+    Self
+  }
+}
+
+impl Drop for ConnectInFlight {
+  fn drop(&mut self) {
+    CONNECTS_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+  }
+}
+
 fn session_id() -> Option<u64> {
   SESSION.lock().unwrap().as_ref().map(|s| s.id)
 }
@@ -1297,6 +1323,9 @@ pub struct ConnectResult {
 
 #[tauri::command]
 pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<ConnectResult> {
+  // First, so every way out drops it -- and a success drops it only after
+  // the session is stored at the end.
+  let _in_flight = ConnectInFlight::start();
   if session_id().is_some() {
     return Err(VoiceError::new("already_connected", "a call is already running"));
   }
@@ -1904,14 +1933,30 @@ pub struct CurrentCall {
   screen: bool,
 }
 
-/// The call that is running, or `None`.
+/// `voice_current`'s answer: the call, and whether one is still connecting.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentReading {
+  call: Option<CurrentCall>,
+  /// A `voice_connect` was under way when this was read, so a session may be
+  /// about to be stored: with no `call`, the page asks again rather than
+  /// concluding there is none (handoff.ts's `settledShellReading`).
+  connecting: bool,
+}
+
+/// The call that is running, if any, and whether a connect is in flight.
 ///
 /// For a page loaded while the shell held a call -- a reload, which destroys
 /// the page and none of this -- so it can take the call over or close it
 /// (client/src/voice/handoff.ts decides which). A reading only: nothing about
 /// the session changes, and events keep going out under its id as before.
 #[tauri::command]
-pub fn voice_current() -> VoiceResult<Option<CurrentCall>> {
+pub fn voice_current() -> VoiceResult<CurrentReading> {
+  // Read before the session, and a connect stores its session before it
+  // stops counting (`ConnectInFlight`): a connect that finishes between the
+  // two reads is seen as the session, and one that has not as connecting.
+  // The other order could see neither.
+  let connecting = CONNECTS_IN_FLIGHT.load(Ordering::SeqCst) > 0;
   let snapshot = SESSION.lock().unwrap().as_ref().map(|session| {
     (
       session.id,
@@ -1924,7 +1969,10 @@ pub fn voice_current() -> VoiceResult<Option<CurrentCall>> {
     )
   });
   let Some((id, room, shared, handoff, url, mic_published, echo_cancellation)) = snapshot else {
-    return Ok(None);
+    if connecting {
+      log::info!("voice: read by a page while a connect is still in flight");
+    }
+    return Ok(CurrentReading { call: None, connecting });
   };
   let state = match room.connection_state() {
     ConnectionState::Connected => "connected",
@@ -1940,7 +1988,7 @@ pub fn voice_current() -> VoiceResult<Option<CurrentCall>> {
     if !mic_published { "not published" } else if microphone_gate_open() { "open" } else { "muted" },
     if handoff.is_some() { "present" } else { "absent" }
   );
-  Ok(Some(CurrentCall {
+  let call = CurrentCall {
     session: id,
     handoff,
     state,
@@ -1954,7 +2002,8 @@ pub fn voice_current() -> VoiceResult<Option<CurrentCall>> {
     echo_cancellation,
     camera,
     screen,
-  }))
+  };
+  Ok(CurrentReading { call: Some(call), connecting })
 }
 
 /// The page that talked to this call is gone and another has taken it over:

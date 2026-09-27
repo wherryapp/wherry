@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Call } from "../api/types";
-import { decodeHandoff, encodeHandoff, orphanDecision, type Handoff, type OrphanReading } from "./handoff";
+import {
+  adoptedCallStatus,
+  adoptedRinging,
+  decodeHandoff,
+  encodeHandoff,
+  orphanDecision,
+  settledShellReading,
+  type Handoff,
+  type OrphanReading,
+} from "./handoff";
 
 const CALL: Call = {
   id: "call-1",
@@ -144,5 +153,107 @@ describe("orphanDecision", () => {
       orphanDecision({ orphan: orphan({ state: "disconnected", endpoint: null }), userId: "user-a" }),
       { kind: "drop", followUp: null },
     );
+  });
+});
+
+describe("adoptedCallStatus", () => {
+  it("is not known from nothing: the handoff's snapshot is never an input", () => {
+    assert.equal(adoptedCallStatus({ heard: null, fetched: null }), null);
+  });
+
+  it("takes whichever of the two it has", () => {
+    assert.equal(adoptedCallStatus({ heard: "active", fetched: null }), "active");
+    assert.equal(adoptedCallStatus({ heard: null, fetched: "ringing" }), "ringing");
+  });
+
+  it("takes the later status, whichever reading arrived first", () => {
+    // A status never goes back, so the later one is the newer reading.
+    assert.equal(adoptedCallStatus({ heard: "active", fetched: "ringing" }), "active");
+    assert.equal(adoptedCallStatus({ heard: "ringing", fetched: "active" }), "active");
+    assert.equal(adoptedCallStatus({ heard: "ended", fetched: "active" }), "ended");
+    assert.equal(adoptedCallStatus({ heard: "active", fetched: "ended" }), "ended");
+  });
+});
+
+describe("adoptedRinging", () => {
+  it("does not ring an answered call with nobody else in it now", () => {
+    // A started a group call; B answered and left; C never answered. The
+    // handoff's snapshot still says `ringing`; the server says active.
+    assert.equal(adoptedRinging({ kind: "call", status: "active", othersInRoom: 0 }), false);
+  });
+
+  it("does not ring when the status could not be read", () => {
+    assert.equal(adoptedRinging({ kind: "call", status: null, othersInRoom: 0 }), false);
+  });
+
+  it("rings a call the server still says is ringing, with nobody else in the room", () => {
+    assert.equal(adoptedRinging({ kind: "call", status: "ringing", othersInRoom: 0 }), true);
+    assert.equal(adoptedRinging({ kind: "call", status: "ringing", othersInRoom: 1 }), false);
+    assert.equal(adoptedRinging({ kind: "room", status: "ringing", othersInRoom: 0 }), false);
+  });
+});
+
+describe("settledShellReading", () => {
+  function fakeClock(): { now: () => number; sleep: (ms: number) => Promise<void>; slept: number[] } {
+    let t = 0;
+    const slept: number[] = [];
+    return {
+      now: () => t,
+      sleep: async (ms) => {
+        slept.push(ms);
+        t += ms;
+      },
+      slept,
+    };
+  }
+
+  function script(readings: { call: string | null; connecting: boolean }[]) {
+    let reads = 0;
+    return {
+      read: async () => readings[Math.min(reads++, readings.length - 1)]!,
+      reads: () => reads,
+    };
+  }
+
+  it("answers at once when nothing is connecting", async () => {
+    const clock = fakeClock();
+    const shell = script([{ call: null, connecting: false }]);
+    assert.equal(await settledShellReading(shell.read, { waitMs: 1_000, pollMs: 100, ...clock }), null);
+    assert.deepEqual(clock.slept, []);
+  });
+
+  it("answers with the call when one is stored, connecting or not", async () => {
+    const shell = script([{ call: "session-1", connecting: true }]);
+    const got = await settledShellReading(shell.read, { waitMs: 1_000, pollMs: 100, ...fakeClock() });
+    assert.equal(got, "session-1");
+  });
+
+  it("waits for a connect in flight to land (the old page's, across a reload)", async () => {
+    const clock = fakeClock();
+    const shell = script([
+      { call: null, connecting: true },
+      { call: null, connecting: true },
+      { call: "session-1", connecting: false },
+    ]);
+    const got = await settledShellReading(shell.read, { waitMs: 1_000, pollMs: 100, ...clock });
+    assert.equal(got, "session-1");
+    assert.equal(shell.reads(), 3);
+    assert.deepEqual(clock.slept, [100, 100]);
+  });
+
+  it("answers null when the connect it waited for failed", async () => {
+    const shell = script([
+      { call: null, connecting: true },
+      { call: null, connecting: false },
+    ]);
+    const got = await settledShellReading(shell.read, { waitMs: 1_000, pollMs: 100, ...fakeClock() });
+    assert.equal(got, null);
+  });
+
+  it("gives up after its wait while a connect is still in flight", async () => {
+    const shell = script([{ call: null, connecting: true }]);
+    const got = await settledShellReading(shell.read, { waitMs: 1_000, pollMs: 250, ...fakeClock() });
+    assert.equal(got, null);
+    assert.equal(shell.reads(), 5);
   });
 });

@@ -21,7 +21,8 @@
 // key is re-derived from MLS by the page that picks the call up, and the SFU
 // token is the shell's own (it refreshes it).
 
-import type { Call, CallKind, HubVisibility, VideoLimits } from "../api/types";
+import type { Call, CallKind, CallStatus, HubVisibility, VideoLimits } from "../api/types";
+import { callerIsRinging } from "./rules";
 import type { RoomEndpoint, TransportConnectionState, TransportEnd } from "./transport";
 import { transportEndFor } from "./transport-rules";
 
@@ -39,10 +40,12 @@ export type Handoff = {
   /** When the call connected on this device, for the bar's timer. */
   connectedAt: number;
   grant: VideoLimits | null;
-  /** The server's view of the call at join time. Stale by the time it is
-   *  read back; the next `call_state` frame replaces it, and nothing decides
-   *  on it but the ringing, which `callerIsRinging` already believes only
-   *  while nobody else is in the room. */
+  /** The server's view of the call at join time, and never updated after:
+   *  for whoever started the call its status is always `ringing`, since it
+   *  is `startCall`'s answer. So it is a starting record for the session's
+   *  state and nothing is decided on its status -- in particular not the
+   *  ringing, which would read "Calling…" in an answered call that happens
+   *  to have nobody else in it now (`adoptedCallStatus`). */
   call: Call | null;
 };
 
@@ -174,3 +177,92 @@ export function orphanDecision(input: {
   return { kind: "drop", followUp: null };
 }
 
+// ---------------------------------------------------------------------------
+// The adopted call's status
+// ---------------------------------------------------------------------------
+
+const STATUS_ORDER: Record<CallStatus, number> = { ringing: 0, active: 1, ended: 2 };
+
+/**
+ * The status of a call this page is taking over, from what it has read since
+ * it began: a `call_state` frame heard during the takeover, and the server's
+ * answer to asking for the call. A call's status only moves forward
+ * (ringing, then active, then ended), so the later of the two is the newer
+ * whichever arrived first. Null when neither is known.
+ *
+ * The handoff's own snapshot is deliberately not an input. It is the join
+ * answer, never updated, so for the caller it says `ringing` for the whole
+ * call -- an answered call whose callee has since left would come back
+ * reading "Calling…" with the ringback looping, and nothing would clear it
+ * but somebody joining or a transition the server may never send.
+ */
+export function adoptedCallStatus(input: {
+  heard: CallStatus | null;
+  fetched: CallStatus | null;
+}): CallStatus | null {
+  const { heard, fetched } = input;
+  if (heard === null) return fetched;
+  if (fetched === null) return heard;
+  return STATUS_ORDER[heard] >= STATUS_ORDER[fetched] ? heard : fetched;
+}
+
+/**
+ * Whether the adopted call rings on the caller's side: `callerIsRinging`, on
+ * a status this page actually read. Not knowing is not ringing -- the worse
+ * mistake is "Calling…" and a looping ringback in an answered call, and a
+ * call still ringing that shows the timer instead corrects itself on the
+ * callee's answer, which ends the ringing anyway.
+ */
+export function adoptedRinging(input: {
+  kind: CallKind;
+  status: CallStatus | null;
+  othersInRoom: number;
+}): boolean {
+  if (input.status === null) return false;
+  return callerIsRinging({ kind: input.kind, status: input.status, othersInRoom: input.othersInRoom });
+}
+
+// ---------------------------------------------------------------------------
+// Reading the shell while a connect is still on its way
+// ---------------------------------------------------------------------------
+
+/** The shell's answer to "what call are you running?" (`voice_current`). */
+export type ShellReading<T> = {
+  call: T | null;
+  /** A connect is in flight: a session that is not stored yet. */
+  connecting: boolean;
+};
+
+/**
+ * The shell's call once no connect is in flight, or null.
+ *
+ * A reload does not cancel the old page's `voice_connect` (a Tauri command is
+ * not tied to the page that invoked it), and the shell stores a session only
+ * when its connect finishes, about 2 s on the rig. A page that asked once and
+ * heard "no call" while that connect was still running would miss the call it
+ * then left behind: playing, with no page to hang it up and the next join
+ * refused as `already_connected`. So while the shell says a connect is in
+ * flight, ask again until it has landed or failed.
+ *
+ * Gives up after `waitMs` with null, the same as no call: the join-time
+ * re-check (session.ts) is the backstop for a connect that outlasts it.
+ */
+export async function settledShellReading<T>(
+  read: () => Promise<ShellReading<T>>,
+  options: {
+    waitMs: number;
+    pollMs: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<T | null> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const deadline = now() + options.waitMs;
+  for (;;) {
+    const reading = await read();
+    if (reading.call !== null || !reading.connecting) return reading.call;
+    if (now() >= deadline) return null;
+    await sleep(options.pollMs);
+  }
+}

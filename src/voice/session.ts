@@ -30,6 +30,7 @@
 import {
   ApiError,
   answerCall,
+  fetchCall,
   joinVoiceRoom,
   leaveCall,
   leaveVoiceRoom,
@@ -44,7 +45,13 @@ import { sync, type SyncEvent } from "../sync/engine";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 import { mlsSync } from "../sync/mls";
 import { createTransport, findOrphanedCall, transportIsNative } from "./index";
-import { encodeHandoff, orphanDecision, type Handoff } from "./handoff";
+import {
+  adoptedCallStatus,
+  adoptedRinging,
+  encodeHandoff,
+  orphanDecision,
+  type Handoff,
+} from "./handoff";
 import { deriveCallKey } from "./keys";
 import { listVideoDevices } from "./devices";
 import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
@@ -283,6 +290,13 @@ const LOCK_NAME = "messenger.voice";
  *  the voice lock to drain. A document's locks go with the document, but
  *  the new one can be running before that has happened. */
 const ORPHAN_LOCK_WAIT_MS = 3_000;
+/** How long a takeover waits for the server's answer about the call's status
+ *  before going ahead without it (the call is already running). */
+const ADOPT_STATUS_WAIT_MS = 5_000;
+/** When the load's check could not take the lock: how often, and how many
+ *  times, it asks again (`#retryOrphanLater`). */
+const ORPHAN_RETRY_MS = 10_000;
+const ORPHAN_RETRIES = 3;
 const EPOCH_POLL_MS = 2_000;
 const KEY_WAIT_MS = 20_000;
 /** How often a frame that would not open may trigger a group reconcile. */
@@ -378,6 +392,11 @@ class VoiceSession {
    *  by a join, so a call started in the first moments of a page load cannot
    *  race the shell's call from before it. */
   #orphanCheck: Promise<void> | null = null;
+  /** The account a call found in the shell may be handed to: the latest
+   *  `resumeAfterReload` was told, read when a check decides. */
+  #callHolder: string | null = null;
+  /** The tail of the orphan checks, which run one at a time (`#checkOrphan`). */
+  #orphanRuns: Promise<unknown> = Promise.resolve();
 
   getState = (): VoiceState => this.#state;
 
@@ -425,13 +444,22 @@ class VoiceSession {
    * `userId` is the account that may take a call over -- null while nobody
    * is signed in, or the page cannot hold a call (unverified, below the
    * version floor), in which case a running call is closed rather than left
-   * playing with nothing on screen to hang it up. Only the first call does
-   * anything; later ones return the same promise.
+   * playing with nothing on screen to hang it up. Only the first call runs
+   * the check; later ones record the account (a sign-in while the check is
+   * still waiting for a connect to land is honoured) and return the same
+   * promise. Every join then checks again (`#join`), for a call that reached
+   * the shell after this answered.
    */
   resumeAfterReload(userId: string | null): Promise<void> {
-    this.#orphanCheck ??= this.#checkOrphan(userId).catch(() => {
-      // Never throws into a caller; a failed check leaves the page as it was.
-    });
+    this.#callHolder = userId;
+    this.#orphanCheck ??= this.#checkOrphan(ORPHAN_LOCK_WAIT_MS).then(
+      (outcome) => {
+        if (outcome === "lock-busy") this.#retryOrphanLater(ORPHAN_RETRIES);
+      },
+      () => {
+        // Never throws into a caller; a failed check leaves the page as it was.
+      },
+    );
     return this.#orphanCheck;
   }
 
@@ -747,7 +775,20 @@ class VoiceSession {
   // -- joining -------------------------------------------------------------
 
   async #join(plan: JoinPlan, engineOverride: "webview" | null = null): Promise<void> {
-    if (this.#orphanCheck) await this.#orphanCheck;
+    if (this.#orphanCheck) {
+      await this.#orphanCheck;
+      // And again now (a no-op while this page holds a call, including
+      // through an engine switch, which keeps the lock). The load's check
+      // answered once, and a call can reach the shell after it: the old
+      // page's connect outlasting the check's wait, or a check that could not
+      // take the lock. Found here, before the server is told anything, it is
+      // adopted or closed as at load -- rather than left playing while this
+      // join's connect is refused as `already_connected`, after the server
+      // has already been told this device is joining.
+      await this.#checkOrphan(0).catch(() => {
+        // As at load: a failed check leaves things as they were.
+      });
+    }
     if (this.#state.phase !== "idle" && this.#state.phase !== "elsewhere") {
       if (this.#state.conversationId === plan.conversation.id) return;
       // Switching rooms: out of the old one first, then in.
@@ -910,18 +951,39 @@ class VoiceSession {
 
   // -- a call from before a reload --------------------------------------------
 
-  async #checkOrphan(userId: string | null): Promise<void> {
+  /**
+   * Adopt or close a call the shell is running that this page did not join
+   * (`orphanDecision`). Runs one at a time -- the load's check, a join's and
+   * a background retry can overlap, and two takeovers of one call would each
+   * believe they held the lock -- and does nothing while this page holds a
+   * call of its own, since then the shell's call is that one.
+   *
+   * `lockWaitMs`: how long to queue for the voice lock -- at load, long
+   * enough for the reloaded page's hold to drain; afterwards, not at all,
+   * since by then a held lock is another window's.
+   */
+  #checkOrphan(lockWaitMs: number): Promise<"settled" | "lock-busy"> {
+    const run = this.#orphanRuns.then(() => {
+      const holdsNothing = this.#state.phase === "idle" || this.#state.phase === "elsewhere";
+      if (!holdsNothing || this.#releaseLock) return "settled" as const;
+      return this.#checkOrphanNow(lockWaitMs);
+    });
+    this.#orphanRuns = run.catch(() => undefined);
+    return run;
+  }
+
+  async #checkOrphanNow(lockWaitMs: number): Promise<"settled" | "lock-busy"> {
     const found = await findOrphanedCall();
-    if (!found) return;
+    if (!found) return "settled";
     // The shell's call belongs to whichever page of this profile holds the
     // voice lock. Not this one yet: the reloaded page's hold drains with its
     // document. A lock that stays held is another window's, and so is the
     // call -- nothing here touches it.
-    if (!(await this.#acquireLock(ORPHAN_LOCK_WAIT_MS))) return;
-    const decision = orphanDecision({ orphan: found.call, userId });
+    if (!(await this.#acquireLock(lockWaitMs))) return "lock-busy";
+    const decision = orphanDecision({ orphan: found.call, userId: this.#callHolder });
     if (decision.kind === "adopt") {
       await this.#adopt(found, decision.handoff);
-      return;
+      return "settled";
     }
     await found.discard();
     this.#releaseLock?.();
@@ -929,6 +991,29 @@ class VoiceSession {
     if (decision.kind === "drop" && decision.followUp) {
       this.#followUpRoom(decision.followUp.callId, decision.followUp.unsettled);
     }
+    return "settled";
+  }
+
+  /**
+   * The load's check found a call but not the lock within its wait. Usually
+   * that is another window's call, and asking again finds the same; but a
+   * reloaded page whose hold is slow to drain would otherwise leave its call
+   * playing with nothing on screen until the next join. So ask again a few
+   * times, in the background -- a join does not wait on these -- and only
+   * while this page holds no call of its own.
+   */
+  #retryOrphanLater(triesLeft: number): void {
+    if (triesLeft <= 0) return;
+    setTimeout(() => {
+      void this.#checkOrphan(0).then(
+        (outcome) => {
+          if (outcome === "lock-busy") this.#retryOrphanLater(triesLeft - 1);
+        },
+        () => {
+          // As at load.
+        },
+      );
+    }, ORPHAN_RETRY_MS);
   }
 
   /**
@@ -968,6 +1053,24 @@ class VoiceSession {
       nativeEngine: true,
     });
     const joined = this.#watchSync(handoff.callId);
+    // The call's status now, asked of the server alongside the takeover: the
+    // handoff's snapshot is the join answer, never updated, and for whoever
+    // started the call it says `ringing` for good (`adoptedCallStatus`).
+    // Bounded, because the call is already running and the page should show
+    // it; a status not known in time is simply not known.
+    const fetching = new Promise<Call | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), ADOPT_STATUS_WAIT_MS);
+      fetchCall(handoff.callId).then(
+        ({ call }) => {
+          clearTimeout(timer);
+          resolve(call.id === handoff.callId ? call : null);
+        },
+        () => {
+          clearTimeout(timer);
+          resolve(null);
+        },
+      );
+    });
     const prefs = loadVoicePrefs();
     let adopted: Awaited<ReturnType<OrphanedTransport["adopt"]>>;
     try {
@@ -995,6 +1098,7 @@ class VoiceSession {
       return;
     }
     const { transport, call } = adopted;
+    const fetched = await fetching;
     if (this.#leaving) {
       // The room ended while the takeover was being wired, and an event
       // replayed inside it already tore this session down -- with no
@@ -1010,6 +1114,20 @@ class VoiceSession {
       if (unsettled) this.#followUpRoom(handoff.callId, unsettled);
       return;
     }
+    // A frame heard during the takeover replaced the snapshot in the state
+    // (`#watchSync` writes a new record); the snapshot itself is no reading.
+    const current = this.#state.call;
+    const status = adoptedCallStatus({
+      heard: current !== handoff.call ? (current?.status ?? null) : null,
+      fetched: fetched?.status ?? null,
+    });
+    if (status === "ended") {
+      // The server ended the call while no page listened: what its `ended`
+      // frame would have done had one been here to hear it.
+      await this.#teardown({ tellServer: false, error: null });
+      return;
+    }
+    if (fetched) this.#set({ call: { ...fetched, status: status ?? fetched.status } });
     // The chime's baseline, before the first roster read that could fire it.
     this.#liveVideo = liveVideoKeys(transport.participants());
     this.#set({
@@ -1018,9 +1136,11 @@ class VoiceSession {
       connectedAt: handoff.connectedAt,
       keyEpoch: null,
       playbackBlocked: transport.playbackBlocked(),
-      ringing: callerIsRinging({
+      // Never from the handoff's snapshot: an answered call with nobody else
+      // in it now would read "Calling…" with the ringback looping.
+      ringing: adoptedRinging({
         kind: handoff.kind,
-        status: handoff.call?.status ?? "active",
+        status,
         othersInRoom: transport.participants().length,
       }),
       grant: handoff.grant,
