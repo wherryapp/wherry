@@ -35,8 +35,11 @@ import {
   disable as disablePush,
   enable as enablePush,
   isSubscribed,
+  nativePushAvailableHere,
+  withNativePush,
   type PushState,
 } from "../sync/push";
+import type { NativePushState } from "../sync/native-push-rules";
 import { useAnnouncements, useAvatarUrl, useFeatures } from "./hooks";
 import { prepareAvatar } from "./media";
 import { HuePicker } from "./HuePicker";
@@ -868,6 +871,109 @@ function PasswordSection({
  * list's footer was debug chrome on the app's most valuable screen.
  */
 function NotificationSetting() {
+  // A phone shell asks APNs/FCM through the wherry-push plugin instead of
+  // the browser's push service, which never delivers to a webview.
+  if (nativePushAvailableHere()) return <NativeNotificationSetting />;
+  return <WebNotificationSetting />;
+}
+
+/**
+ * The phone shells' branch (docs/prompts/native-push-plan.md §7.2): the same
+ * labels as the web states, plus "This build has no push support" for an
+ * Android build made without Firebase config, and an Open settings button
+ * for blocked -- which on a phone is otherwise a dead end, because the
+ * prompt never comes back.
+ *
+ * sync/native-push.ts is loaded here, on demand, and never in a browser.
+ */
+function NativeNotificationSetting() {
+  const [state, setState] = useState<NativePushState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notTurnedOn, setNotTurnedOn] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    withNativePush(async (native) => {
+      const next = await native.nativeAvailability();
+      if (!cancelled) setState(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const muted = "text-xs text-neutral-500 dark:text-neutral-400";
+
+  if (state === null) return <LoadingLine className="text-xs" />;
+
+  if (state === "unsupported") {
+    return <p className={muted}>This device cannot show notifications.</p>;
+  }
+
+  if (state === "unconfigured") {
+    return <p className={muted}>This build has no push support.</p>;
+  }
+
+  if (state === "server-disabled") {
+    return <p className={muted}>Notifications are not set up on this server.</p>;
+  }
+
+  if (state === "blocked") {
+    return (
+      <div className="space-y-2">
+        <p className={muted}>Notifications are blocked in this phone&apos;s settings.</p>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => withNativePush((native) => native.openNativeSettings())}
+        >
+          Open settings
+        </Button>
+      </div>
+    );
+  }
+
+  const on = state === "on";
+
+  return (
+    <div className="space-y-1">
+      <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={busy}
+          onChange={() => {
+            setBusy(true);
+            setNotTurnedOn(false);
+            // The permission prompt answers this press and nothing else, as
+            // on the web. The OS prompt is native, so unlike a browser's it
+            // does not need the gesture to survive the module load.
+            withNativePush(async (native) => {
+              try {
+                const next = await (on ? native.disableNative() : native.enableNative());
+                setState(next);
+                // Turn on that lands back on "ready" did not work: a failed
+                // registration (the reason is in the console), or a prompt
+                // dismissed without an answer. Without this line the box
+                // just springs back.
+                setNotTurnedOn(!on && next === "ready");
+              } finally {
+                setBusy(false);
+              }
+            });
+          }}
+          className="h-4 w-4"
+        />
+        Notify me about new messages on this device
+      </label>
+      {notTurnedOn && (
+        <p className={muted}>Notifications could not be turned on. Try again later.</p>
+      )}
+    </div>
+  );
+}
+
+function WebNotificationSetting() {
   const [state, setState] = useState<PushState | null>(null);
   const [busy, setBusy] = useState(false);
 
