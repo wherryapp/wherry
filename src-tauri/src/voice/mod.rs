@@ -60,6 +60,11 @@
 //   D-69). The shell gates recording on the microphone's own state and
 //   restarts it after the share's sound is muted, after a share stops or
 //   starts, and after a reconnect. See `set_microphone_gate`.
+// - libwebrtc's Windows module resolves "the default output" only when it
+//   initialises playout, once per call, so a call on the default did not
+//   follow a change of the Windows default or the loss of the device it
+//   played on (row D-72). The page decides when to follow, from
+//   `voice-devices`; `playout.rs` is the mechanism. Windows only.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -108,6 +113,9 @@ pub mod screen_audio;
 #[path = "screen_audio_stub.rs"]
 pub mod screen_audio;
 pub mod video;
+// Following the Windows default output (rows D-72, D-73). Not split by
+// platform at the `mod` site: the one Windows-only part is small and inside.
+pub mod playout;
 
 /// Which SDK revision this shell carries; shown by the probe so a call
 /// details readout can name it. Bump with the `rev` in Cargo.toml.
@@ -1050,6 +1058,11 @@ pub struct AudioDevice {
 pub struct AudioDevices {
   inputs: Vec<AudioDevice>,
   outputs: Vec<AudioDevice>,
+  /// The Windows default output's id, `null` when Windows has none; absent
+  /// where this shell leaves playout to the platform (`playout.rs`). The
+  /// page reads its presence as "this shell can follow the default".
+  #[serde(skip_serializing_if = "Option::is_none")]
+  default_output: Option<Option<String>>,
 }
 
 fn list_devices(audio: &PlatformAudio) -> AudioDevices {
@@ -1062,18 +1075,22 @@ fn list_devices(audio: &PlatformAudio) -> AudioDevices {
       .playout_devices()
       .map(|d| AudioDevice { device_id: d.id.as_str().to_string(), label: d.name })
       .collect(),
+    default_output: None,
   }
 }
 
 #[tauri::command]
 pub fn voice_devices() -> VoiceResult<AudioDevices> {
-  Ok(list_devices(&platform_audio()?))
+  Ok(playout::devices_with_default(&platform_audio()?))
 }
 
 static DEVICE_POLLER: AtomicBool = AtomicBool::new(false);
 
 /// Re-read the device list every `DEVICE_POLL_MS` for the life of the
 /// process and emit `voice-devices` when it differs from the last reading.
+/// On Windows the reading includes the default output, so a change of the
+/// Windows default is a change here too: nothing else would tell the page
+/// (row D-72 -- the list is the same, only the default moved).
 /// The device module raises no hot-plug event of its own (the plan's §5.1),
 /// and a poll here costs a few Core Audio property reads rather than an IPC
 /// round trip from a page timer that may be throttled. Started once, by the
@@ -1088,12 +1105,18 @@ fn start_device_poller(app: AppHandle) {
     loop {
       ticks.tick().await;
       let Ok(audio) = platform_audio() else { continue };
-      let devices = list_devices(&audio);
+      let devices = playout::devices_with_default(&audio);
+      let default_output = match &devices.default_output {
+        Some(Some(id)) => Some(id.clone()),
+        Some(None) => Some("none".to_string()),
+        None => None,
+      };
       let key: Vec<(String, String)> = devices
         .inputs
         .iter()
         .map(|d| (format!("in:{}", d.device_id), d.label.clone()))
         .chain(devices.outputs.iter().map(|d| (format!("out:{}", d.device_id), d.label.clone())))
+        .chain(default_output.iter().map(|id| ("default-out".to_string(), id.clone())))
         .collect();
       // The first reading is logged as an inventory rather than skipped as
       // "not a change". Only emitting on a difference is right -- the event
@@ -1104,16 +1127,20 @@ fn start_device_poller(app: AppHandle) {
       let first = last.is_none();
       let changed = last.as_ref().is_some_and(|previous| previous != &key);
       last = Some(key);
+      // The default only where this shell reads one, so a macOS line is
+      // byte-for-byte what it was.
+      let default_note =
+        default_output.as_deref().map(|id| format!(", default output {id}")).unwrap_or_default();
       if first {
         log::info!(
-          "voice: devices at start ({} input(s), {} output(s))",
+          "voice: devices at start ({} input(s), {} output(s){default_note})",
           devices.inputs.len(),
           devices.outputs.len()
         );
       }
       if changed {
         log::info!(
-          "voice: devices changed ({} input(s), {} output(s))",
+          "voice: devices changed ({} input(s), {} output(s){default_note})",
           devices.inputs.len(),
           devices.outputs.len()
         );
@@ -1266,13 +1293,28 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     None => log::info!("voice: capture left at the platform default"),
   }
   match args.speaker_device_id.as_deref() {
-    Some(id) => {
+    // The page checked the id against the list a moment ago; if the device
+    // went in between, the call falls back to the default rather than
+    // failing (the same decision the page makes mid-call).
+    Some(id) if devices.outputs.iter().any(|d| d.device_id == id) => {
       log::info!("voice: playout requested {id} ({})", name_of(id));
-      audio
-        .switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(id))
-        .map_err(|e| VoiceError::new("device", format!("switch_playout_device: {e:?}")))?;
+      playout::apply(&audio, id)?;
     }
-    None => log::info!("voice: playout left at the platform default"),
+    Some(id) => {
+      log::warn!("voice: playout requested {id}, which is no longer in the list -- using the default");
+      if let Err(error) = playout::at_connect(&audio) {
+        log::warn!("voice: playout could not be put on the default: {}", error.message);
+      }
+    }
+    // On Windows, the default resolved now and selected by id, so a call no
+    // longer inherits whatever device the last call's playout was moved to
+    // (`playout.rs`); elsewhere nothing, as before. A failure here is not
+    // worth failing the call over: the module's own default still stands.
+    None => {
+      if let Err(error) = playout::at_connect(&audio) {
+        log::warn!("voice: playout could not be put on the default: {}", error.message);
+      }
+    }
   }
   // Zero outputs is not a warning about a preference, it is "nobody will hear
   // anything" -- and it is a real state: this project's Windows box enumerated
@@ -1544,12 +1586,18 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
   // this point (status §3.3), so this should ask nothing; it is here so that no `start_recording` in this file can
   // initialise recording without the repair in front of it.
   before_init_recording(&audio, processing, engine_held, "after publish");
-  if let Err(error) = audio.start_recording() {
-    // Publishing a device-sourced track initialises recording on its own;
-    // an explicit start that then fails is worth a log line, not a
-    // failed call.
-    log::warn!("voice: start_recording after publish: {error:?}");
-  }
+  let start_failed = match audio.start_recording() {
+    Ok(()) => false,
+    Err(error) => {
+      // Publishing a device-sourced track initialises recording on its own;
+      // an explicit start that then fails is worth a log line, not a
+      // failed call -- and a second look once the publication is recorded
+      // below, because nothing else would ever start it (row D-73: a
+      // failed start at publish left the microphone silent for the call).
+      log::warn!("voice: start_recording after publish: {error:?}");
+      true
+    }
+  };
   // The sender's cryptor exists now: put it on the current index.
   let index = *shared.key_index.lock().unwrap();
   let cryptors = apply_key_index(&room, index);
@@ -1559,15 +1607,24 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
     audio.is_recording_initialized()
   );
 
-  let mut guard = SESSION.lock().unwrap();
-  match guard.as_mut() {
-    Some(session) if session.id == id => {
-      session.mic = Some(publication);
+  let stored = {
+    let mut guard = SESSION.lock().unwrap();
+    match guard.as_mut() {
+      Some(session) if session.id == id => {
+        session.mic = Some(publication);
+        true
+      }
+      _ => {
+        // The call ended while the publish was in flight; the room is closed
+        // or closing and the publication goes with it.
+        false
+      }
     }
-    _ => {
-      // The call ended while the publish was in flight; the room is closed
-      // or closing and the publication goes with it.
-    }
+  };
+  if stored && start_failed {
+    // After the publication is in the session, which is what makes
+    // `ensure_microphone_recording` count the microphone as open.
+    recheck_microphone("after a failed start at publish");
   }
   Ok(())
 }
@@ -1609,9 +1666,7 @@ pub fn voice_set_output_device(device_id: String) -> VoiceResult<()> {
     ));
   };
   log::info!("voice: playout switched to {device_id} ({})", found.label);
-  audio
-    .switch_playout_device(&PlayoutDeviceId::from_unchecked_guid(&device_id))
-    .map_err(|e| VoiceError::new("device", format!("switch_playout_device: {e:?}")))
+  playout::apply(&audio, &device_id)
 }
 
 #[derive(Serialize)]

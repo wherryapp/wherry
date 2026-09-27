@@ -135,6 +135,41 @@ export function knownDeviceId(
   return devices.some((device) => device.deviceId === id) ? id : null;
 }
 
+/** What the native transport asks of the shell's playout after the output
+ *  list, the Windows default output, or the person's choice changed. */
+export type PlayoutMove =
+  | { kind: "stay" }
+  | { kind: "follow-default" }
+  | { kind: "device"; deviceId: string };
+
+/**
+ * Where a call's playout should go now (rows D-72, D-73).
+ *
+ * - The shell does not report a default (`defaultOutput` undefined: macOS,
+ *   or a shell older than this rule): **stay**. Such a shell leaves playout
+ *   to the platform, and this rule does not second-guess it.
+ * - The person chose a speaker and it is in the list: **stay** on it -- or,
+ *   if playout had fallen back to the default while it was gone, go **back**
+ *   to it. It is still their choice; the preference is never rewritten.
+ * - Nothing chosen, or the choice is not in the list (unplugged, or an id
+ *   from the webview's id space): **follow the default**. That covers a
+ *   Windows default changed mid-call, the device playing being unplugged,
+ *   and an output appearing in a call that began with none (`defaultOutput`
+ *   null until then). The shell does nothing when playout is already there,
+ *   so asking on every change is cheap.
+ */
+export function playoutAfterDeviceChange(input: {
+  chosen: string | null;
+  outputs: readonly { deviceId: string }[];
+  defaultOutput: string | null | undefined;
+  following: boolean;
+}): PlayoutMove {
+  if (input.defaultOutput === undefined) return { kind: "stay" };
+  const chosen = knownDeviceId(input.chosen, input.outputs);
+  if (chosen !== null) return input.following ? { kind: "device", deviceId: chosen } : { kind: "stay" };
+  return { kind: "follow-default" };
+}
+
 // ---------------------------------------------------------------------------
 // Video (docs/prompts/video-execution-handoff.md §3)
 // ---------------------------------------------------------------------------

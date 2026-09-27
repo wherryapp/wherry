@@ -427,7 +427,8 @@ class VoiceSession {
     }
   }
 
-  async setSpeakerDevice(deviceId: string): Promise<void> {
+  /** `deviceId` null: "Default", chosen mid-call. */
+  async setSpeakerDevice(deviceId: string | null): Promise<void> {
     const transport = this.#transport;
     if (!transport) return;
     try {

@@ -310,7 +310,10 @@ export class WebviewTransport implements VoiceTransport {
     await this.#room?.switchActiveDevice("audioinput", deviceId);
   }
 
-  async setOutputDevice(deviceId: string): Promise<void> {
+  async setOutputDevice(deviceId: string | null): Promise<void> {
+    // "Default" mid-call changes nothing here, as before the native engine
+    // learned to follow the default (transport.ts).
+    if (deviceId === null) return;
     this.#speakerDeviceId = deviceId;
     await this.#room?.switchActiveDevice("audiooutput", deviceId);
   }

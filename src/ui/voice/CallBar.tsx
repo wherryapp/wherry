@@ -326,7 +326,7 @@ function DevicePicker({ onClose }: { onClose: () => void }) {
             onChange={(e) => {
               const id = e.target.value || null;
               saveVoicePrefs({ speakerDeviceId: id });
-              if (id) void voice.setSpeakerDevice(id);
+              void voice.setSpeakerDevice(id);
             }}
             className="mt-1 w-full"
           >

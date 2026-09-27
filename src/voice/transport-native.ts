@@ -62,6 +62,7 @@ import {
   nativeErrorName,
   nativeGainFor,
   playbackEnabledFor,
+  playoutAfterDeviceChange,
   qualityFromWord,
   screenAudioMode,
   screenOptionsFor,
@@ -102,6 +103,9 @@ type NativeEvent = { session: number } & (
 type NativeDevices = {
   inputs: { deviceId: string; label: string }[];
   outputs: { deviceId: string; label: string }[];
+  /** The Windows default output, null when there is none; absent from a
+   *  shell that leaves playout to the platform (voice/playout.rs). */
+  defaultOutput?: string | null;
 };
 
 type ConnectResult = { session: number; connectMs: number; roster: NativeRoster };
@@ -158,6 +162,17 @@ export class NativeTransport implements VoiceTransport {
   /** Tiles this transport has asked the shell for, by element, so a detach
    *  can find its id and a covered surface can be re-sent on reconnect. */
   #tiles = new Map<HTMLVideoElement, { id: number | null; stop: () => void }>();
+  /** The speaker the person chose (the preference, unfiltered), null for the
+   *  default; and whether playout is on the default right now because of
+   *  that -- nothing chosen, or the choice gone (rows D-72, D-73). */
+  #speakerChoice: string | null = null;
+  #playoutFollowing = false;
+  /** The shell's last device reading, for a choice made mid-call. */
+  #devices: NativeDevices = { inputs: [], outputs: [] };
+  #unlistenDevices: (() => void) | null = null;
+  /** Playout moves in order: a second device event never overtakes the
+   *  first's command. */
+  #playoutQueue: Promise<void> = Promise.resolve();
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
     this.#events = events;
@@ -198,10 +213,22 @@ export class NativeTransport implements VoiceTransport {
       });
       this.#session = result.session;
       this.#roster = result.roster;
+      this.#speakerChoice = options.speakerDeviceId;
+      this.#devices = devices;
+      // The shell put playout on the default at connect exactly when the id
+      // it was handed was null.
+      this.#playoutFollowing = knownDeviceId(options.speakerDeviceId, devices.outputs) === null;
       const pending = this.#pending ?? [];
       this.#pending = null;
       for (const queued of pending) this.#onEvent(queued);
       this.#applyVolumes();
+      // Not a UI listener: this one lives with the call, so playout follows
+      // with Settings closed. Registered after the connect, whose own device
+      // choice already reflects the list read above, and after the replay,
+      // so no call event is reordered around this await.
+      this.#unlistenDevices = await event.listen<NativeDevices>("voice-devices", (e) =>
+        this.#onDevices(e.payload),
+      );
     } catch (error) {
       await this.disconnect();
       throw nativeError(error);
@@ -212,6 +239,8 @@ export class NativeTransport implements VoiceTransport {
     const invoke = this.#invoke;
     this.#unlisten?.();
     this.#unlisten = null;
+    this.#unlistenDevices?.();
+    this.#unlistenDevices = null;
     this.#session = null;
     this.#pending = null;
     this.#events = {};
@@ -244,8 +273,49 @@ export class NativeTransport implements VoiceTransport {
     await this.#invoke?.("voice_set_input_device", { deviceId });
   }
 
-  async setOutputDevice(deviceId: string): Promise<void> {
-    await this.#invoke?.("voice_set_output_device", { deviceId });
+  async setOutputDevice(deviceId: string | null): Promise<void> {
+    this.#speakerChoice = deviceId;
+    if (deviceId !== null) {
+      this.#playoutFollowing = false;
+      await this.#invoke?.("voice_set_output_device", { deviceId });
+      return;
+    }
+    // Back to "Default" mid-call: the same decision a device change makes.
+    await this.#movePlayout();
+  }
+
+  #onDevices(devices: NativeDevices): void {
+    if (this.#session === null) return;
+    this.#devices = devices;
+    void this.#movePlayout();
+  }
+
+  /** Ask the shell to move playout if `playoutAfterDeviceChange` says so;
+   *  queued, and never throws (a failed move is the shell's log line). */
+  #movePlayout(): Promise<void> {
+    const run = async (): Promise<void> => {
+      const invoke = this.#invoke;
+      if (!invoke || this.#session === null) return;
+      const move = playoutAfterDeviceChange({
+        chosen: this.#speakerChoice,
+        outputs: this.#devices.outputs,
+        defaultOutput: this.#devices.defaultOutput,
+        following: this.#playoutFollowing,
+      });
+      try {
+        if (move.kind === "follow-default") {
+          this.#playoutFollowing = true;
+          await invoke("voice_follow_default_output");
+        } else if (move.kind === "device") {
+          this.#playoutFollowing = false;
+          await invoke("voice_set_output_device", { deviceId: move.deviceId });
+        }
+      } catch {
+        // The shell logged why; the next device event asks again.
+      }
+    };
+    this.#playoutQueue = this.#playoutQueue.then(run, run);
+    return this.#playoutQueue;
   }
 
   async setEpochKey(secret: Uint8Array, epoch: number): Promise<void> {

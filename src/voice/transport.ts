@@ -285,7 +285,11 @@ export interface VoiceTransport {
 
   setMicrophoneEnabled(on: boolean): Promise<void>;
   setInputDevice(deviceId: string): Promise<void>;
-  setOutputDevice(deviceId: string): Promise<void>;
+  /** `deviceId` null is "Default" chosen mid-call: the native engine then
+   *  follows the platform's default output where its shell can
+   *  (transport-rules.ts's `playoutAfterDeviceChange`); the webview engine
+   *  leaves playout where it is, as it always has. */
+  setOutputDevice(deviceId: string | null): Promise<void>;
 
   /** The conversation's exporter secret for `epoch`, to be used from now. */
   setEpochKey(secret: Uint8Array, epoch: number): Promise<void>;

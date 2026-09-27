@@ -8,6 +8,7 @@ import {
   nativeErrorName,
   nativeGainFor,
   playbackEnabledFor,
+  playoutAfterDeviceChange,
   publishErrorMessage,
   qualityFromWord,
   SCREEN_AUDIENCE_STEP,
@@ -135,6 +136,76 @@ describe("knownDeviceId", () => {
     // machine whose microphone is fine.
     assert.equal(knownDeviceId("", devices), null);
     assert.equal(knownDeviceId("", [{ deviceId: "" }, { deviceId: "" }]), null);
+  });
+});
+
+describe("playoutAfterDeviceChange", () => {
+  const hda = "{0.0.0.00000000}.{afca49a9-916c-4cc6-adfc-7858b8eb7b2e}";
+  const usb = "{0.0.0.00000000}.{ff606fbf-7935-40e8-8eb0-37e4452798b8}";
+  const both = [{ deviceId: hda }, { deviceId: usb }];
+  const onlyHda = [{ deviceId: hda }];
+
+  it("leaves a shell that reports no default alone, chosen or not (macOS, older shells)", () => {
+    for (const chosen of [null, usb, "gone"]) {
+      for (const following of [true, false]) {
+        assert.deepEqual(
+          playoutAfterDeviceChange({ chosen, outputs: onlyHda, defaultOutput: undefined, following }),
+          { kind: "stay" },
+        );
+      }
+    }
+  });
+
+  it("follows the default when nothing is chosen: a default change, an unplug, an output returning", () => {
+    // D-72: the Windows default moved from HDA to USB mid-call.
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: null, outputs: both, defaultOutput: usb, following: true }),
+      { kind: "follow-default" },
+    );
+    // D-72: the device playing was unplugged; Windows' default is HDA again.
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: null, outputs: onlyHda, defaultOutput: hda, following: true }),
+      { kind: "follow-default" },
+    );
+    // D-73: a call begun with no output; still asked while there is none,
+    // and the shell says there is nothing to follow.
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: null, outputs: [], defaultOutput: null, following: true }),
+      { kind: "follow-default" },
+    );
+  });
+
+  it("stays on a chosen speaker that is still there, whatever the default does", () => {
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: usb, outputs: both, defaultOutput: hda, following: false }),
+      { kind: "stay" },
+    );
+  });
+
+  it("falls back to the default when the chosen speaker goes, rather than going silent", () => {
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: usb, outputs: onlyHda, defaultOutput: hda, following: false }),
+      { kind: "follow-default" },
+    );
+    // A webview-era id is never in the shell's list: the default, as at connect.
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: "browser-id", outputs: both, defaultOutput: hda, following: true }),
+      { kind: "follow-default" },
+    );
+  });
+
+  it("goes back to the chosen speaker when it returns after a fallback", () => {
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: usb, outputs: both, defaultOutput: usb, following: true }),
+      { kind: "device", deviceId: usb },
+    );
+  });
+
+  it("treats an empty chosen id as nothing chosen", () => {
+    assert.deepEqual(
+      playoutAfterDeviceChange({ chosen: "", outputs: both, defaultOutput: hda, following: false }),
+      { kind: "follow-default" },
+    );
   });
 });
 

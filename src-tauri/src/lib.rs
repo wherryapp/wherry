@@ -183,6 +183,7 @@ pub fn run() {
     voice::voice_set_mic,
     voice::voice_set_input_device,
     voice::voice_set_output_device,
+    voice::playout::voice_follow_default_output,
     voice::voice_set_epoch_key,
     voice::voice_set_playback,
     voice::voice_set_volume,
