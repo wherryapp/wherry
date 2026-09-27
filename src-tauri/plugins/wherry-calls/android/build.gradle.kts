@@ -29,8 +29,11 @@ android {
 dependencies {
     // Tauri's plugin API (Plugin, Invoke, JSObject, the annotations).
     implementation(project(":tauri-android"))
-    // NotificationCompat (A1's ongoing-call notification, A2's CallStyle
-    // ring). Already in the app through AppCompat; declared because this
-    // module compiles against it on its own.
-    implementation("androidx.core:core-ktx:1.9.0")
+    // NotificationCompat.CallStyle (A1's ongoing call, A2's ring) and
+    // Person. CallStyle is not in androidx.core 1.9.0 (its classes.jar has
+    // no NotificationCompat$CallStyle), the version this stub first named.
+    // 1.13.1 is what the app already resolves (appcompat 1.7.1 and its
+    // neighbours), so this adds nothing to the APK; plain `core`, since no
+    // Kotlin extension is used.
+    implementation("androidx.core:core:1.13.1")
 }

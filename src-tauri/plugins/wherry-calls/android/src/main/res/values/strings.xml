@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Prefixed, because a library's resources merge into the app's namespace. -->
+<resources>
+    <!-- The ongoing call's channel, as Settings -> Notifications lists it. -->
+    <string name="wherry_calls_channel_ongoing">Ongoing call</string>
+    <string name="wherry_calls_channel_ongoing_description">Shown while a call is up, so it keeps its microphone with the screen off</string>
+    <!-- The caller line when the page gave no label, and on the lock
+         screen's public version, which never names anybody. -->
+    <string name="wherry_calls_unnamed">Wherry call</string>
+</resources>
