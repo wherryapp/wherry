@@ -34,9 +34,17 @@ export type NotifyCandidate = {
    *  server already skips push for it; this is the same rule for the
    *  desktop shell's notifications, which never pass through the server. */
   dnd: boolean;
+  /** A phone shell where native push is on (sync/native-push-rules.ts
+   *  `nativeOwnsAlerts`): APNs or FCM already announced this arrival, under
+   *  the same filters the server applies, so a local notification would be
+   *  the second one for the same fact (row A-48). False everywhere else,
+   *  including a phone whose server has no push key -- there the local
+   *  notification is still the only alert there is. */
+  nativePushOwnsAlerts: boolean;
 };
 
 export function shouldNotify(candidate: NotifyCandidate): boolean {
+  if (candidate.nativePushOwnsAlerts) return false;
   if (candidate.windowFocused) return false;
   if (candidate.dnd) return false;
   if (candidate.isOwn) return false;

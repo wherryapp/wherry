@@ -721,6 +721,59 @@ export function unsubscribeFromPush(endpoint: string): Promise<void> {
   });
 }
 
+// Native push (APNs, FCM): the phone shells' path, through the wherry-push
+// plugin. docs/prompts/native-push-plan.md §4.3 fixes these shapes; the one
+// caller is sync/native-push.ts. An older server answers 404 to all three,
+// which the caller reads as "server-disabled" -- a new client tolerates an
+// old server.
+
+export type NativePushProvider = "apns" | "apns_voip" | "fcm";
+
+/**
+ * The register body. The device comes from the session, never from here.
+ *
+ * `p256dh` and `auth` (base64url) are the device's RFC 8291 key material,
+ * which the server encrypts ring payloads to (decision M-1 = E,
+ * 2026-09-27); required by the server for `apns_voip` and `fcm`, the
+ * providers that carry encrypted rings, and omitted for `apns`. The
+ * private half never leaves the native side, which is where a ring is
+ * decrypted. `environment` is required for the two APNs providers and
+ * refused for `fcm`.
+ */
+export type RegisterNativePushBody = {
+  provider: NativePushProvider;
+  token: string;
+  environment?: "sandbox" | "production";
+  p256dh?: string;
+  auth?: string;
+};
+
+/** Which native providers this server has keys for. */
+export function fetchNativePushProviders(): Promise<{
+  providers: { apns: boolean; fcm: boolean };
+}> {
+  return request(`${API}/push/native`);
+}
+
+/**
+ * Registers (or re-registers) this device's token for one provider. The
+ * `refKey` is stable per device and provider across token rotation: it is
+ * the key for the opaque conversation reference a payload carries.
+ */
+export function registerNativePush(
+  body: RegisterNativePushBody,
+): Promise<{ refKey: string }> {
+  return request(`${API}/push/native/register`, { method: "POST", body });
+}
+
+/** Forgets this device's token for one provider. */
+export function unregisterNativePush(provider: NativePushProvider): Promise<void> {
+  return request<void>(`${API}/push/native/unregister`, {
+    method: "POST",
+    body: { provider },
+  });
+}
+
 /**
  * Moves this user's read marker in a conversation.
  *

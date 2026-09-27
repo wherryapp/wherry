@@ -463,8 +463,22 @@ export class SyncEngine {
   /** Per-conversation floor on outgoing typing frames; see sendTyping. */
   #lastTypingSent = new Map<string, number>();
   #unsubscribeBroadcasts: (() => void) | null = null;
+  /** Native push is on in this phone shell, so the OS already announces
+   *  arrivals; see setNativePushOwnsAlerts. */
+  #nativePushOwnsAlerts = false;
 
   // -- public surface ------------------------------------------------------
+
+  /**
+   * Told by the shell (Chat.tsx, from sync/native-push.ts's state) whether
+   * APNs/FCM own this phone's alerts. When they do, #notifyDesktopArrivals
+   * posts nothing, because the push already did (row A-48). A setter rather
+   * than an import, so the engine never loads native-push.ts, which the web
+   * bundle must not (row W-107).
+   */
+  setNativePushOwnsAlerts(owned: boolean): void {
+    this.#nativePushOwnsAlerts = owned;
+  }
 
   get status(): SyncStatus {
     return this.#status;
@@ -1490,6 +1504,7 @@ export class SyncEngine {
                 : "renderable",
           muted: conversation.muted === true,
           dnd: selfStatus.isDnd(),
+          nativePushOwnsAlerts: this.#nativePushOwnsAlerts,
           // The notification rule's "big room" case: a readable channel is
           // a room that can hold hundreds, so it pushes on a mention only.
           publicChannel: isServerReadable(conversation.hubVisibility),

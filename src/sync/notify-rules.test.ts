@@ -12,6 +12,7 @@ const eligible: NotifyCandidate = {
   publicChannel: false,
   mentionsSelf: false,
   dnd: false,
+  nativePushOwnsAlerts: false,
 };
 
 test("do-not-disturb silences everything, mentions included", () => {
@@ -59,5 +60,20 @@ test("a public channel notifies only on a mention", () => {
   assert.equal(
     shouldNotify({ ...eligible, publicChannel: true, mentionsSelf: true }),
     true,
+  );
+});
+
+test("native push owning the alerts silences the local notification", () => {
+  // The push already announced it (row A-48): one notification, not two.
+  assert.equal(shouldNotify({ ...eligible, nativePushOwnsAlerts: true }), false);
+  // Including the one class a readable channel still pushes for.
+  assert.equal(
+    shouldNotify({
+      ...eligible,
+      nativePushOwnsAlerts: true,
+      publicChannel: true,
+      mentionsSelf: true,
+    }),
+    false,
   );
 });
