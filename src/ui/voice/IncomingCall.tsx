@@ -74,7 +74,13 @@ export function IncomingCall({
   // ringing (found 2026-09-08, reading the code). Decline rather than a
   // swallowed press: dismissing a ring is what back means on a phone, and
   // a press that did nothing would read as a hung screen.
-  useBackLayer(true, decline);
+  //
+  // Escape is the other way round: it declines nothing and closes nothing
+  // (`"never"`). A ring arrives unasked, often mid-keystroke -- somebody
+  // pressing Escape to leave Settings as it lands must not turn a call away
+  // -- and the sheet is modal, so the key must not reach the screen under it
+  // either, which it did while every layer listened for itself.
+  useBackLayer(true, decline, { escape: "never" });
 
 
   return (

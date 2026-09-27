@@ -1005,8 +1005,9 @@ export function AuthShell({
  * separately, identically, by convention.
  *
  * Escape closes it -- these panels replace the whole screen, and a keyboard
- * user's way back should not be tabbing to the one button. Listener on the
- * document because the panel does not hold focus.
+ * user's way back should not be tabbing to the one button. Through the back
+ * stack like every layer (ui/back.ts), so an Escape meant for the call page
+ * or a dialog over the panel closes that and not the panel as well (W-103).
  */
 export function Panel({
   title,
@@ -1020,18 +1021,11 @@ export function Panel({
   /** Right-aligned header content -- an action button, a count. */
   headerExtra?: ReactNode;
 }) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  // A panel replaces the screen, so Android's back gesture should back out
-  // of it rather than out of the app. Mounted means open here -- every
-  // caller renders the panel conditionally. Not an overlay: it sits under
-  // the call bar, and a native video tile in the bar must keep showing.
+  // A panel replaces the screen, so Android's back gesture (and Escape)
+  // should back out of it rather than out of the app. Mounted means open
+  // here -- every caller renders the panel conditionally. Not an overlay: it
+  // sits under the call bar, and a native video tile in the bar must keep
+  // showing.
   useBackLayer(true, onClose, { overlay: false });
 
   return (
@@ -1125,10 +1119,11 @@ function popoverWidthPx(): number {
  * overlay dismissed on pointerup has to swallow the compatibility click
  * that follows a touch (PhotoViewer's ghost-click guard); an overlay
  * dismissed on the click itself has no ghost to swallow. Escape closes
- * too, capture-phase with propagation stopped so a Panel underneath does
- * not also close (useConfirm's precedent).
+ * too, through the back stack (ui/back.ts), which closes the card and
+ * nothing under it -- and nothing over it: a confirm the card opened takes
+ * the first Escape itself.
  *
- * The card is focused on open so Escape and screen readers land on it;
+ * The card is focused on open so the keyboard and screen readers land on it;
  * focus goes back to the anchor on close, which is where the keyboard
  * user was.
  */
@@ -1151,19 +1146,9 @@ export function Popover({
   const card = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", onKey, { capture: true });
-    return () => document.removeEventListener("keydown", onKey, { capture: true });
-  }, [onClose]);
-
   // Back dismisses the card rather than the app, which on a phone -- where
-  // this is a bottom sheet -- is the gesture people reach for first.
+  // this is a bottom sheet -- is the gesture people reach for first. Escape
+  // is the same registration.
   useBackLayer(true, onClose);
 
   // Placement from the anchor's live rectangle, re-read on resize. Below
@@ -1497,23 +1482,9 @@ export function useConfirm(): {
     [],
   );
 
-  // Escape cancels the dialog and must not also close the Panel underneath:
-  // Panel listens on the document bubble phase, so a capture-phase listener
-  // that stops propagation gets there first.
-  useEffect(() => {
-    if (!pending) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        settle(false);
-      }
-    };
-    document.addEventListener("keydown", onKey, { capture: true });
-    return () =>
-      document.removeEventListener("keydown", onKey, { capture: true });
-  }, [pending, settle]);
-
-  // Back cancels, the same answer as Escape and the backdrop.
+  // Back and Escape cancel, the same answer as the backdrop -- and only the
+  // dialog: the back stack gives one press to the topmost layer, so the
+  // Panel or the profile card that asked stays open (ui/back.ts).
   useBackLayer(pending !== null, () => settle(false));
 
   const confirmDialog = pending ? (
@@ -1557,8 +1528,8 @@ export function useConfirm(): {
  * same reasons window.confirm was replaced -- and with its return contract
  * kept: resolves to the entered string, or null on cancel, so a call site
  * ports from window.prompt without re-deriving its guards. Enter submits,
- * Escape cancels (capture-phase, same as useConfirm, so the Panel under it
- * stays open). One dialog per component; a second prompt() while one is
+ * Escape cancels (through the back stack, same as useConfirm, so the Panel
+ * under it stays open). One dialog per component; a second prompt() while one is
  * open settles the first as cancelled, as does unmounting.
  */
 export function usePrompt(): {
@@ -1597,19 +1568,8 @@ export function usePrompt(): {
     [],
   );
 
-  useEffect(() => {
-    if (!pending) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        settle(null);
-      }
-    };
-    document.addEventListener("keydown", onKey, { capture: true });
-    return () =>
-      document.removeEventListener("keydown", onKey, { capture: true });
-  }, [pending, settle]);
-
+  // Escape is a "close" layer even from inside the field it focuses: the
+  // field is the whole dialog.
   useBackLayer(pending !== null, () => settle(null));
 
   const promptDialog = pending ? (

@@ -153,14 +153,10 @@ export function CallPage({
   }, [overlays, layer]);
   useEffect(() => () => voice.setSurfaceCovered("page", false), []);
 
-  // Escape closes it on a keyboard, the same as back does on a phone.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Escape closes it on a keyboard, the same as back does on a phone, and
+  // through the same registration above -- not a listener of its own. It
+  // had one, on the window, and one Escape over Settings closed the page
+  // *and* Settings, because Panel had its own too (W-103, 2026-09-26).
 
   // A transport that cannot render video has no tiles to draw, not even
   // dead ones: drawing a `<video>` nothing can ever attach to would be a

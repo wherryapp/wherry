@@ -21,6 +21,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { useBackLayer } from "../back";
 import { GifIcon } from "../kit";
 import { GifPanel } from "./GifPanel";
 
@@ -77,10 +78,10 @@ export function WidgetBar({
 
   const widgets = WIDGETS.filter((widget) => available.has(widget.id));
 
-  // Closing on an outside press or on Escape, which is what every other
-  // transient panel here does. `pointerdown` rather than `click` so a drag
-  // that starts outside also dismisses, and so the panel is gone before the
-  // thing underneath receives the press.
+  // Closing on an outside press, which is what every other transient panel
+  // here does. `pointerdown` rather than `click` so a drag that starts
+  // outside also dismisses, and so the panel is gone before the thing
+  // underneath receives the press.
   useEffect(() => {
     if (openId === null) return;
 
@@ -89,17 +90,18 @@ export function WidgetBar({
       if (node && event.target instanceof Node && node.contains(event.target)) return;
       setOpenId(null);
     };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpenId(null);
-    };
 
     window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
+    return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [openId]);
+
+  // And on Escape or Android's back, through the back stack like every
+  // other layer (ui/back.ts), so either closes the panel and not the phone's
+  // thread it sits in as well. It had its own Escape listener, which knew
+  // nothing of the layers above or below it. Not an overlay: it opens above
+  // the composer, never over the call bar, whose native tile must keep
+  // showing.
+  useBackLayer(openId !== null, () => setOpenId(null), { overlay: false });
 
   // An edit cannot take attachments, so an open panel has to go when one
   // starts -- otherwise the picker stays up offering something that will be

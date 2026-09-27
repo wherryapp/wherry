@@ -179,25 +179,12 @@ export function PhotoViewer({
     };
   }, [attachment]);
 
-  // Escape closes the viewer and must not also close whatever is underneath
-  // it -- the same capture-phase-and-stop shape useConfirm uses, and for the
-  // same reason: the panel below listens on the document's bubble phase.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        close.current();
-      }
-    };
-    document.addEventListener("keydown", onKey, { capture: true });
-    return () =>
-      document.removeEventListener("keydown", onKey, { capture: true });
-  }, []);
-
   // Android's back gesture is the fourth way out, beside the close button,
   // the backdrop and the swipe -- and the one somebody arriving from any
-  // other app will try first. `close` is read through the ref that already
-  // exists here for the same reason the hook keeps its own.
+  // other app will try first. Escape is the fifth and the same registration:
+  // the back stack closes the viewer and nothing underneath it (ui/back.ts).
+  // `close` is read through the ref that already exists here for the same
+  // reason the hook keeps its own.
   useBackLayer(true, () => close.current());
 
   // -------------------------------------------------------------------------
