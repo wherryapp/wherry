@@ -418,8 +418,17 @@ function rememberDeclined(): void {
  * plugin forgets it, then this install does. The server goes first for the
  * same reason as web push's `disable`: a server that still holds a token
  * nobody listens to keeps sending until the provider says it is gone.
- * Leaves the phone-calls plan's `apns_voip` entry alone -- this toggle is
- * about alerts.
+ *
+ * On iOS this leaves the phone-calls plan's `apns_voip` entry alone: a
+ * ring is a separate PushKit token, so turning alerts off leaves calls
+ * ringing. **On Android it does not**, and cannot from here: Android has
+ * no separate VoIP provider, so the calls plan's ring (`call_ring` and
+ * `ring_ended`, through PUSH's one FirebaseMessagingService) travels on
+ * this same `fcm` row and token, and forgetting them silences rings too.
+ * Correct today, while nothing rings through FCM; before CALLS-A1/A2 builds
+ * on the row, hunk H7 needs a decision (P4 recommends a server-side
+ * per-row "alerts off" that keeps the row, so this toggle would register
+ * that instead of unregistering on Android).
  */
 export async function disableNative(): Promise<NativePushState> {
   try {
@@ -508,9 +517,9 @@ export type NativePushHooks = {
  * tap that happened before anything listened (a cold start) once, sends
  * any unregister this device queued (`flushPendingUnregisters`), and, for
  * a device that already turned push on, re-registers silently when the
- * rules say this launch owes it (a registration carried over from a
- * session that expired, a rotated token, a server that gained its key, or
- * every launch on iOS). It never turns push on by itself.
+ * rules say this launch owes it: once per launch on both platforms (which
+ * is also what revives a row the server marked failed), and again whenever
+ * the token rotates. It never turns push on by itself.
  */
 export function startNativePush(hooks: NativePushHooks): () => void {
   let stopped = false;
@@ -584,9 +593,12 @@ export function startNativePush(hooks: NativePushHooks): () => void {
 
 /** One `startNativePush` run: a sign-in in this process. */
 type Run = {
-  /** This run already told the server its token once. The plugin also
-   *  registers by itself at an iOS cold launch and emits `token`, and the
-   *  launch registration needs no second copy. */
+  /** This run has told the server its token once, or is telling it now.
+   *  The plugin also registers by itself at an iOS cold launch and emits
+   *  `token` (and Android may emit one at start), and the launch
+   *  registration needs no second copy. Set before the request, so a
+   *  `token` event that lands while it is in flight does not send a
+   *  duplicate; cleared again if the request fails. */
   launchRegistered: boolean;
 };
 
@@ -609,13 +621,21 @@ async function reregisterIfOwed(
       server,
     });
     if (reason === null || token === null) return;
-    // The plugin also registers by itself at an iOS cold launch and emits
-    // `token`; one launch registration per process is the recommendation.
-    if (reason === "ios-launch" && run.launchRegistered) return;
-    // The environment comes from the plugin's status (registerNativeToken's
-    // default): the build decides it, not what was stored.
-    await registerNativeToken(provider, token);
+    // One launch registration per process; a rotated token (or a
+    // carried-over sign-in) is registered whenever it appears.
+    if (reason === "launch" && run.launchRegistered) return;
+    const wasRegistered = run.launchRegistered;
     run.launchRegistered = true;
+    // The environment comes from the plugin's status (registerNativeToken's
+    // default): the build decides it, not what was stored. On Android the
+    // key material comes from the plugin's status or `token` event too
+    // (H3): without it this throws, and the next launch asks again.
+    try {
+      await registerNativeToken(provider, token);
+    } catch (error) {
+      run.launchRegistered = wasRegistered;
+      throw error;
+    }
     writeStored(
       afterAlertRegistration(readStored(), server.kind === "known" ? server[provider] : null),
     );

@@ -226,7 +226,7 @@ export type ReregisterReason =
   | "sign-in"
   | "token-changed"
   | "server-enabled"
-  | "ios-launch";
+  | "launch";
 
 /**
  * Whether this launch owes the server a fresh registration, and why.
@@ -242,10 +242,18 @@ export type ReregisterReason =
  * - `token-changed`: the provider rotated the token (FCM does, and APNs
  *   can after a restore). The old one is dead weight on the server.
  * - `server-enabled`: the server said "off" last time and "on" now. The
- *   row is already there (registration works without keys, plan §4.3), so
- *   this is belt and braces, and cheap.
- * - `ios-launch`: Apple recommends registering at every launch, because a
- *   token can change without any callback the app would see.
+ *   row is already there, so this is belt and braces, and cheap.
+ * - `launch`: every other launch, on both platforms. Apple recommends it
+ *   because an APNs token can change without any callback the app would
+ *   see. On Android it is what revives a row the server has written off:
+ *   a send that FCM refused (a 400 naming the token, `SENDER_ID_MISMATCH`,
+ *   an `UNREGISTERED` during a Firebase-side reset) sets `failed_at`, the
+ *   server then sends that row nothing, and **only a registration clears
+ *   it** (P1's upsert). The plugin keeps reporting the same token, so
+ *   neither `token-changed` nor anything else would ever fire, and the
+ *   state would read `on` -- which also keeps the engine's local
+ *   notification off -- while the phone received nothing at all. One
+ *   idempotent POST per launch (same row, same ref key) is the price.
  *
  * `currentToken` is null when the plugin has not obtained one yet this
  * process; the `token` event re-asks when it has.
@@ -271,8 +279,7 @@ export function reregisterReason(input: {
     return "server-enabled";
   }
 
-  if (input.provider === "apns") return "ios-launch";
-  return null;
+  return "launch";
 }
 
 // ---------------------------------------------------------------------------

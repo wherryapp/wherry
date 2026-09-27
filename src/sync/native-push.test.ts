@@ -500,16 +500,52 @@ test("iOS re-registers at launch; a rotated token re-registers with the same ref
   stop();
 });
 
-test("Android does not re-register an unchanged token at launch", async () => {
+test("Android re-registers at every launch, which revives a row the server marked failed", async () => {
   plugin.provider = "fcm";
   plugin.token = "fcm:" + "y".repeat(150);
   plugin.environment = null;
   plugin.keys = KEYS;
   await quiet(() => native.enableNative());
+  const refKey = server.rows.get("fcm")!.refKey;
+  // A send FCM refused (SENDER_ID_MISMATCH, say): P1's markFailed. The
+  // plugin still reports the same token, so nothing else would tell it.
+  server.rows.get("fcm")!["failed"] = true;
   server.registers = [];
   const stop = native.startNativePush({ onOpen: () => {}, poke: () => {} });
   await quiet(settle);
+  assert.equal(server.registers.length, 1, "the launch registration");
+  assert.deepEqual(server.registers[0], { provider: "fcm", token: plugin.token, ...KEYS });
+  assert.equal(server.rows.get("fcm")!["failed"], undefined, "a registration clears failed_at");
+  assert.equal(server.rows.get("fcm")!.refKey, refKey);
+
+  // The same token again in this process sends no copy; a rotated one is
+  // registered.
+  emit("token", { token: plugin.token, environment: null, ...KEYS });
+  await quiet(settle);
+  assert.equal(server.registers.length, 1);
+  emit("token", { token: "fcm:" + "w".repeat(150), environment: null, ...KEYS });
+  await quiet(settle);
+  assert.equal(server.registers.length, 2);
+  stop();
+});
+
+test("a launch registration that could not be sent is not counted as done for the process", async () => {
+  plugin.provider = "fcm";
+  plugin.token = "fcm:" + "v".repeat(150);
+  plugin.environment = null;
+  plugin.keys = KEYS;
+  await quiet(() => native.enableNative());
+  server.registers = [];
+  // This start's status carries unusable key material, so the launch
+  // registration throws before any request.
+  plugin.keys = { p256dh: "not-a-point", auth: "short" };
+  const stop = native.startNativePush({ onOpen: () => {}, poke: () => {} });
+  await quiet(settle);
   assert.equal(server.registers.length, 0);
+  // The plugin then reports the token with its keys: that registers.
+  emit("token", { token: plugin.token, environment: null, ...KEYS });
+  await quiet(settle);
+  assert.equal(server.registers.length, 1);
   stop();
 });
 
@@ -583,11 +619,14 @@ test("a session that expired (a 401, no sign-out) keeps push on, and the new sig
   await native.clearNative("c-b");
   assert.deepEqual(pluginCalls("clear").at(-1), { ref });
   stop();
-  // Settled: the next launch does not register again (Android, same token).
+  // Settled: the next launch registers once, as every launch does (reason
+  // "launch", no longer "sign-in"), keeping the ref key.
   server.registers = [];
   const again = startRecording();
   await quiet(settle);
-  assert.equal(server.registers.length, 0);
+  assert.equal(server.registers.length, 1);
+  assert.equal(server.rows.get("fcm")!.refKey, refKey);
+  assert.equal(await quiet(() => native.nativeAvailability()), "on");
   again.stop();
 });
 

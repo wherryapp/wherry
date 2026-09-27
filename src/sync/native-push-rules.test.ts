@@ -186,21 +186,22 @@ test("a rotated token is re-registered", () => {
   assert.equal(reason({ currentToken: "fcm-token-rotated" }), "token-changed");
 });
 
-test("an unchanged FCM token is left alone", () => {
-  assert.equal(reason({}), null);
+test("Android re-registers an unchanged FCM token at every launch (only a registration revives a row marked failed)", () => {
+  assert.equal(reason({}), "launch");
 });
 
 test("iOS re-registers at every launch", () => {
   assert.equal(
     reason({ stored: registered("apns"), provider: "apns", currentToken: TOKEN }),
-    "ios-launch",
+    "launch",
   );
 });
 
 test("a server that gained its key is told again", () => {
   const stored: StoredNative = { ...registered("fcm", fcmStatus.token!), serverEnabled: false };
   assert.equal(reason({ stored }), "server-enabled");
-  assert.equal(reason({ stored, server: { kind: "unknown" } }), null);
+  // An unanswered server is no evidence of a flip: an ordinary launch.
+  assert.equal(reason({ stored, server: { kind: "unknown" } }), "launch");
 });
 
 test("no permission, or no token yet, means no registration", () => {
@@ -283,7 +284,8 @@ test("a session that ended without a sign-out carries its registration over, mar
   );
   const settled = afterAlertRegistration(carried, true);
   assert.equal(settled?.resync, undefined);
-  assert.equal(reason({ stored: settled, owner: OTHER_OWNER }), null);
+  // Settled: from then on it is an ordinary launch.
+  assert.equal(reason({ stored: settled, owner: OTHER_OWNER }), "launch");
 });
 
 test("carryOver leaves the same sign-in alone and drops another device's record", () => {
