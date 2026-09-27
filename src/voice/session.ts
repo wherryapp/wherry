@@ -76,6 +76,7 @@ import {
   type VideoSource,
 } from "./rules";
 import { followUpRoom, type RoomFollowUp } from "./room-probe";
+import type { RouteRaw } from "./route";
 import { transportEndFor, videoOptionsFor, volumeKey } from "./transport-rules";
 import { blip, startRingback } from "./sounds";
 import type {
@@ -283,6 +284,9 @@ export type VoiceDiagnostics = {
   capabilities: TransportCapabilities;
   /** One row per video track, sent or received, already worded. */
   video: { label: string; line: string }[];
+  /** The transport's reading of the media path, passed through unworded
+   *  (route.ts's `routeLabel` words it); null where it had none. */
+  route: RouteRaw | null;
 };
 
 const LOCK_NAME = "messenger.voice";
@@ -769,6 +773,7 @@ class VoiceSession {
         // (docs/regression/desktop.md's D-30 reads it).
         ...(stats.native ? [{ label: "Native tiles", line: nativeVideoLine(stats.native) }] : []),
       ],
+      route: stats.route ?? null,
     };
   }
 

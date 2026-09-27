@@ -8,8 +8,14 @@
 //
 // Nothing here is sent anywhere. It reads the room this device already
 // holds and the browser's own RTP statistics.
+//
+// The Route row says whether the media goes straight to the SFU or
+// through the TURN relay, and over which transport (route.ts words it;
+// docs/prompts/turn-relay-plan.md §7's rows read it). It names a kind of
+// path, never an address.
 
 import { useVoiceDiagnostics } from "../../voice/hooks";
+import { routeLabel } from "../../voice/route";
 import { echoLine, micLine, peerFlow, peerFlowLine } from "../../voice/rules";
 import type { VoiceDiagnostics } from "../../voice/session";
 
@@ -109,6 +115,8 @@ export function CallDetails() {
           </Row>
         );
       })}
+
+      <Row label="Route">{routeLabel(current.route)}</Row>
 
       <Row label="Encryption">
         {current.e2ee ? (
