@@ -27,6 +27,18 @@ val keystoreProperties = Properties().apply {
 }
 val hasReleaseKeystore = keystoreProperties.containsKey("storeFile")
 
+// HAND EDIT 8 (native push, docs/prompts/regen-hand-edits.md): Firebase's
+// config, applied only when google-services.json sits beside this file, the
+// same pattern as keystore.properties. Without it the build is unchanged and
+// the push plugin reports an unconfigured build (row A-44), so nothing local
+// waits on Firebase. The file is configuration, not a secret, and is
+// committed once the maintainer provides it (edit 9, decision D3); it must
+// list both app.wherry and app.wherry.debug, or the debug build fails with
+// "No matching client found for package name".
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     compileSdk = 36
     namespace = "app.wherry"

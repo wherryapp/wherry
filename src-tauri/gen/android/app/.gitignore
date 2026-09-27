@@ -7,3 +7,6 @@
 keystore.properties
 *.keystore
 *.jks
+# google-services.json is deliberately NOT ignored: Firebase's client config
+# is not a secret, and it is committed once provided (native push, hand
+# edit 9, decision D3), so any checkout builds a push-capable APK.

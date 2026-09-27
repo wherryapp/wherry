@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only: merged into the debug variant's manifest, never the
+  release one. Exported because adb's shell user sends the broadcast; it
+  does nothing a push to this install could not do, and no release build
+  carries it (docs/prompts/native-push-plan.md §6.1, rows A-45 to A-53).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name="app.wherry.push.DebugPushReceiver"
+            android:exported="true" />
+    </application>
+</manifest>
