@@ -41,11 +41,10 @@
 //     actions -- at sign-in, not at the first ring.
 // The rings come from React, because the page's ring list is React state
 // (voice/hooks.ts's useVoiceSignals, held by Chat.tsx). `usePhoneCallBridge`
-// takes the whole list and belongs in Chat.tsx's body, which this stage
-// does not own: until that one line lands, the sheet feeds the one ring it
-// shows through `usePhoneSheetRing`, so a second ring arriving while the
-// first still shows reaches the native side only once the first has gone.
-// Once the whole list is fed, the sheet's feed is ignored.
+// takes the whole list from Chat.tsx's body, beside that hook, so every ring
+// is reported, not only the one the sheet shows. The sheet's own one-ring
+// feed (`usePhoneSheetRing`) is ignored while the whole list is fed; it
+// stays for a page that mounts the sheet without it.
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { API_BASE } from "../api/base";
@@ -55,7 +54,15 @@ import { isTauriShell } from "../api/shell";
 import { store } from "../store";
 import type { StoredConversation } from "../store/types";
 import { sync, type SyncEvent, type SyncState } from "../sync/engine";
-import { phoneCalls, type PhoneAction, type PhoneCalls, type PhoneCapabilities } from "./phone-calls";
+import { withNativePush } from "../sync/push";
+import { requestOpen } from "../ui/open-request";
+import {
+  phoneCalls,
+  type PhoneAction,
+  type PhoneCalls,
+  type PhoneCapabilities,
+  type VoipToken,
+} from "./phone-calls";
 import {
   ACTION_TTL_MS,
   bridgeRunStep,
@@ -81,21 +88,36 @@ import { voice } from "./session";
  * What the bridge needs from the push plan's client (PUSH-P4,
  * native-push-plan.md §7.1 and coordination §4): its one token
  * registration path, and its one "open this conversation from outside"
- * store. Injected rather than imported because PC1 merges before P4
- * (coordination §6); once P4 is on `next/native-gaps`, a PC1 follow-up
- * replaces `PUSH_PENDING` with `registerNativeToken` from
- * `sync/native-push.ts` and `requestOpen` from `ui/open-request.ts`.
+ * store. A seam rather than two direct calls, so the bridge's class never
+ * names the push module itself.
  */
 export type PushContract = {
-  registerNativeToken(provider: "apns_voip", token: string): Promise<unknown>;
+  /** Fire-and-forget: a failure is logged, never thrown into the run. */
+  registerNativeToken(provider: "apns_voip", voip: VoipToken): void;
   requestOpen(request: { kind: "call"; conversationId: string }): void;
 };
 
-const PUSH_PENDING: PushContract = {
-  registerNativeToken: async () => {
-    console.info("[wherry] calls: VoIP token held; registration arrives with PUSH-P4");
+const NATIVE_PUSH: PushContract = {
+  registerNativeToken: (provider, voip) => {
+    // Through push.ts's `withNativePush`, the one way into
+    // sync/native-push.ts: a dynamic import behind the phone-shell guard, so
+    // the web bundle never fetches it (row W-107). The three-argument form
+    // (hunk H4): PushKit needs no notification permission, so the push
+    // plugin may have no alert token and so no environment to report, and
+    // the keys are the calls plugin's own pair (M-1 = E). Missing either,
+    // `registerNativeToken` throws before any request, which lands here.
+    withNativePush((native) =>
+      native
+        .registerNativeToken(provider, voip.token, {
+          environment: voip.environment,
+          keys: voip.keys,
+        })
+        .catch((error: unknown) => {
+          console.warn("[wherry] calls: VoIP token registration failed", error);
+        }),
+    );
   },
-  requestOpen: () => {},
+  requestOpen: (request) => requestOpen(request),
 };
 
 /** How many recent `call_state` frames are kept for the end reason. */
@@ -310,11 +332,9 @@ class PhoneBridge {
       // Every run registers the token again: the push plan's logout deletes
       // the device's tokens server-side, so the next account's sign-in is
       // what makes the phone ringable again.
-      const register = (token: string): void => {
+      const register = (voip: VoipToken): void => {
         if (!run.alive) return;
-        void this.#push.registerNativeToken("apns_voip", token).catch((error: unknown) => {
-          console.warn("[wherry] calls: VoIP token registration failed", error);
-        });
+        this.#push.registerNativeToken("apns_voip", voip);
       };
       this.#hold(run, await this.#native.onPushToken(register));
       const token = run.alive ? await this.#native.pushToken() : null;
@@ -689,17 +709,19 @@ class PhoneBridge {
   }
 }
 
-const bridge = new PhoneBridge(phoneCalls, PUSH_PENDING);
+const bridge = new PhoneBridge(phoneCalls, NATIVE_PUSH);
 bridge.install();
 if (import.meta.hot) import.meta.hot.dispose(() => bridge.uninstall());
 
 /**
- * The page's whole ring list, from an always-rendered place: one line in
- * Chat.tsx's body, beside `useVoiceSignals`, which owns the list --
+ * The page's whole ring list, from an always-rendered place: Chat.tsx's
+ * body, beside `useVoiceSignals`, which owns the list --
  * `usePhoneCallBridge({ rings, onDismiss: dismissRing })`. Every ring is
  * then reported natively and every native Answer or Decline finds its ring,
- * not only the first. Once this runs, the sheet's own feed is ignored.
- * Not mounted yet: Chat.tsx is PUSH-P4's file (coordination §1).
+ * not only the first. While this runs, the sheet's own feed is ignored.
+ * In the body rather than in `withChrome`: a hook cannot be called from a
+ * render helper, and the body also covers the one return without the
+ * chrome (the invite landing page), where a ring must keep ringing natively.
  */
 export function usePhoneCallBridge(input: {
   rings: readonly Ring[];
@@ -723,9 +745,9 @@ export function usePhoneCallBridge(input: {
 }
 
 /**
- * The sheet's one ring (IncomingCall.tsx), which is all the bridge hears of
- * the page's rings until `usePhoneCallBridge` is mounted where the whole
- * list is. Ignored from then on. The sheet's `onDismiss` is how a native
+ * The sheet's one ring (IncomingCall.tsx): ignored while `usePhoneCallBridge`
+ * feeds the whole list, which Chat.tsx does; the fallback for a page that
+ * shows the sheet without it. The sheet's `onDismiss` is then how a native
  * Answer or Decline takes the page's ring down too.
  */
 export function usePhoneSheetRing(input: {

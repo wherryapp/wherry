@@ -10,7 +10,7 @@
 //
 // Events the page listens for, with their payloads (trigger(_:data:)):
 //   "action"      { kind: "answer"|"decline"|"hangup", callId, conversationId?, at? }
-//   "push-token"  { token }   the PushKit token, hex
+//   "push-token"  { token, environment, p256dh, auth }   as pushToken answers
 //   "mute"        { callId, muted }   CallKit's own mute button
 //
 // Ownership (coordination §4): this plugin owns PKPushRegistry and
@@ -47,7 +47,12 @@ class CallsPlugin: Plugin {
     stub(invoke, "setLabels")
   }
 
-  /// { token: hex | null }: I1 answers PushKit's current token.
+  /// { token: hex | null, environment, p256dh, auth }: I1 answers PushKit's
+  /// current token; environment is "sandbox" or "production" (read the way
+  /// wherry-push's ApsEnvironment reads it), and p256dh and auth are the
+  /// public half of the ring key pair (M-1 = E), unpadded base64url. The
+  /// page registers all four through registerNativeToken("apns_voip", ...),
+  /// which refuses a token without the environment or the keys (hunk H4).
   @objc public func pushToken(_ invoke: Invoke) {
     invoke.resolve(["token": nil] as JsonObject)
   }

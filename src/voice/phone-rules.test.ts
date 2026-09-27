@@ -17,6 +17,7 @@ import {
   readAction,
   readCapabilities,
   readIncomingAnswer,
+  readVoipToken,
   ringDisplay,
   ringExpiry,
   ringGoneReason,
@@ -81,6 +82,43 @@ test("only an explicit shown: true reads as a ring the native side took", () => 
   assert.deepEqual(readIncomingAnswer({}), { shown: false });
   assert.deepEqual(readIncomingAnswer({ shown: "true" }), { shown: false });
   assert.deepEqual(readIncomingAnswer({ shown: false }), { shown: false });
+});
+
+test("a VoIP token is read with its environment and keys, for the three-argument registration", () => {
+  assert.deepEqual(
+    readVoipToken({ token: "ab12", environment: "sandbox", p256dh: "BPk", auth: "c2Vj" }),
+    { token: "ab12", environment: "sandbox", keys: { p256dh: "BPk", auth: "c2Vj" } },
+  );
+  assert.deepEqual(readVoipToken({ token: "ab12", environment: "production", p256dh: "B", auth: "a" }), {
+    token: "ab12",
+    environment: "production",
+    keys: { p256dh: "B", auth: "a" },
+  });
+});
+
+test("no token is no registration: a stub, Android, or PushKit not ready yet", () => {
+  assert.equal(readVoipToken(null), null);
+  assert.equal(readVoipToken({}), null);
+  assert.equal(readVoipToken({ token: null }), null);
+  assert.equal(readVoipToken({ token: "" }), null);
+  assert.equal(readVoipToken({ token: 7, environment: "sandbox" }), null);
+});
+
+test("a token without its environment or keys is passed on with them null, for registerNativeToken to refuse", () => {
+  // The token is still read: native-push.ts is the one place that decides
+  // whether a registration may be sent, and it names what is missing.
+  assert.deepEqual(readVoipToken({ token: "ab12" }), {
+    token: "ab12",
+    environment: null,
+    keys: null,
+  });
+  assert.deepEqual(readVoipToken({ token: "ab12", environment: "staging", p256dh: "B" }), {
+    token: "ab12",
+    environment: null,
+    keys: null,
+  });
+  // Half a key pair is no key pair.
+  assert.equal(readVoipToken({ token: "ab12", p256dh: "B", auth: "" })?.keys, null);
 });
 
 const CALLKIT: PhoneCapabilities = { ringUi: "callkit", callService: false, voip: true };

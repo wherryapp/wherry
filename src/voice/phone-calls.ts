@@ -22,7 +22,13 @@
 // and a rejection means "no plugin here" for the rest of the page's life.
 
 import { isTauriShell } from "../api/shell";
-import { PAGE_ONLY, readAction, readCapabilities, readIncomingAnswer } from "./phone-rules";
+import {
+  PAGE_ONLY,
+  readAction,
+  readCapabilities,
+  readIncomingAnswer,
+  readVoipToken,
+} from "./phone-rules";
 
 /** Which surface rings on this device. "page" is the in-app sheet
  *  (IncomingCall.tsx) and nothing native; "notification" is Android's
@@ -133,6 +139,26 @@ export type IncomingReport = {
  */
 export type IncomingAnswer = { shown: boolean };
 
+/**
+ * The PushKit token and what its registration needs (plan §5.2, hunk H4),
+ * as `pushToken()` answers and the `push-token` event carries it:
+ * `{ token, environment, p256dh, auth }` on the wire.
+ * - `environment`: the APNs host of this signed build, which the page must
+ *   pass because PushKit needs no notification permission, so the push
+ *   plugin may never have obtained the alert token its own report of the
+ *   environment waits on.
+ * - `keys`: the public half of the key pair the plugin decrypts rings with
+ *   (M-1 = E), unpadded base64url.
+ * Either may be null on the page's side; `registerNativeToken` then refuses
+ * the registration before any request, naming what is missing.
+ */
+export type VoipToken = {
+  /** Hex. */
+  token: string;
+  environment: "sandbox" | "production" | null;
+  keys: { p256dh: string; auth: string } | null;
+};
+
 export type ActiveReport = {
   active: boolean;
   callId: string | null;
@@ -153,9 +179,10 @@ export interface PhoneCalls {
   /** The on-device label cache that names a ring the page never saw
    *  (conversation id to display name, at most 500 entries). */
   setLabels(labels: Readonly<Record<string, string>>): Promise<void>;
-  /** The PushKit token, hex; null where there is none (Android, a stub, or
-   *  PushKit has not issued one yet -- the `push-token` event follows). */
-  pushToken(): Promise<string | null>;
+  /** The PushKit token with its environment and keys; null where there is
+   *  none (Android, a stub, or PushKit has not issued one yet -- the
+   *  `push-token` event follows). */
+  pushToken(): Promise<VoipToken | null>;
   /** A ring that reached the page (over the socket). Android: no-op while
    *  the activity is resumed, else its ring notification. iOS: CallKit,
    *  deduplicated by the call's UUID. Answers whether the native side took
@@ -178,7 +205,7 @@ export interface PhoneCalls {
    *  builds only; a release build rejects, and this resolves anyway. */
   debugIncoming(payload: Readonly<Record<string, unknown>>): Promise<void>;
   onAction(listener: (action: PhoneAction) => void): Promise<() => void>;
-  onPushToken(listener: (token: string) => void): Promise<() => void>;
+  onPushToken(listener: (token: VoipToken) => void): Promise<() => void>;
   /** CallKit's own mute button (I1). */
   onMute(listener: (event: { callId: string; muted: boolean }) => void): Promise<() => void>;
 }
@@ -247,11 +274,8 @@ class PluginPhoneCalls implements PhoneCalls {
     await this.#call("set_labels", { labels });
   }
 
-  async pushToken(): Promise<string | null> {
-    const raw = await this.#call("push_token");
-    if (typeof raw !== "object" || raw === null) return null;
-    const token = (raw as Record<string, unknown>)["token"];
-    return typeof token === "string" && token.length > 0 ? token : null;
+  async pushToken(): Promise<VoipToken | null> {
+    return readVoipToken(await this.#call("push_token"));
   }
 
   async reportIncoming(input: IncomingReport): Promise<IncomingAnswer> {
@@ -293,11 +317,10 @@ class PluginPhoneCalls implements PhoneCalls {
     });
   }
 
-  async onPushToken(listener: (token: string) => void): Promise<() => void> {
+  async onPushToken(listener: (token: VoipToken) => void): Promise<() => void> {
     return this.#listen<unknown>("push-token", (raw) => {
-      const token =
-        typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>)["token"] : null;
-      if (typeof token === "string" && token.length > 0) listener(token);
+      const token = readVoipToken(raw);
+      if (token) listener(token);
     });
   }
 

@@ -15,6 +15,7 @@ import type {
   PhoneCapabilities,
   PhoneEndReason,
   RingUi,
+  VoipToken,
 } from "./phone-calls";
 import { RING_TIMEOUT_MS } from "./rules";
 
@@ -68,6 +69,31 @@ export function readAction(raw: unknown): PhoneAction | null {
 export function readIncomingAnswer(raw: unknown): IncomingAnswer {
   if (typeof raw !== "object" || raw === null) return { shown: false };
   return { shown: (raw as Record<string, unknown>)["shown"] === true };
+}
+
+/** A `pushToken()` answer or a `push-token` event (plan §5.2, hunk H4):
+ *  null without a token. The environment and the key pair are passed on as
+ *  found, and a missing one reads as null rather than failing the token:
+ *  `registerNativeToken` is the one place that decides whether a
+ *  registration may be sent, and it refuses one without them before any
+ *  request, naming what is missing. The keys' spelling is checked there too
+ *  (`normaliseKeys`), not here. */
+export function readVoipToken(raw: unknown): VoipToken | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const record = raw as Record<string, unknown>;
+  const token = record["token"];
+  if (typeof token !== "string" || token.length === 0) return null;
+  const environment = record["environment"];
+  const p256dh = record["p256dh"];
+  const auth = record["auth"];
+  return {
+    token,
+    environment: environment === "sandbox" || environment === "production" ? environment : null,
+    keys:
+      typeof p256dh === "string" && p256dh.length > 0 && typeof auth === "string" && auth.length > 0
+        ? { p256dh, auth }
+        : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
