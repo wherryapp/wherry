@@ -170,6 +170,33 @@ export function playoutAfterDeviceChange(input: {
   return { kind: "follow-default" };
 }
 
+/** One reading of the shell's outputs, as far as playout cares. */
+export type PlayoutReading = {
+  outputs: readonly { deviceId: string }[];
+  defaultOutput?: string | null;
+};
+
+/**
+ * Whether a later reading of the shell's devices could move playout
+ * compared with an earlier one: the Windows default changed, or the output
+ * list did -- in order, since the shell selects the default by its index
+ * in that list and re-selects when the index shifts (`voice/playout.rs`).
+ * Inputs are not playout's business.
+ *
+ * The native transport's catch-up after connect: the shell's poller emits
+ * `voice-devices` only when a reading differs from its last, and the page
+ * listens only once `voice_connect` has returned, so a change inside the
+ * connect is emitted to nobody and never repeated. Reading again once the
+ * listener exists, and asking `playoutAfterDeviceChange` only when this
+ * says the reading moved, recovers it without asking the shell anything on
+ * a connect where nothing changed.
+ */
+export function playoutReadingChanged(before: PlayoutReading, after: PlayoutReading): boolean {
+  if (before.defaultOutput !== after.defaultOutput) return true;
+  if (before.outputs.length !== after.outputs.length) return true;
+  return before.outputs.some((device, i) => device.deviceId !== after.outputs[i]?.deviceId);
+}
+
 // ---------------------------------------------------------------------------
 // Video (docs/prompts/video-execution-handoff.md §3)
 // ---------------------------------------------------------------------------

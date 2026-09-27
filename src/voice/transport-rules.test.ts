@@ -9,6 +9,7 @@ import {
   nativeGainFor,
   playbackEnabledFor,
   playoutAfterDeviceChange,
+  playoutReadingChanged,
   publishErrorMessage,
   qualityFromWord,
   SCREEN_AUDIENCE_STEP,
@@ -205,6 +206,57 @@ describe("playoutAfterDeviceChange", () => {
     assert.deepEqual(
       playoutAfterDeviceChange({ chosen: "", outputs: both, defaultOutput: hda, following: false }),
       { kind: "follow-default" },
+    );
+  });
+});
+
+describe("playoutReadingChanged", () => {
+  const hda = { deviceId: "{0.0.0.00000000}.{afca49a9-916c-4cc6-adfc-7858b8eb7b2e}" };
+  const usb = { deviceId: "{0.0.0.00000000}.{ff606fbf-7935-40e8-8eb0-37e4452798b8}" };
+
+  it("says nothing moved when the outputs and the default are the same", () => {
+    assert.equal(
+      playoutReadingChanged(
+        { outputs: [hda, usb], defaultOutput: hda.deviceId },
+        { outputs: [{ ...hda }, { ...usb }], defaultOutput: hda.deviceId },
+      ),
+      false,
+    );
+    // A shell that reports no default, both times.
+    assert.equal(playoutReadingChanged({ outputs: [hda] }, { outputs: [hda] }), false);
+  });
+
+  it("sees an output appear during the connect of a call begun with none (D-73)", () => {
+    assert.equal(
+      playoutReadingChanged({ outputs: [], defaultOutput: null }, { outputs: [usb], defaultOutput: usb.deviceId }),
+      true,
+    );
+  });
+
+  it("sees the default move with the list unchanged, and an unplug", () => {
+    assert.equal(
+      playoutReadingChanged(
+        { outputs: [hda, usb], defaultOutput: hda.deviceId },
+        { outputs: [hda, usb], defaultOutput: usb.deviceId },
+      ),
+      true,
+    );
+    assert.equal(
+      playoutReadingChanged(
+        { outputs: [hda, usb], defaultOutput: hda.deviceId },
+        { outputs: [hda], defaultOutput: hda.deviceId },
+      ),
+      true,
+    );
+  });
+
+  it("counts a reorder as a change, since the shell selects by index", () => {
+    assert.equal(
+      playoutReadingChanged(
+        { outputs: [hda, usb], defaultOutput: hda.deviceId },
+        { outputs: [usb, hda], defaultOutput: hda.deviceId },
+      ),
+      true,
     );
   });
 });

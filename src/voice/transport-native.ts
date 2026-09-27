@@ -63,6 +63,7 @@ import {
   nativeGainFor,
   playbackEnabledFor,
   playoutAfterDeviceChange,
+  playoutReadingChanged,
   qualityFromWord,
   screenAudioMode,
   screenOptionsFor,
@@ -170,6 +171,9 @@ export class NativeTransport implements VoiceTransport {
   /** The shell's last device reading, for a choice made mid-call. */
   #devices: NativeDevices = { inputs: [], outputs: [] };
   #unlistenDevices: (() => void) | null = null;
+  /** `voice-devices` events heard this call, so the catch-up read after
+   *  connect can tell it has been overtaken by a newer one. */
+  #deviceEvents = 0;
   /** Playout moves in order: a second device event never overtakes the
    *  first's command. */
   #playoutQueue: Promise<void> = Promise.resolve();
@@ -223,12 +227,13 @@ export class NativeTransport implements VoiceTransport {
       for (const queued of pending) this.#onEvent(queued);
       this.#applyVolumes();
       // Not a UI listener: this one lives with the call, so playout follows
-      // with Settings closed. Registered after the connect, whose own device
-      // choice already reflects the list read above, and after the replay,
-      // so no call event is reordered around this await.
+      // with Settings closed. Registered after the replay, so no call event
+      // is reordered around this await -- and so after the connect, which is
+      // why the catch-up read follows it.
       this.#unlistenDevices = await event.listen<NativeDevices>("voice-devices", (e) =>
         this.#onDevices(e.payload),
       );
+      void this.#catchUpDevices(invoke, devices);
     } catch (error) {
       await this.disconnect();
       throw nativeError(error);
@@ -286,8 +291,33 @@ export class NativeTransport implements VoiceTransport {
 
   #onDevices(devices: NativeDevices): void {
     if (this.#session === null) return;
+    this.#deviceEvents += 1;
     this.#devices = devices;
     void this.#movePlayout();
+  }
+
+  /** A device change inside the connect -- after the list read in front of
+   *  `voice_connect`, before the listener above existed -- was emitted to
+   *  nobody, and the shell's poller never repeats a reading (D-73's own
+   *  case: headphones plugged in as the call starts, into a call that
+   *  resolved no output). So read again now that the listener exists, and
+   *  make the one decision that event would have made if the reading moved
+   *  (`playoutReadingChanged`); nothing is asked of the shell when it did
+   *  not. Never throws: a failed read leaves the next event to decide. */
+  async #catchUpDevices(invoke: Invoke, atConnect: NativeDevices): Promise<void> {
+    const seen = this.#deviceEvents;
+    let now: NativeDevices;
+    try {
+      now = await invoke<NativeDevices>("voice_devices");
+    } catch {
+      return;
+    }
+    // An event heard while this read was in flight carries a reading at
+    // least as new, and has already made the decision.
+    if (this.#session === null || this.#deviceEvents !== seen) return;
+    if (!playoutReadingChanged(atConnect, now)) return;
+    this.#devices = now;
+    await this.#movePlayout();
   }
 
   /** Ask the shell to move playout if `playoutAfterDeviceChange` says so;
