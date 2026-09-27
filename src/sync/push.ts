@@ -17,7 +17,8 @@ import {
   unsubscribeFromPush,
 } from "../api/client";
 import { isInstalled } from "../pwa";
-import { isTauriShell } from "../api/shell";
+import { SHELL, isTauriShell } from "../api/shell";
+import { nativePushCandidate } from "./native-push-rules";
 
 /** Why notifications cannot be turned on, when they cannot. */
 export type PushAvailability =
@@ -43,8 +44,9 @@ export type PushState = PushAvailability["state"] | "on";
  */
 export function availability(): PushAvailability {
   // Inside a Tauri shell there is no push service to deliver to the webview
-  // at all -- notifications there are the plugin's, fed by the socket
-  // (desktop today; APNs is mobile's planned path). Checked first, because
+  // at all -- notifications there are the plugin's, fed by the socket on
+  // desktop, and APNs/FCM through the wherry-push plugin on the phones
+  // (sync/native-push.ts, which Settings asks instead). Checked first, because
   // the iOS shell would otherwise fall into the needs-install branch below
   // and tell somebody standing inside the installed app to add it to their
   // home screen.
@@ -95,6 +97,11 @@ function isIos(): boolean {
  * UI.
  */
 export function clearNotificationsFor(conversationId: string): void {
+  // The phone shells' own notifications, which carry an opaque reference
+  // rather than the conversation id (sync/native-push.ts). Same contract:
+  // fire-and-forget, never a throw.
+  withNativePush((native) => native.clearNative(conversationId));
+
   if (!("serviceWorker" in navigator)) return;
   navigator.serviceWorker.ready
     .then((registration) => registration.getNotifications({ tag: conversationId }))
@@ -102,6 +109,32 @@ export function clearNotificationsFor(conversationId: string): void {
       for (const notification of notifications) notification.close();
     })
     .catch(() => {});
+}
+
+/**
+ * Runs `use` against sync/native-push.ts, loading it first -- but only in a
+ * process that could be a phone shell (native-push-rules.ts
+ * `nativePushCandidate`). Everywhere else, the web above all, this is a
+ * no-op and the module is never fetched (row W-107).
+ *
+ * The one way the rest of the app reaches native push, so the dynamic
+ * import and its guard live in one place. Fire-and-forget: a failure to
+ * load or run is swallowed, because every caller is best-effort by
+ * contract and some run beside the sync loop.
+ */
+export function withNativePush(
+  use: (native: typeof import("./native-push")) => unknown,
+): void {
+  if (!nativePushAvailableHere()) return;
+  void import("./native-push")
+    .then((native) => use(native))
+    .catch(() => {});
+}
+
+/** Whether this process could be a phone shell, and so whether Settings
+ *  shows the native row. The plugin's own probe settles the rest. */
+export function nativePushAvailableHere(): boolean {
+  return nativePushCandidate({ tauriShell: isTauriShell(), shell: SHELL });
 }
 
 /** Whether this browser already has a subscription. */

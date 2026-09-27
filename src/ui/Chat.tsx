@@ -35,7 +35,10 @@ import { PROTOCOL_PUBLIC } from "../crypto/provider";
 import { store } from "../store";
 import type { StoredSession } from "../api/session";
 import { sync } from "../sync/engine";
-import { clearNotificationsFor } from "../sync/push";
+import { clearNotificationsFor, withNativePush } from "../sync/push";
+import { nativeOwnsAlerts, openTarget } from "../sync/native-push-rules";
+import { consumeOpen, isStale, requestOpen, useOpenRequest } from "./open-request";
+import { NotificationNudge } from "./NotificationNudge";
 import { updateHref } from "../reload";
 import { openExternal, updateDestination } from "../api/shell";
 import {
@@ -393,10 +396,40 @@ export function Chat({
     }
     document.title =
       total > 0 ? `(${total > 99 ? "99+" : total}) messenger` : "messenger";
+    // The phone's icon badge is the same number, so the two cannot
+    // disagree (native-push-plan §7.4: the client owns the badge, because
+    // the server cannot tell an operation from a message). A no-op off the
+    // phone shells.
+    withNativePush((native) => native.setBadge(total));
     return () => {
       document.title = "messenger";
     };
   }, [conversations, unreadByConversation]);
+  // Signed out (the shell unmounts): no number left on the icon.
+  useEffect(() => () => withNativePush((native) => native.setBadge(0)), []);
+
+  // Native push on the phone shells (sync/native-push.ts): taps become open
+  // requests, a push that lands while the process is alive syncs now, and
+  // the engine stops posting its own notification while push owns the
+  // alerts (row A-48). Once per sign-in; nothing here runs in a browser.
+  useEffect(() => {
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    withNativePush((native) => {
+      if (cancelled) return;
+      stop = native.startNativePush({
+        onOpen: (open) =>
+          requestOpen({ kind: open.kind, ...(open.ref ? { ref: open.ref } : {}) }),
+        poke: () => sync.poke(),
+        onState: (state) => sync.setNativePushOwnsAlerts(nativeOwnsAlerts(state)),
+      });
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+      sync.setNativePushOwnsAlerts(false);
+    };
+  }, []);
 
   // Global keys. Ctrl/Cmd+K opens the switcher from anywhere in the main
   // view, composer included; it stays out of the full-screen panels because
@@ -534,6 +567,65 @@ export function Chat({
     autoSelectedRef.current = true;
     setSelected(conversations[0].id);
   }, [conversations, selected, isDesktop]);
+
+  // Something outside the page asked for a conversation (ui/open-request.ts):
+  // a tapped push today, the phone-calls plan's Answer later. A push names
+  // the conversation by this device's opaque reference, so it is resolved
+  // against the list -- and held until the list has it, because a cold-start
+  // tap arrives before the first sync. Whatever panel is open, the
+  // conversation (or, for a contact notification, Friends) is where the
+  // person asked to go.
+  const openRequest = useOpenRequest();
+  useEffect(() => {
+    if (!openRequest) return;
+    if (isStale(openRequest, Date.now())) {
+      consumeOpen(openRequest);
+      return;
+    }
+    const closePanels = (): void => {
+      setSettingsOpen(false);
+      setComposeOpen(false);
+      setGroupDetailsOpen(false);
+      setHubDetailsFor(null);
+      setPinsFor(null);
+      setSearchOpen(false);
+      setSwitcherOpen(false);
+    };
+    const openConversation = (id: string): void => {
+      console.info(`open-request resolved ${id}`);
+      closePanels();
+      setFriendsOpen(false);
+      setSelected(id);
+      consumeOpen(openRequest);
+    };
+
+    if (openTarget(openRequest.kind) === "friends") {
+      closePanels();
+      setFriendsOpen(true);
+      consumeOpen(openRequest);
+      return;
+    }
+    if (openRequest.conversationId) {
+      openConversation(openRequest.conversationId);
+      return;
+    }
+    const ref = openRequest.ref;
+    if (!ref) {
+      consumeOpen(openRequest);
+      return;
+    }
+    const ids = conversations.map((conversation) => conversation.id);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    withNativePush(async (native) => {
+      const id = await native.resolveRef(ref, ids);
+      // Not in the list yet: the next list change tries again.
+      if (!cancelled && id !== null) openConversation(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [openRequest, conversations]);
 
   const current = conversations.find((c) => c.id === selected);
 
@@ -721,6 +813,9 @@ export function Chat({
         <div className="min-h-0 flex-1">{screen}</div>
       </div>
       {overlays}
+      {/* The one-time push offer on a phone shell (D4, pending: one line to
+          remove). Before the call page and the ring, so both paint over it. */}
+      <NotificationNudge deviceId={session.device.id} />
       {features.voice && voiceState.phase === "connected" && callPageOpen && (
         <CallPage
           state={voiceState}
