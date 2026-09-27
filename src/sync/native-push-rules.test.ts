@@ -6,6 +6,7 @@ import {
   REF_PATTERN,
   afterAlertRegistration,
   alertEntry,
+  alertsToSend,
   carryOver,
   computeRef,
   decodeBase64Url,
@@ -20,7 +21,9 @@ import {
   parseStored,
   reregisterReason,
   resolveRefAmong,
+  rowEntry,
   signedOut,
+  turnOffKeepsRow,
   withEntry,
   withPending,
   withoutEntry,
@@ -460,4 +463,82 @@ test("base64url round-trips, padded or not", () => {
   assert.deepEqual(decodeBase64Url(encoded), bytes);
   assert.deepEqual(decodeBase64Url(encoded + "="), bytes);
   assert.equal(decodeBase64Url("+/+/"), null);
+});
+
+// ---------------------------------------------------------------------------
+// Alerts off without losing the ring (H7, migration 0033)
+// ---------------------------------------------------------------------------
+
+function alertsOff(): StoredNative {
+  return withEntry(null, OWNER, "fcm", {
+    token: fcmStatus.token!,
+    environment: null,
+    refKey: REF_KEY,
+    alerts: false,
+  });
+}
+
+test("only Android keeps its row at Turn off; iOS forgets the apns row as before", () => {
+  assert.equal(turnOffKeepsRow("fcm"), true);
+  assert.equal(turnOffKeepsRow("apns"), false);
+});
+
+test("a row kept with alerts off is a row but not an alert registration", () => {
+  const stored = alertsOff();
+  assert.equal(alertEntry(stored, OWNER, "fcm"), null);
+  assert.equal(rowEntry(stored, OWNER, "fcm")?.refKey, REF_KEY);
+  // The state Settings shows, and so the engine's gate: off.
+  assert.equal(
+    nativeStateFrom({ status: fcmStatus, server: bothOn, permissionGranted: true, stored, owner: OWNER }),
+    "ready",
+  );
+  // Permission revoked afterwards is not "blocked": alerts were off anyway.
+  assert.equal(
+    nativeStateFrom({ status: fcmStatus, server: bothOn, permissionGranted: false, stored, owner: OWNER }),
+    "ready",
+  );
+  // Another sign-in's row is nobody's.
+  assert.equal(rowEntry(stored, OTHER_OWNER, "fcm"), null);
+});
+
+test("a kept row is re-registered at launch like any other (the ring needs it alive)", () => {
+  assert.equal(reason({ stored: alertsOff() }), "launch");
+  assert.equal(reason({ stored: alertsOff(), currentToken: "fcm-token-rotated" }), "token-changed");
+  assert.equal(reason({ stored: alertsOff(), permissionGranted: false }), null);
+});
+
+test("the alerts field: fcm only, explicit, and never turned on by a caller that did not ask", () => {
+  const on = registered("fcm", fcmStatus.token!).entries.fcm!;
+  const off = alertsOff().entries.fcm!;
+  // What the caller asked for wins.
+  assert.equal(alertsToSend("fcm", true, off), true);
+  assert.equal(alertsToSend("fcm", false, on), false);
+  // Otherwise the device's choice is kept.
+  assert.equal(alertsToSend("fcm", undefined, on), true);
+  assert.equal(alertsToSend("fcm", undefined, off), false);
+  // No row yet and nobody asked: the calls plan's ring registration. Off.
+  assert.equal(alertsToSend("fcm", undefined, null), false);
+  // Never sent for the APNs providers, whatever is asked.
+  assert.equal(alertsToSend("apns", true, null), undefined);
+  assert.equal(alertsToSend("apns", false, null), undefined);
+  assert.equal(alertsToSend("apns_voip", undefined, null), undefined);
+});
+
+test("alerts off round-trips through storage; anything but false reads as on", () => {
+  const stored = alertsOff();
+  assert.deepEqual(parseStored(JSON.stringify(stored)), stored);
+  const junk = parseStored(
+    JSON.stringify({
+      v: 1,
+      owner: OWNER,
+      entries: { fcm: { token: "t", environment: null, refKey: REF_KEY, alerts: "false" } },
+    }),
+  );
+  assert.deepEqual(junk?.entries.fcm, { token: "t", environment: null, refKey: REF_KEY });
+});
+
+test("a sign-out forgets a kept row too, and queues it for the server to forget", () => {
+  const out = signedOut(alertsOff());
+  assert.deepEqual(out?.entries, {});
+  assert.deepEqual(out?.pendingUnregister, ["fcm"]);
 });

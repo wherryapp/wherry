@@ -32,7 +32,7 @@ import { loadSession } from "../api/session";
 import {
   NATIVE_PUSH_STORAGE_KEY,
   afterAlertRegistration,
-  alertEntry,
+  alertsToSend,
   carryOver,
   computeRef,
   encodeBase64Url,
@@ -42,7 +42,9 @@ import {
   parseStored,
   reregisterReason,
   resolveRefAmong,
+  rowEntry,
   signedOut,
+  turnOffKeepsRow,
   withEntry,
   withPending,
   withoutEntry,
@@ -308,6 +310,12 @@ function rememberServer(
  * that is not a P-256 point and a 16-byte secret throws here, naming the
  * fields, instead of coming back as a bare 400.
  *
+ * `alerts` (hunk H7, migration 0033) is sent for `fcm` only, and always
+ * explicitly there (`alertsToSend`): what the caller asked for, otherwise
+ * what this device already chose, otherwise off -- so the calls plan's ring
+ * registration on Android never turns message alerts on by itself, and the
+ * launch re-registration of a row kept with alerts off keeps them off.
+ *
  * Throws on failure (an ApiError, a NetworkError, "signed out", or one of
  * the two above): the caller decides whether that is a state or a shrug.
  */
@@ -317,6 +325,7 @@ export async function registerNativeToken(
   options: {
     environment?: "sandbox" | "production" | null;
     keys?: { p256dh: string; auth: string } | null;
+    alerts?: boolean;
   } = {},
 ): Promise<{ refKey: string }> {
   const owner = await currentOwner();
@@ -345,15 +354,29 @@ export async function registerNativeToken(
     }
   }
 
+  const alerts = alertsToSend(provider, options.alerts, rowEntry(readStoredFor(owner), owner, provider));
+
   const body: RegisterNativePushBody = { provider, token };
   if (provider !== "fcm" && environment !== null) body.environment = environment;
   if (keys) {
     body.p256dh = keys.p256dh;
     body.auth = keys.auth;
   }
+  if (alerts !== undefined) body.alerts = alerts;
 
-  const { refKey } = await registerNativePush(body);
-  writeStored(withEntry(readStoredFor(owner), owner, provider, { token, environment, refKey }));
+  const answer = await registerNativePush(body);
+  const { refKey } = answer;
+  // The server says what the row now holds; what was sent stands in for a
+  // server that does not say.
+  const stored = typeof answer.alerts === "boolean" ? answer.alerts : alerts;
+  writeStored(
+    withEntry(readStoredFor(owner), owner, provider, {
+      token,
+      environment,
+      refKey,
+      ...(stored === false ? { alerts: false as const } : {}),
+    }),
+  );
   return { refKey };
 }
 
@@ -390,6 +413,7 @@ export async function enableNative(): Promise<NativePushState> {
     takeKeys(answer);
     await registerNativeToken(status.provider, answer.token, {
       environment: answer.environment,
+      alerts: true,
     });
     writeStored(
       afterAlertRegistration(
@@ -421,20 +445,22 @@ function rememberDeclined(): void {
  *
  * On iOS this leaves the phone-calls plan's `apns_voip` entry alone: a
  * ring is a separate PushKit token, so turning alerts off leaves calls
- * ringing. **On Android it does not**, and cannot from here: Android has
- * no separate VoIP provider, so the calls plan's ring (`call_ring` and
- * `ring_ended`, through PUSH's one FirebaseMessagingService) travels on
- * this same `fcm` row and token, and forgetting them silences rings too.
- * Correct today, while nothing rings through FCM; before CALLS-A1/A2 builds
- * on the row, hunk H7 needs a decision (P4 recommends a server-side
- * per-row "alerts off" that keeps the row, so this toggle would register
- * that instead of unregistering on Android).
+ * ringing. **On Android the row is kept instead** (hunk H7,
+ * `turnOffKeepsRow`): Android has no separate VoIP provider, so the calls
+ * plan's ring (`call_ring` and `ring_ended`, through PUSH's one
+ * FirebaseMessagingService) travels on this same `fcm` row and token, and
+ * forgetting them would silence rings too. So Android registers the same
+ * token with `alerts: false`, the server's ordinary senders skip the row,
+ * and the plugin keeps its Firebase token (`alertsOffKeepingRow`).
  */
 export async function disableNative(): Promise<NativePushState> {
   try {
     const status = await pluginStatus();
     if (status === null) return publishState("unsupported");
     const owner = await currentOwner();
+    if (owner !== null && turnOffKeepsRow(status.provider)) {
+      if (await alertsOffKeepingRow(status, owner)) return nativeAvailability();
+    }
     let reached = true;
     try {
       await unregisterNativePush(status.provider);
@@ -457,6 +483,40 @@ export async function disableNative(): Promise<NativePushState> {
     // Fall through to whatever the state now is.
   }
   return nativeAvailability();
+}
+
+/**
+ * Android's Turn off (H7): the same row, re-registered with `alerts: false`,
+ * and the Firebase token kept. Returns false when the ordinary unregister
+ * should run instead:
+ *
+ * - no row is known here (nothing to keep; the unregister is then the
+ *   harmless "forget whatever there is" it always was), or
+ * - the server refused the field with a 400: a server older than
+ *   migration 0033. Alerts off is what the person asked for, and
+ *   unregistering is the only way that server can give it; rings through
+ *   FCM do not exist on a server that old.
+ *
+ * Anything else that stops the registration (offline, a 5xx, no key
+ * material from the plugin this time) is remembered locally as alerts off,
+ * and every launch re-registers the row with it (`reregisterReason`'s
+ * `launch`) until the server has heard. Until then the server keeps
+ * alerting, as an iOS Turn off that could not reach it keeps its row.
+ */
+async function alertsOffKeepingRow(status: PluginStatus, owner: string): Promise<boolean> {
+  const entry = rowEntry(readStoredFor(owner), owner, status.provider);
+  if (entry === null) return false;
+  try {
+    await registerNativeToken(status.provider, status.token ?? entry.token, { alerts: false });
+    console.info(`native-push alerts off (${status.provider}, row kept)`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 400) return false;
+    writeStored(
+      withEntry(readStoredFor(owner), owner, status.provider, { ...entry, alerts: false }),
+    );
+    console.info(`native-push alerts off (${status.provider}, queued)`);
+  }
+  return true;
 }
 
 /** Whether an unregister that failed this way can still succeed later. A
@@ -653,8 +713,9 @@ async function alertRefKey(): Promise<string | null> {
   const owner = await currentOwner();
   if (owner === null) return null;
   const stored = readStoredFor(owner);
-  const entry =
-    alertEntry(stored, owner, "apns") ?? alertEntry(stored, owner, "fcm");
+  // A row kept with alerts off (H7) keeps its ref key: a notification
+  // delivered before alerts went off still resolves and clears.
+  const entry = rowEntry(stored, owner, "apns") ?? rowEntry(stored, owner, "fcm");
   return entry?.refKey ?? null;
 }
 
