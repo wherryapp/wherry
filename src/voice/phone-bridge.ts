@@ -102,6 +102,8 @@ class PhoneBridge {
   /** What this device did to a ring itself: the only certain end reason. */
   #marked = new Map<string, "answered" | "declined">();
   #liveRings: Ring[] = [];
+  /** A ring's end, deferred one tick so a remount can cancel it. */
+  #goneTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #dismiss: ((callId: string) => void) | null = null;
   #waiting: PhoneAction[] = [];
   #waitingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -260,6 +262,14 @@ class PhoneBridge {
   }
 
   ringShown(ring: Ring): void {
+    // The same ring back within a tick -- React's StrictMode remount in a
+    // dev shell -- is not a new ring, and must not have ended the old one:
+    // CallKit would refuse a UUID it was just told had ended.
+    const pending = this.#goneTimers.get(ring.callId);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      this.#goneTimers.delete(ring.callId);
+    }
     if (!this.#liveRings.some((r) => r.callId === ring.callId)) {
       this.#liveRings = [...this.#liveRings, ring];
     }
@@ -285,6 +295,17 @@ class PhoneBridge {
 
   ringGone(ring: Ring): void {
     this.#liveRings = this.#liveRings.filter((r) => r.callId !== ring.callId);
+    if (this.#goneTimers.has(ring.callId)) return;
+    this.#goneTimers.set(
+      ring.callId,
+      setTimeout(() => {
+        this.#goneTimers.delete(ring.callId);
+        this.#finishRing(ring);
+      }, 0),
+    );
+  }
+
+  #finishRing(ring: Ring): void {
     const receivedAt = this.#reported.get(ring.callId);
     const marked = this.#marked.get(ring.callId) ?? null;
     this.#marked.delete(ring.callId);
