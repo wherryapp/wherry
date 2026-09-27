@@ -48,7 +48,7 @@ pub(crate) async fn report_incoming<R: Runtime>(
     label: String,
     group: bool,
     exp: i64,
-) -> Result<()> {
+) -> Result<IncomingAnswer> {
     app.wherry_calls().report_incoming(IncomingArgs {
         call_id,
         conversation_id,
@@ -97,6 +97,11 @@ pub(crate) async fn start_outgoing<R: Runtime>(
 #[command]
 pub(crate) async fn take_pending_actions<R: Runtime>(app: AppHandle<R>) -> Result<PendingActions> {
     app.wherry_calls().take_pending_actions()
+}
+
+#[command]
+pub(crate) async fn reset_account<R: Runtime>(app: AppHandle<R>) -> Result<()> {
+    app.wherry_calls().reset_account()
 }
 
 #[command]

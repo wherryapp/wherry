@@ -5,9 +5,11 @@
 // runs under node:test.
 
 import type { StoredConversation } from "../store/types";
+import type { SyncState } from "../sync/engine";
 import { conversationTitle } from "../ui/format";
 import type {
   ActiveReport,
+  IncomingAnswer,
   PhoneAction,
   PhoneActionKind,
   PhoneCapabilities,
@@ -60,19 +62,144 @@ export function readAction(raw: unknown): PhoneAction | null {
   };
 }
 
+/** A `reportIncoming` answer. Anything but an explicit `shown: true` --
+ *  a stub's empty answer, a failure's null -- reads as not shown, so the
+ *  page's sheet rings. */
+export function readIncomingAnswer(raw: unknown): IncomingAnswer {
+  if (typeof raw !== "object" || raw === null) return { shown: false };
+  return { shown: (raw as Record<string, unknown>)["shown"] === true };
+}
+
 // ---------------------------------------------------------------------------
 // One ring UI per device (plan §2.7)
 // ---------------------------------------------------------------------------
 
+/** What the page's own ring does on this device (IncomingCall.tsx). */
+export type PageRingDuties = {
+  /** The sheet, and with it the back layer that declines. */
+  sheet: boolean;
+  /** The page's ring tone (before the mute, ringtone and DND checks of
+   *  `shouldRingAudibly`). */
+  tone: boolean;
+  /** plugin-notification's plain "Incoming call from X": the one outside
+   *  ring a shell without a native ring UI has while it is not in front. */
+  notification: boolean;
+};
+
+const RING_NOTHING: PageRingDuties = { sheet: false, tone: false, notification: false };
+
+/** The page is the only ring: the sheet and the tone, and the plain
+ *  notification when the window is not in front, because nothing else would
+ *  say a call is coming. The web and the desktop shell, always. */
+function pageAlone(windowFocused: boolean): PageRingDuties {
+  return { sheet: true, tone: true, notification: !windowFocused };
+}
+
 /**
- * Whether the native side owns ringing outright, so the page's sheet and its
- * tone stand down. Only CallKit does: it is the ring UI in every app state
- * on iOS, and a second, in-page ring over it would be two answers to one
- * call. Android's notification is posted only while the activity is not
- * resumed, so there the page still rings whenever it is showing.
+ * One ring UI per device (plan §2.7), from the page's side: what the page
+ * itself draws, sounds and posts for one ring.
+ *
+ * - `capabilities` null: a shell whose plugin has not answered yet. Nothing
+ *   until it has -- on iOS the answer may be CallKit, and a sheet, a tone and
+ *   a notification started first would be a second ring (the phone-bridge
+ *   probe runs at page load, so this lasts one IPC round trip at most, and
+ *   the bridge gives up waiting after `PROBE_PATIENCE_MS`).
+ * - `"page"`: the page alone rings.
+ * - `"callkit"`: CallKit rings in every app state, so the page stays silent
+ *   *for a ring CallKit took* (`nativeShown` true). Until `reportIncoming`
+ *   has answered, nothing; if CallKit did not take it, the page rings as if
+ *   there were no plugin -- a half-working plugin must never cost the ring.
+ * - `"notification"` (Android from A2): the plugin posts its `CallStyle`
+ *   ring only while the activity is not resumed, with the channel's own
+ *   sound. The sheet stays (it is what the person sees on coming back, and
+ *   invisible until then); the tone plays only in front, where the plugin
+ *   posts nothing; the plain notification never, unless the plugin said it
+ *   rang nothing -- then the page rings alone.
+ *
+ * `windowFocused` is desktop-notify.ts's `windowIsFocused()`, which is false
+ * in a backgrounded Android shell (unlike `document.hasFocus()`).
  */
-export function ringUiOwnsRinging(capabilities: PhoneCapabilities): boolean {
-  return capabilities.ringUi === "callkit";
+export function pageRingDuties(input: {
+  capabilities: PhoneCapabilities | null;
+  /** This ring's `reportIncoming` answer; null until it has come. */
+  nativeShown: boolean | null;
+  windowFocused: boolean;
+}): PageRingDuties {
+  const { capabilities, nativeShown, windowFocused } = input;
+  if (capabilities === null) return RING_NOTHING;
+  switch (capabilities.ringUi) {
+    case "page":
+      return pageAlone(windowFocused);
+    case "callkit":
+      return nativeShown === false ? pageAlone(windowFocused) : RING_NOTHING;
+    case "notification":
+      if (nativeShown === false) return pageAlone(windowFocused);
+      return { sheet: true, tone: windowFocused, notification: false };
+  }
+}
+
+/** How long the page waits for the plugin before it treats a shell as
+ *  having none. A missing plugin rejects at once; this is for one that
+ *  never answers, which must not keep the sheet from ringing. */
+export const PROBE_PATIENCE_MS = 2_000;
+
+/** How long a ring waits for its `reportIncoming` answer before the page
+ *  rings on its own. CallKit answers within a frame or two; a native side
+ *  that hangs costs a moment of silence, not the call. A late `shown: true`
+ *  still stands the page down. */
+export const REPORT_PATIENCE_MS = 2_000;
+
+// ---------------------------------------------------------------------------
+// Whose bridge it is
+// ---------------------------------------------------------------------------
+
+/**
+ * What the bridge does with its per-account run when the sync engine's
+ * status changes. The engine runs exactly while a signed-in, verified
+ * session does in this page: App.tsx starts it with the session and stops it
+ * on sign-out, on a 401 and behind the version wall. Its status is therefore
+ * the account's lifetime here, and since sign-out does not reload the page,
+ * nothing else would tell the bridge the account changed.
+ *
+ * - `start`: begin a run for the session's account.
+ * - `stop`: end the run (end what it reported natively, `resetAccount`,
+ *   forget its state). The bridge defers it one tick, so the stop-and-start
+ *   of a re-run effect (StrictMode, a refreshed session object) does not
+ *   wipe and rebuild the native cache.
+ * - `switch`: another account runs than the run was started for: stop,
+ *   then start, at once.
+ *
+ * `unauthorized` counts as stopped: the token is dead, and App.tsx signs out
+ * next.
+ */
+export function bridgeRunStep(input: {
+  syncState: SyncState;
+  sessionUserId: string | null;
+  runUserId: string | null;
+}): "start" | "stop" | "switch" | "keep" {
+  const running = input.syncState !== "stopped" && input.syncState !== "unauthorized";
+  const wanted = running ? input.sessionUserId : null;
+  if (wanted === null) return input.runUserId === null ? "keep" : "stop";
+  if (input.runUserId === null) return "start";
+  return input.runUserId === wanted ? "keep" : "switch";
+}
+
+/**
+ * The page's ring list against the one the bridge last held: which rings
+ * are new (report them natively) and which have gone (end them natively).
+ * By call id; a ring whose object changed but whose call did not is the
+ * same ring.
+ */
+export function ringsDiff<R extends { callId: string }>(
+  previous: readonly R[],
+  next: readonly R[],
+): { shown: R[]; gone: R[] } {
+  const before = new Set(previous.map((r) => r.callId));
+  const after = new Set(next.map((r) => r.callId));
+  return {
+    shown: next.filter((r) => !before.has(r.callId)),
+    gone: previous.filter((r) => !after.has(r.callId)),
+  };
 }
 
 // ---------------------------------------------------------------------------

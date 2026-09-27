@@ -391,6 +391,18 @@
           "markdownDescription": "Denies the report_incoming command without any pre-configured scope."
         },
         {
+          "description": "Enables the reset_account command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reset-account",
+          "markdownDescription": "Enables the reset_account command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset_account command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reset-account",
+          "markdownDescription": "Denies the reset_account command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_active command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-active",
@@ -439,10 +451,10 @@
           "markdownDescription": "Denies the take_pending_actions command without any pre-configured scope."
         },
         {
-          "description": "Everything the page's bridge (client/src/voice/phone-bridge.ts) calls.\nGranted to the phone shells' main window by capabilities/calls-mobile.json.\n`debug_incoming` is included because a capability cannot differ by build\nprofile; the native side refuses it outside debug builds.\n\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-configure`\n- `allow-set-labels`\n- `allow-push-token`\n- `allow-report-incoming`\n- `allow-set-active`\n- `allow-report-ended`\n- `allow-start-outgoing`\n- `allow-take-pending-actions`\n- `allow-debug-incoming`\n- `allow-register-listener`\n- `allow-remove-listener`",
+          "description": "Everything the page's bridge (client/src/voice/phone-bridge.ts) calls.\nGranted to the phone shells' main window by capabilities/calls-mobile.json.\n`debug_incoming` is included because a capability cannot differ by build\nprofile; the native side refuses it outside debug builds.\n\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-configure`\n- `allow-set-labels`\n- `allow-push-token`\n- `allow-report-incoming`\n- `allow-set-active`\n- `allow-report-ended`\n- `allow-start-outgoing`\n- `allow-take-pending-actions`\n- `allow-reset-account`\n- `allow-debug-incoming`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Everything the page's bridge (client/src/voice/phone-bridge.ts) calls.\nGranted to the phone shells' main window by capabilities/calls-mobile.json.\n`debug_incoming` is included because a capability cannot differ by build\nprofile; the native side refuses it outside debug builds.\n\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-configure`\n- `allow-set-labels`\n- `allow-push-token`\n- `allow-report-incoming`\n- `allow-set-active`\n- `allow-report-ended`\n- `allow-start-outgoing`\n- `allow-take-pending-actions`\n- `allow-debug-incoming`\n- `allow-register-listener`\n- `allow-remove-listener`"
+          "markdownDescription": "Everything the page's bridge (client/src/voice/phone-bridge.ts) calls.\nGranted to the phone shells' main window by capabilities/calls-mobile.json.\n`debug_incoming` is included because a capability cannot differ by build\nprofile; the native side refuses it outside debug builds.\n\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-configure`\n- `allow-set-labels`\n- `allow-push-token`\n- `allow-report-incoming`\n- `allow-set-active`\n- `allow-report-ended`\n- `allow-start-outgoing`\n- `allow-take-pending-actions`\n- `allow-reset-account`\n- `allow-debug-incoming`\n- `allow-register-listener`\n- `allow-remove-listener`"
         }
       ]
     }

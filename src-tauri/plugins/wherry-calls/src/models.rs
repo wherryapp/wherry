@@ -61,6 +61,16 @@ pub struct IncomingArgs {
     pub exp: i64,
 }
 
+/// What `report_incoming` answers: whether the native side took the ring
+/// (`IncomingAnswer` in phone-calls.ts). A missing field reads as false, so
+/// the page's sheet rings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomingAnswer {
+    #[serde(default)]
+    pub shown: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveArgs {
@@ -74,7 +84,8 @@ pub struct ActiveArgs {
 #[serde(rename_all = "camelCase")]
 pub struct EndedArgs {
     pub call_id: String,
-    /// `PhoneEndReason` in phone-calls.ts.
+    /// `PhoneEndReason` in phone-calls.ts, whose table says what each reason
+    /// does natively. `answered` ends no call.
     pub reason: String,
 }
 

@@ -62,16 +62,26 @@ class CallsPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(answer)
     }
 
-    /** { callId, conversationId, label, group, exp }: A2 posts the ring
-     *  only while the activity is not resumed. */
+    /** { callId, conversationId, label, group, exp } -> { shown }: A2 posts
+     *  the ring only while the activity is not resumed, and answers
+     *  shown = true only when it posted one. False (resumed, or any
+     *  failure) leaves the page's sheet and tone ringing
+     *  (phone-calls.ts's IncomingAnswer). */
     @Command
-    fun reportIncoming(invoke: Invoke) = stub(invoke, "reportIncoming")
+    fun reportIncoming(invoke: Invoke) {
+        Log.d(TAG, "[wherry] calls: reportIncoming (stub)")
+        val answer = JSObject()
+        answer.put("shown", false)
+        invoke.resolve(answer)
+    }
 
     /** { active, callId, label, audioOnly }: A1 starts or stops CallService. */
     @Command
     fun setActive(invoke: Invoke) = stub(invoke, "setActive")
 
-    /** { callId, reason }: A2 cancels the ring notification. */
+    /** { callId, reason }: A2 cancels the ring notification, whatever the
+     *  reason (phone-calls.ts's PhoneEndReason table). Never the ongoing
+     *  call's notification: that one is CallService's, ended by setActive. */
     @Command
     fun reportEnded(invoke: Invoke) = stub(invoke, "reportEnded")
 
@@ -85,6 +95,12 @@ class CallsPlugin(private val activity: Activity) : Plugin(activity) {
         answer.put("actions", JSArray())
         invoke.resolve(answer)
     }
+
+    /** The account signed out of the page, which stays loaded: A2 forgets
+     *  the label cache and the queued actions, and cancels any ring still
+     *  posted. The configure values stay (they are the device's). */
+    @Command
+    fun resetAccount(invoke: Invoke) = stub(invoke, "resetAccount")
 
     /** { payload }: debug builds only, so a release APK cannot be rung
      *  from its own page. A2 hands the payload to RingHandler. */

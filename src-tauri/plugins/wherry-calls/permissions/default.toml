@@ -17,6 +17,7 @@ permissions = [
   "allow-report-ended",
   "allow-start-outgoing",
   "allow-take-pending-actions",
+  "allow-reset-account",
   "allow-debug-incoming",
   "allow-register-listener",
   "allow-remove-listener",

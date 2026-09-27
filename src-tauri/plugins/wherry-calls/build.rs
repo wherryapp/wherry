@@ -13,6 +13,7 @@ const COMMANDS: &[&str] = &[
     "report_ended",
     "start_outgoing",
     "take_pending_actions",
+    "reset_account",
     "debug_incoming",
     "register_listener",
     "remove_listener",

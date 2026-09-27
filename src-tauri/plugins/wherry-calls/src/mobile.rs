@@ -48,7 +48,7 @@ impl<R: Runtime> WherryCalls<R> {
         Ok(self.0.run_mobile_plugin("pushToken", ())?)
     }
 
-    pub fn report_incoming(&self, args: IncomingArgs) -> crate::Result<()> {
+    pub fn report_incoming(&self, args: IncomingArgs) -> crate::Result<IncomingAnswer> {
         Ok(self.0.run_mobile_plugin("reportIncoming", args)?)
     }
 
@@ -66,6 +66,10 @@ impl<R: Runtime> WherryCalls<R> {
 
     pub fn take_pending_actions(&self) -> crate::Result<PendingActions> {
         Ok(self.0.run_mobile_plugin("takePendingActions", ())?)
+    }
+
+    pub fn reset_account(&self) -> crate::Result<()> {
+        Ok(self.0.run_mobile_plugin("resetAccount", ())?)
     }
 
     pub fn debug_incoming(&self, args: DebugIncomingArgs) -> crate::Result<()> {

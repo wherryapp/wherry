@@ -16,6 +16,7 @@ profile; the native side refuses it outside debug builds.
 - `allow-report-ended`
 - `allow-start-outgoing`
 - `allow-take-pending-actions`
+- `allow-reset-account`
 - `allow-debug-incoming`
 - `allow-register-listener`
 - `allow-remove-listener`
@@ -233,6 +234,32 @@ Enables the report_incoming command without any pre-configured scope.
 <td>
 
 Denies the report_incoming command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`wherry-calls:allow-reset-account`
+
+</td>
+<td>
+
+Enables the reset_account command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`wherry-calls:deny-reset-account`
+
+</td>
+<td>
+
+Denies the reset_account command without any pre-configured scope.
 
 </td>
 </tr>

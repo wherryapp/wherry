@@ -57,6 +57,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::report_ended,
             commands::start_outgoing,
             commands::take_pending_actions,
+            commands::reset_account,
             commands::debug_incoming,
         ])
         .setup(|app, api| {

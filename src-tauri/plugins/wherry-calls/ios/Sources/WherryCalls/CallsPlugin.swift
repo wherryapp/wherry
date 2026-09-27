@@ -52,10 +52,16 @@ class CallsPlugin: Plugin {
     invoke.resolve(["token": nil] as JsonObject)
   }
 
-  /// { callId, conversationId, label, group, exp }: I1 reports it to
-  /// CallKit under UUID(callId), deduplicated.
+  /// { callId, conversationId, label, group, exp } -> { shown }: I1 reports
+  /// it to CallKit under UUID(callId) and resolves in the report's
+  /// completion. shown is true when CallKit took the ring: reported, or
+  /// callUUIDAlreadyExists (a VoIP push got there first), or filtered on
+  /// purpose (filteredByDoNotDisturb, filteredByBlockList -- the page must
+  /// not ring over the system). Any other error, or not knowing, is false,
+  /// and the page's sheet rings instead (phone-calls.ts's IncomingAnswer).
   @objc public func reportIncoming(_ invoke: Invoke) {
-    stub(invoke, "reportIncoming")
+    NSLog("[wherry] calls: reportIncoming (stub)")
+    invoke.resolve(["shown": false] as JsonObject)
   }
 
   /// { active, callId, label, audioOnly }: proximity monitoring (I1), and
@@ -64,7 +70,14 @@ class CallsPlugin: Plugin {
     stub(invoke, "setActive")
   }
 
-  /// { callId, reason }: I1 maps the reason to CXCallEndedReason.
+  /// { callId, reason }: phone-calls.ts's PhoneEndReason table says what
+  /// each reason does, and not every reason ends a call. "answered" follows
+  /// every Answer on this device, CallKit's own included: stop a ring that
+  /// is still ringing and end nothing, or the call just answered is hung up.
+  /// "declined" is a local end (CXEndCallAction) for a call CallKit still
+  /// holds. The rest are reportCall(with:endedAt:reason:) with
+  /// .answeredElsewhere, .declinedElsewhere, .remoteEnded (cancelled,
+  /// ended), .unanswered or .failed.
   @objc public func reportEnded(_ invoke: Invoke) {
     stub(invoke, "reportEnded")
   }
@@ -76,6 +89,13 @@ class CallsPlugin: Plugin {
 
   @objc public func takePendingActions(_ invoke: Invoke) {
     invoke.resolve(["actions": [Any]()] as JsonObject)
+  }
+
+  /// The account signed out of the page, which stays loaded: I1 forgets
+  /// the label cache and the queued actions, and ends any call CallKit
+  /// still rings for it. The configure values stay (they are the device's).
+  @objc public func resetAccount(_ invoke: Invoke) {
+    stub(invoke, "resetAccount")
   }
 
   /// { payload }: runs the PushKit handler on a payload without APNs (the

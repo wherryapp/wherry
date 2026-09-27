@@ -36,8 +36,8 @@ impl<R: Runtime> WherryCalls<R> {
         Ok(PushToken::default())
     }
 
-    pub fn report_incoming(&self, _args: IncomingArgs) -> crate::Result<()> {
-        Ok(())
+    pub fn report_incoming(&self, _args: IncomingArgs) -> crate::Result<IncomingAnswer> {
+        Ok(IncomingAnswer::default())
     }
 
     pub fn set_active(&self, _args: ActiveArgs) -> crate::Result<()> {
@@ -54,6 +54,10 @@ impl<R: Runtime> WherryCalls<R> {
 
     pub fn take_pending_actions(&self) -> crate::Result<PendingActions> {
         Ok(PendingActions::default())
+    }
+
+    pub fn reset_account(&self) -> crate::Result<()> {
+        Ok(())
     }
 
     pub fn debug_incoming(&self, _args: DebugIncomingArgs) -> crate::Result<()> {

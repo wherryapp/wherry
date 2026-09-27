@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { StoredConversation } from "../store/types";
+import type { PhoneCapabilities } from "./phone-calls";
 import {
   ACTION_TTL_MS,
+  bridgeRunStep,
   callServiceWanted,
   FALLBACK_LABEL,
   labelsKey,
@@ -10,14 +12,16 @@ import {
   nativeApiBase,
   nativeEndReason,
   PAGE_ONLY,
+  pageRingDuties,
   pendingActionVerdict,
   readAction,
   readCapabilities,
+  readIncomingAnswer,
   ringDisplay,
   ringExpiry,
   ringGoneReason,
   ringLabels,
-  ringUiOwnsRinging,
+  ringsDiff,
   type ActiveCallInput,
   type ActionView,
   type CallFrame,
@@ -70,10 +74,120 @@ test("an action needs a known kind and a call id; the rest is optional", () => {
 
 // -- one ring UI per device -----------------------------------------------
 
-test("only CallKit owns ringing; Android's notification leaves the page's sheet ringing", () => {
-  assert.equal(ringUiOwnsRinging({ ringUi: "callkit", callService: false, voip: true }), true);
-  assert.equal(ringUiOwnsRinging({ ringUi: "notification", callService: true, voip: false }), false);
-  assert.equal(ringUiOwnsRinging(PAGE_ONLY), false);
+test("only an explicit shown: true reads as a ring the native side took", () => {
+  assert.deepEqual(readIncomingAnswer({ shown: true }), { shown: true });
+  // A stub's empty resolve, a failure's null, anything odd: the page rings.
+  assert.deepEqual(readIncomingAnswer(null), { shown: false });
+  assert.deepEqual(readIncomingAnswer({}), { shown: false });
+  assert.deepEqual(readIncomingAnswer({ shown: "true" }), { shown: false });
+  assert.deepEqual(readIncomingAnswer({ shown: false }), { shown: false });
+});
+
+const CALLKIT: PhoneCapabilities = { ringUi: "callkit", callService: false, voip: true };
+const ANDROID_RING: PhoneCapabilities = { ringUi: "notification", callService: true, voip: false };
+const NOTHING = { sheet: false, tone: false, notification: false };
+const ALONE_IN_FRONT = { sheet: true, tone: true, notification: false };
+const ALONE_BEHIND = { sheet: true, tone: true, notification: true };
+
+test("the page alone rings where there is no native ring UI, and notifies only when not in front", () => {
+  for (const nativeShown of [null, false, true]) {
+    assert.deepEqual(
+      pageRingDuties({ capabilities: PAGE_ONLY, nativeShown, windowFocused: true }),
+      ALONE_IN_FRONT,
+    );
+    assert.deepEqual(
+      pageRingDuties({ capabilities: PAGE_ONLY, nativeShown, windowFocused: false }),
+      ALONE_BEHIND,
+    );
+  }
+});
+
+test("before the plugin has answered, a shell's page draws, sounds and posts nothing", () => {
+  // The first ring of a page on iOS: CallKit may be about to ring it, and a
+  // sheet, a tone and a notification started now would be a second ring.
+  for (const windowFocused of [true, false]) {
+    assert.deepEqual(
+      pageRingDuties({ capabilities: null, nativeShown: null, windowFocused }),
+      NOTHING,
+    );
+  }
+});
+
+test("under CallKit the page stays silent for a ring CallKit took, and waits for the answer", () => {
+  for (const windowFocused of [true, false]) {
+    assert.deepEqual(
+      pageRingDuties({ capabilities: CALLKIT, nativeShown: true, windowFocused }),
+      NOTHING,
+    );
+    assert.deepEqual(
+      pageRingDuties({ capabilities: CALLKIT, nativeShown: null, windowFocused }),
+      NOTHING,
+    );
+  }
+});
+
+test("a ring CallKit refused rings on the page as if there were no plugin", () => {
+  assert.deepEqual(
+    pageRingDuties({ capabilities: CALLKIT, nativeShown: false, windowFocused: true }),
+    ALONE_IN_FRONT,
+  );
+  assert.deepEqual(
+    pageRingDuties({ capabilities: CALLKIT, nativeShown: false, windowFocused: false }),
+    ALONE_BEHIND,
+  );
+});
+
+test("under Android's ring notification the page never posts a second one, and is silent behind", () => {
+  // Backgrounded (windowIsFocused() is false there even though
+  // document.hasFocus() is true): the CallStyle ring is the one ring.
+  for (const nativeShown of [null, true]) {
+    assert.deepEqual(
+      pageRingDuties({ capabilities: ANDROID_RING, nativeShown, windowFocused: false }),
+      { sheet: true, tone: false, notification: false },
+    );
+    // In front: the plugin posts nothing, so the sheet and the tone ring.
+    assert.deepEqual(
+      pageRingDuties({ capabilities: ANDROID_RING, nativeShown, windowFocused: true }),
+      ALONE_IN_FRONT,
+    );
+  }
+  // The plugin said it posted nothing: the page is the only ring.
+  assert.deepEqual(
+    pageRingDuties({ capabilities: ANDROID_RING, nativeShown: false, windowFocused: false }),
+    ALONE_BEHIND,
+  );
+});
+
+// -- whose bridge it is -----------------------------------------------------
+
+test("the bridge runs for the signed-in account while the engine runs, and not otherwise", () => {
+  const step = (syncState: Parameters<typeof bridgeRunStep>[0]["syncState"], sessionUserId: string | null, runUserId: string | null) =>
+    bridgeRunStep({ syncState, sessionUserId, runUserId });
+  assert.equal(step("follower", "a", null), "start");
+  assert.equal(step("idle", "a", "a"), "keep");
+  assert.equal(step("stopped", "a", "a"), "stop");
+  assert.equal(step("idle", null, "a"), "stop");
+  assert.equal(step("stopped", null, null), "keep");
+  assert.equal(step("syncing", null, null), "keep");
+  // A dead token is as good as signed out; App.tsx signs out next.
+  assert.equal(step("unauthorized", "a", "a"), "stop");
+  assert.equal(step("unauthorized", "a", null), "keep");
+});
+
+test("another account signed in without a reload replaces the run", () => {
+  // A signs out and B signs in on the same page (signOutLocally does not
+  // reload): B's rings must never be labelled or end-reasoned as A's.
+  assert.equal(bridgeRunStep({ syncState: "follower", sessionUserId: "b", runUserId: "a" }), "switch");
+});
+
+test("the ring list is diffed by call id", () => {
+  const a = { callId: "a", n: 1 };
+  const b = { callId: "b", n: 1 };
+  const c = { callId: "c", n: 1 };
+  assert.deepEqual(ringsDiff([], [a, b]), { shown: [a, b], gone: [] });
+  assert.deepEqual(ringsDiff([a, b], [b, c]), { shown: [c], gone: [a] });
+  assert.deepEqual(ringsDiff([a], [{ callId: "a", n: 2 }]), { shown: [], gone: [] });
+  assert.deepEqual(ringsDiff([a, b], []), { shown: [], gone: [a, b] });
 });
 
 // -- pending actions --------------------------------------------------------
