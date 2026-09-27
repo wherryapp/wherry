@@ -249,23 +249,72 @@ fn hold_media_engine() -> EngineHold {
 /// page decided, and never the hardware one (`prefer_hardware_processing` is
 /// false in `voice_connect`). A module with no built-in canceller (macOS,
 /// Linux) is left alone and says so.
-fn builtin_aec_off(audio: &PlatformAudio, processing: ProcessingArgs, engine_held: bool) {
+///
+/// `set_echo_cancellation` also re-applies the switch to the APM, which
+/// matters as much as the canceller: when the send path's `ApplyOptions`
+/// gets `EnableBuiltInAEC(1)` accepted, it turns AEC3 off in the same breath
+/// ("built-in EC will be used instead"). This puts both halves back.
+///
+/// `when` names the moment in the log line; see `before_init_recording` for
+/// the ones after connect.
+fn builtin_aec_off(
+  audio: &PlatformAudio,
+  processing: ProcessingArgs,
+  engine_held: bool,
+  when: &str,
+) {
   let aec3 = if processing.echo_cancellation { "on" } else { "off" };
   let recording = audio.is_recording_initialized();
   if !audio.is_hardware_aec_available() {
     log::info!(
-      "voice: after connect, before recording -- no built-in echo canceller on this platform; AEC3 {aec3} (recording initialised {recording}, engine held {engine_held})"
+      "voice: {when}, before recording -- no built-in echo canceller on this platform; AEC3 {aec3} (recording initialised {recording}, engine held {engine_held})"
     );
     return;
   }
   match audio.set_echo_cancellation(processing.echo_cancellation, false) {
     Ok(()) => log::info!(
-      "voice: after connect, before recording -- built-in echo canceller off (EnableBuiltInAEC(0) accepted); AEC3 {aec3} (recording initialised {recording}, engine held {engine_held})"
+      "voice: {when}, before recording -- built-in echo canceller off (EnableBuiltInAEC(0) accepted); AEC3 {aec3} (recording initialised {recording}, engine held {engine_held})"
     ),
     Err(error) => log::warn!(
-      "voice: after connect -- built-in echo canceller NOT turned off ({error:?}; recording initialised {recording}, engine held {engine_held}): this call may capture through Windows' voice-capture DMO at 16 kHz"
+      "voice: {when} -- built-in echo canceller NOT turned off ({error:?}; recording initialised {recording}, engine held {engine_held}): this call may capture through Windows' voice-capture DMO at 16 kHz"
     ),
   }
+}
+
+/// The same repair at every later moment recording is about to be
+/// initialised again in this call, which is every `start_recording` that
+/// finds it uninitialised: an unmute (mute stopped recording, and stopping
+/// clears the Windows module's `_recIsInitialized`), and the start after the
+/// first publish if the publish had not already initialised it.
+///
+/// Why once at connect is not enough: the microphone's source carries
+/// `echo_cancellation` equal to the switch in its `AudioOptions` (the fork's
+/// `create_device_audio_track`), and `WebRtcVoiceSendChannel` re-applies
+/// those through `ApplyOptions` on every `SetSenderParameters` -- every
+/// renegotiation of the publisher PeerConnection, such as starting the
+/// camera or a share. With the switch on and a built-in canceller available,
+/// that is `EnableBuiltInAEC(1)`, refused while recording is initialised and
+/// **accepted** while it is not, i.e. while muted. The next `InitRecording`
+/// would then take the voice-capture DMO path with AEC3 off. Believed from
+/// upstream's `webrtc_voice_engine.cc` and the fork's own comment; not read
+/// in a log (row D-67, leg C).
+///
+/// When recording is already initialised nothing is asked: the module would
+/// refuse, and the path was decided at that `InitRecording`, which this
+/// function (or the connect's call) preceded. The one other re-init, a
+/// mid-call `switch_recording_device`, re-initialises only when recording
+/// was initialised -- unmuted -- and nothing can have been accepted since the
+/// last repair, because every `EnableBuiltInAEC` in that time was refused.
+fn before_init_recording(
+  audio: &PlatformAudio,
+  processing: ProcessingArgs,
+  engine_held: bool,
+  when: &str,
+) {
+  if audio.is_recording_initialized() {
+    return;
+  }
+  builtin_aec_off(audio, processing, engine_held, when);
 }
 
 // -- the session ------------------------------------------------------------
@@ -310,6 +359,11 @@ struct Session {
   /// `voice_set_mic(true)`.
   mic: Option<LocalTrackPublication>,
   max_bitrate: u64,
+  /// The call's processing switches and whether the engine was held, kept so
+  /// `voice_set_mic` can repair the built-in canceller before every
+  /// `InitRecording` (`before_init_recording`).
+  processing: ProcessingArgs,
+  engine_held: bool,
   pump: tauri::async_runtime::JoinHandle<()>,
   started: Instant,
 }
@@ -1060,7 +1114,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   );
   // Before `SESSION` is set, so before `voice_set_mic` can publish and
   // initialise recording.
-  builtin_aec_off(&audio, processing, engine_held);
+  builtin_aec_off(&audio, processing, engine_held, "after connect");
   let pump_task =
     tauri::async_runtime::spawn(pump(app.clone(), id, room.clone(), shared.clone(), rx));
   // Debug builds: ask the page, from the shell's side, whether it is still
@@ -1104,6 +1158,8 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     shared,
     mic: None,
     max_bitrate: args.max_bitrate,
+    processing,
+    engine_held,
     pump: pump_task,
     started,
   });
@@ -1161,15 +1217,18 @@ pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
 #[tauri::command]
 pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
   let (id, room, shared) = current()?;
-  let (existing, max_bitrate) = {
+  let (existing, max_bitrate, processing, engine_held) = {
     let guard = SESSION.lock().unwrap();
     let session = guard.as_ref().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
-    (session.mic.clone(), session.max_bitrate)
+    (session.mic.clone(), session.max_bitrate, session.processing, session.engine_held)
   };
   let audio = platform_audio()?;
 
   if let Some(publication) = existing {
     if enabled {
+      // Mute stopped recording, so this start initialises it again: repair
+      // anything a renegotiation while muted turned on (`before_init_recording`).
+      before_init_recording(&audio, processing, engine_held, "on unmute");
       if let Err(error) = audio.start_recording() {
         log::warn!("voice: start_recording on unmute: {error:?}");
       }
@@ -1206,6 +1265,10 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
     .publish_track(LocalTrack::Audio(track), options)
     .await
     .map_err(|e| VoiceError::new("mic_failed", format!("publish: {e}")))?;
+  // On the rig's pre-fix reading the publish had initialised recording by
+  // this point (status §3.3), so this should ask nothing; it is here so that no `start_recording` in this file can
+  // initialise recording without the repair in front of it.
+  before_init_recording(&audio, processing, engine_held, "after publish");
   if let Err(error) = audio.start_recording() {
     // Publishing a device-sourced track initialises recording on its own;
     // an explicit start that then fails is worth a log line, not a
