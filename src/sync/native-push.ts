@@ -455,7 +455,8 @@ export function startNativePush(hooks: NativePushHooks): () => void {
         void takeOpen();
       });
       await listen<{ kind?: string }>("received", (payload) => {
-        console.info(`native-push received ${payload?.kind ?? "?"} → poke`);
+        // Row I-43 reads this line.
+        console.info(`native-push received → poke (${payload?.kind ?? "?"})`);
         hooks.poke();
       });
 
