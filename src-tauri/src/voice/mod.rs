@@ -230,7 +230,8 @@ enum EngineHold {
   /// The factory would not create one. The call goes ahead, and its own first
   /// PeerConnection runs the engine's `Init` as before this fix: the device
   /// half comes back for that call, the canceller half is still repaired by
-  /// `builtin_aec_off`. Tried again on the next connect.
+  /// `builtin_aec_off`. Tried again once the call is connected (see
+  /// `voice_connect`), and on the next connect.
   Failed(String),
 }
 
@@ -1264,7 +1265,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     }
     EngineHold::Failed(error) => {
       log::warn!(
-        "voice: could not hold the media engine ({error}); if this is the first call of the launch, the engine's init in the connect will replace its devices with the defaults (the built-in echo canceller is still turned off after the connect)"
+        "voice: could not hold the media engine ({error}); unless an earlier PeerConnection still holds it, the engine's init in the connect will replace this call's devices with the defaults (the built-in echo canceller is still turned off after the connect, and the hold is tried again once connected)"
       );
       false
     }
@@ -1442,6 +1443,30 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     keys.is_some(),
     *shared.key_index.lock().unwrap()
   );
+  // A hold that failed before the connect is tried again now. The call's own
+  // PeerConnection has initialised the engine and is still alive, so creating
+  // the hold cannot run the engine's `Init` again -- it only adds a
+  // reference. What it buys is the
+  // hang-up: without a hold, the call's PeerConnection is the engine's last
+  // reference, and once PeerConnections are really destroyed at hang-up
+  // (patches/rust-sdks-room-session-release.md) dropping it would run the
+  // engine's `Terminate` into the `PlatformAudio` this shell keeps, and the
+  // next call's `Init` would repeat this call's device defect. Taken now,
+  // the defect stays with this one call, as it always did. Until that fork
+  // change lands no PeerConnection is ever released, so this changes nothing
+  // today. `engine_held` keeps its meaning: whether the init ran before this
+  // call's choices.
+  if !engine_held {
+    match hold_media_engine() {
+      EngineHold::Failed(error) => log::warn!(
+        "voice: could not hold the media engine after connect either ({error}); if this call's PeerConnection is the engine's last reference, hanging up terminates the engine and the next call's init replaces its devices again"
+      ),
+      EngineHold::Now { ms } => log::info!(
+        "voice: media engine held after connect in {ms} ms -- this call ran the engine's init, the next will not"
+      ),
+      EngineHold::Already => log::info!("voice: media engine already held after connect"),
+    }
+  }
   // Before `SESSION` is set, so before `voice_set_mic` can publish and
   // initialise recording.
   builtin_aec_off(&audio, processing, engine_held, "after connect");

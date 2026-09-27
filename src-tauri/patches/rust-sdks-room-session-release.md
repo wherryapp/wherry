@@ -6,7 +6,10 @@ of `wherry/windows-console-role` at `6a32ecc`, which is the revision
 is kept per received video subscription on the native engine. The diff below
 exists only as text. **No fork branch was made, nothing was compiled, and
 nothing was measured.** `rustfmt --check` parses the three edited files; that
-is the only check that has run.
+is the only check that has run on the fork diff. One shell change goes with it
+and is already in the tree: `voice_connect` retries a failed `MEDIA_ENGINE`
+hold after the connect (see *What else changes*). That one is compile-checked
+on macOS and not yet verified on Windows.
 
 Once it is pushed:
 1. Pin it with `rev` in `client/src-tauri/Cargo.toml`.
@@ -268,8 +271,40 @@ stream's `Reset()`, so this is believed not to happen.
   - **It must stay.** If it were removed with this change in, the engine would
     terminate after every call, and the ADM `Terminate` hazard from the
     adm-select work would become live.
+  - **Its fallback matters too.** `hold_media_engine` can fail
+    (`EngineHold::Failed`), and `voice_connect` then goes ahead with the call.
+    Until now that was safe only because of this leak: the call's own
+    PeerConnection was never destroyed, so it kept the engine initialised
+    for the rest of the process. With this change in, a failed hold would
+    leave the call's PeerConnection as the engine's last reference. Hanging
+    up would then run `Terminate` into the ADM the shell keeps through
+    `PlatformAudio`, and if the next hold also failed, the D-67 device
+    defect would repeat on every call instead of only the first. On
+    ~PeerConnection in `pc/peer_connection.cc` at webrtc-sdk `89d790b`:
+    the destructor does `media_engine_ref_.reset()` (`Close()` does not), so
+    it is the destructor that would run `Terminate`.
+    - **The shell handles it** (2026-09-27, `voice_connect` after
+      `Room::connect`): when the hold failed before the connect, it is tried
+      again once the call is connected. The call's PeerConnection is alive
+      and has already initialised the engine, so creating the hold only adds
+      a reference and runs no `Init`. The defect stays with that one call, as
+      before, and hang-up no longer releases the last reference. This does
+      nothing on today's fork, which never releases a PeerConnection.
+    - **The remaining risk** is two failures in a row: the hold fails before
+      the connect **and** after it. The log says so at warn level (`could
+      not hold the media engine after connect either`), and that call's
+      hang-up can terminate the engine. A connect that itself fails after a
+      failed hold is the same risk, and the shell cannot reach it: it has no
+      PeerConnection alive to take the hold beside. Refusing the call
+      instead was rejected. It would turn a rare device defect on one call
+      into no call at all, and nothing has ever been seen to make
+      `create_peer_connection` fail.
   - Row: `~PeerConnection` should appear once per call, and
-    `WebRtcVoiceEngine::Terminate` should still read 0.
+    `WebRtcVoiceEngine::Terminate` should still read 0. The log should show
+    `media engine initialised and held` on the first call and `already
+    held` on every later one, and never `could not hold`. The fallback
+    cannot be forced on the rig without a fault injection, so it is
+    believed from the source, not verified.
 - **Events at close.** `handle_participant_disconnect` emits
   `TrackUnsubscribed`, `TrackUnpublished` and `ParticipantDisconnected` for
   each participant still in the room. It does so inside `room.close()`, while
