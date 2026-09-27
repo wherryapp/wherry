@@ -38,8 +38,10 @@ export type RouteRaw = {
 };
 
 /** What Details shows on its Route row. `relay` alone is a relay whose
- *  engine reported no client-to-relay transport (kept apart from `unknown`,
- *  which is what a call with no working path reads — row W-112's control). */
+ *  engine reported no client-to-relay transport this file recognises (kept
+ *  apart from `unknown`, which is what a call with no working path reads —
+ *  row W-112's control). It is never a pass on a row whose value names a
+ *  transport: the transport is what such a row exists to read. */
 export type RouteLabel =
   | "direct · udp"
   | "direct · tcp"
@@ -139,7 +141,9 @@ const DIRECT_TYPES: ReadonlySet<string> = new Set(["host", "srflx", "prflx"]);
 /**
  * The words for a route. Anything not recognised is `unknown` rather than a
  * guess, so a new engine's spelling shows up as a finding and not as a
- * plausible wrong answer.
+ * plausible wrong answer. The one exception is a relay candidate whose
+ * transport is missing or unrecognised: it reads `relay`, which says a relay
+ * was chosen and admits that its transport was not read.
  */
 export function routeLabel(raw: RouteRaw | null | undefined): RouteLabel {
   if (!raw) return "unknown";

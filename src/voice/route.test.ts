@@ -115,6 +115,13 @@ describe("parseRoute and routeLabel: every label", () => {
     assert.equal(labelOf(report), "relay");
   });
 
+  it("says relay, not a guessed transport, for a relay transport it does not recognise", () => {
+    // Rows D-80, D-85 and the rest read the transport; a spelling this file
+    // does not know must not be mapped onto one of the three it does.
+    assert.equal(routeLabel({ candidateType: "relay", protocol: "udp", relayProtocol: "dtls" }), "relay");
+    assert.equal(routeLabel({ candidateType: "relay", protocol: "tcp", relayProtocol: null }), "relay");
+  });
+
   it("is unknown for a report with no selected pair", () => {
     const report = [
       { id: "T01", type: "transport", dtlsState: "new" },
