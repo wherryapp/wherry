@@ -1,4 +1,35 @@
-<!-- P2's stub declares nothing. P3 adds the FirebaseMessagingService here;
-     the plugin's manifest merges into the app's, so the app's own
-     AndroidManifest.xml is never edited for push. -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Merged into the app's manifest by the manifest merger, so the app's own
+  AndroidManifest.xml is never edited for push (coordination §2).
+  POST_NOTIFICATIONS comes from tauri-plugin-notification's manifest and is
+  not declared again here (native-push-plan.md §6.2).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- The app's one FirebaseMessagingService (coordination §4). -->
+        <service
+            android:name="app.wherry.push.WherryMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Installs the activity callbacks that catch a notification tap
+             at process start, before Tauri creates any plugin (a tap that
+             re-creates the activity after a background kill reaches
+             onNewIntent first). Serves no data. See PushLifecycle.kt. -->
+        <provider
+            android:name="app.wherry.push.PushInitProvider"
+            android:authorities="${applicationId}.wherry-push-init"
+            android:exported="false" />
+
+        <!-- No token until the person turns push on: without this, Firebase
+             asks Google for one at the first launch, whether or not push is
+             ever used. `register` turns it on and `unregister` off. -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+    </application>
+</manifest>
