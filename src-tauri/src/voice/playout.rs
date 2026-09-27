@@ -234,6 +234,12 @@ pub struct FollowResult {
 /// Then the microphone is checked (`ensure_microphone_recording`): if its
 /// recording had failed to start for want of an endpoint, as D-73 read on
 /// the build before the built-in canceller was kept off, this is when it can.
+/// That covers both failures: an `InitRecording` that failed (recording not
+/// initialised) and D-74's `StartRecording` refused after the init succeeded
+/// ("Playout must be started before recording", the voice-capture DMO's
+/// precondition), which `Session::mic_start_failed` marks because the module
+/// then still reads as initialised. Playout was just started, so a retry of
+/// the second can now pass the check that refused it.
 #[tauri::command]
 pub fn voice_follow_default_output() -> VoiceResult<FollowResult> {
   let Some(default) = default_output() else {

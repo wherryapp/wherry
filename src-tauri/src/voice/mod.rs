@@ -490,7 +490,10 @@ fn microphone_gate_open() -> bool {
 ///
 /// - Microphone open and recording stopped: the D-68 case. Start it again,
 ///   with `before_init_recording` in front, as an unmute would.
-/// - Microphone open and recording running: nothing happened to it.
+/// - Microphone open and recording running: nothing happened to it -- unless
+///   the shell's last start failed (`Session::mic_start_failed`): then
+///   "initialised" may be D-74's initialised-but-not-started, and it is asked
+///   to start again.
 /// - Microphone muted or never published: the gate kept libwebrtc's start
 ///   from reaching the device, and this only says so.
 ///
@@ -506,12 +509,16 @@ pub(crate) fn ensure_microphone_recording(when: &str) {
   // Before the snapshot, so a hang-up or a mute is either wholly before this
   // or wholly after it.
   let _sequence = mic_recording_lock();
-  let snapshot = SESSION
-    .lock()
-    .unwrap()
-    .as_ref()
-    .map(|session| (session.mic.is_some(), session.processing, session.engine_held));
-  let Some((published, processing, engine_held)) = snapshot else { return };
+  let snapshot = SESSION.lock().unwrap().as_ref().map(|session| {
+    (
+      session.id,
+      session.mic.is_some(),
+      session.processing,
+      session.engine_held,
+      session.mic_start_failed,
+    )
+  });
+  let Some((id, published, processing, engine_held, start_failed)) = snapshot else { return };
   let Ok(audio) = platform_audio() else { return };
   let recording = audio.is_recording_initialized();
   let open = published && microphone_gate_open();
@@ -522,20 +529,48 @@ pub(crate) fn ensure_microphone_recording(when: &str) {
     );
     return;
   }
-  if recording {
+  if recording && !start_failed {
     log::info!("voice: {when} -- microphone open, recording still initialised: nothing to restart");
     return;
   }
-  log::info!(
-    "voice: {when} -- microphone open but its recording was stopped (recording initialised false): starting it again"
-  );
-  before_init_recording(&audio, processing, engine_held, when);
-  match audio.start_recording() {
-    Ok(()) => log::info!(
-      "voice: {when} -- microphone recording restarted (recording initialised {})",
-      audio.is_recording_initialized()
-    ),
-    Err(error) => log::warn!("voice: start_recording {when}: {error:?}"),
+  if recording {
+    // D-74's state: `InitRecording` succeeded and `StartRecording` was
+    // refused. Initialised, so there is nothing to repair in front of it (the
+    // path was chosen at that init) and `start_recording` goes straight to
+    // `StartRecording`, which returns at once if something else has started
+    // recording since -- so asking again is safe either way.
+    log::info!(
+      "voice: {when} -- microphone open, recording initialised but its last start failed: starting it again"
+    );
+  } else {
+    log::info!(
+      "voice: {when} -- microphone open but its recording was stopped (recording initialised false): starting it again"
+    );
+    before_init_recording(&audio, processing, engine_held, when);
+  }
+  let started = match audio.start_recording() {
+    Ok(()) => {
+      log::info!(
+        "voice: {when} -- microphone recording restarted (recording initialised {})",
+        audio.is_recording_initialized()
+      );
+      true
+    }
+    Err(error) => {
+      log::warn!("voice: start_recording {when}: {error:?}");
+      false
+    }
+  };
+  set_mic_start_failed(id, !started);
+}
+
+/// Records whether the shell's last start of the open microphone failed
+/// (`Session::mic_start_failed`), for the call `id` only.
+fn set_mic_start_failed(id: u64, failed: bool) {
+  if let Some(session) = SESSION.lock().unwrap().as_mut() {
+    if session.id == id {
+      session.mic_start_failed = failed;
+    }
   }
 }
 
@@ -606,6 +641,15 @@ struct Session {
   /// `InitRecording` (`before_init_recording`).
   processing: ProcessingArgs,
   engine_held: bool,
+  /// The shell's last `start_recording` for the open microphone failed and
+  /// nothing has started it since. Read by `ensure_microphone_recording`,
+  /// which otherwise takes "recording initialised" to mean "recording": a
+  /// start refused *after* `InitRecording` succeeded (row D-74, "Playout
+  /// must be started before recording") leaves the module initialised and
+  /// not recording, and nothing the SDK exposes tells those apart. Cleared by
+  /// a start that succeeds and by a mute, which stops recording and makes the
+  /// next unmute a whole init-and-start.
+  mic_start_failed: bool,
   pump: tauri::async_runtime::JoinHandle<()>,
   started: Instant,
 }
@@ -1446,6 +1490,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     max_bitrate: args.max_bitrate,
     processing,
     engine_held,
+    mic_start_failed: false,
     pump: pump_task,
     started,
   });
@@ -1530,15 +1575,28 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
       // With the gate, nothing else can have initialised it while muted --
       // a share's sound included (row D-69 (b)).
       before_init_recording(&audio, processing, engine_held, "on unmute");
-      if let Err(error) = audio.start_recording() {
-        log::warn!("voice: start_recording on unmute: {error:?}");
-      }
+      let start_failed = match audio.start_recording() {
+        Ok(()) => false,
+        Err(error) => {
+          log::warn!("voice: start_recording on unmute: {error:?}");
+          true
+        }
+      };
+      set_mic_start_failed(id, start_failed);
       publication.unmute();
+      if start_failed {
+        // After the lock is released: the recheck takes it itself.
+        drop(_sequence);
+        recheck_microphone("after a failed start on unmute");
+      }
     } else {
       publication.mute();
       if let Err(error) = audio.stop_recording() {
         log::debug!("voice: stop_recording on mute: {error:?}");
       }
+      // Stopped on purpose: a failed start before this is moot, and the
+      // unmute initialises and starts afresh.
+      set_mic_start_failed(id, false);
       // After the stop, which has to reach the device; from here until the
       // unmute, libwebrtc's own starts (a share's sound being published or
       // unmuted, a renegotiation) open nothing.
@@ -1612,6 +1670,7 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
     match guard.as_mut() {
       Some(session) if session.id == id => {
         session.mic = Some(publication);
+        session.mic_start_failed = start_failed;
         true
       }
       _ => {
@@ -1623,7 +1682,10 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
   };
   if stored && start_failed {
     // After the publication is in the session, which is what makes
-    // `ensure_microphone_recording` count the microphone as open.
+    // `ensure_microphone_recording` count the microphone as open, and with
+    // `mic_start_failed` set, which is what makes it ask again even though
+    // the publish left recording initialised (D-74's state: the log line
+    // above reads `recording true` right after the refusal).
     recheck_microphone("after a failed start at publish");
   }
   Ok(())
