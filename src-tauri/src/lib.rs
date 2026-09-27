@@ -188,6 +188,8 @@ pub fn run() {
     voice::voice_set_playback,
     voice::voice_set_volume,
     voice::voice_roster,
+    voice::voice_current,
+    voice::voice_forget_page,
     voice::voice_stats,
     voice::voice_pong,
     voice::page_pulse,

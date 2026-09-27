@@ -104,9 +104,56 @@ export type TransportConnectOptions = {
   /** Publish ceilings, from the join result's grant. Sizing the encoder
    *  at connect is the only moment simulcast layers can be chosen. */
   video: TransportVideoOptions;
+  /**
+   * An opaque note the page wants back if it is reloaded while this call
+   * runs (`handoff.ts`). Only a transport whose call outlives the page keeps
+   * it -- the native one, in the shell's memory; the webview's room dies
+   * with the document, so it ignores this.
+   */
+  handoff: string | null;
 };
 
 export type TransportConnectionState = "connected" | "reconnecting" | "disconnected";
+
+/**
+ * A call a transport found already running when this page loaded: the native
+ * engine's, which lives in the shell and survives a page reload. Everything
+ * here is the shell's own reading at the moment it was asked.
+ */
+export type OrphanedCall = {
+  handoff: string | null;
+  state: TransportConnectionState;
+  /** The SDK's reason, where the room ended while no page listened. */
+  reason: string | null;
+  endpoint: RoomEndpoint | null;
+  /** The microphone is published and unmuted. */
+  micOpen: boolean;
+  /** A camera is capturing, and a screen is shared. */
+  camera: boolean;
+  screen: boolean;
+};
+
+/** What taking an orphaned call over needs from the page, decided there. */
+export type AdoptOptions = {
+  video: TransportVideoOptions;
+  /** The speaker preference, as `connect` receives it. */
+  speakerDeviceId: string | null;
+};
+
+/**
+ * An orphaned call, and the two things a page can do with it (`handoff.ts`
+ * decides which). `adopt` wires the transport to this page and answers with
+ * a fresh reading, since the room may have moved on since `call` was read;
+ * `discard` closes the room.
+ */
+export type OrphanedTransport = {
+  call: OrphanedCall;
+  adopt(
+    options: AdoptOptions,
+    events: TransportEvents,
+  ): Promise<{ transport: VoiceTransport; call: OrphanedCall }>;
+  discard(): Promise<void>;
+};
 
 /** Where a call's room can be asked about: the SFU URL and the latest token
  *  (`room-probe.ts`). */

@@ -977,6 +977,30 @@ pub fn on_video_event(app: &AppHandle, session: u64, room: &Room) {
   emit(app, session, Event::VideoChanged);
 }
 
+/// What this device is sending, for `voice_current`: a camera that is
+/// capturing (a muted one is not), and a published screen.
+pub fn local_video(session: u64) -> (bool, bool) {
+  with_state(session, |state| {
+    let camera = state.camera.as_ref().is_some_and(|c| c.capture.is_some());
+    (camera, state.screen.is_some())
+  })
+}
+
+/// `voice_forget_page`'s video half: destroy every tile and forget which
+/// surfaces were covered. The publications, and the share's parked sound,
+/// are the call's and stay.
+pub fn forget_page(session: u64) -> usize {
+  let tiles: Vec<TileEntry> = with_state(session, |state| {
+    state.covered.clear();
+    state.tiles.drain().map(|(_, entry)| entry).collect()
+  });
+  let count = tiles.len();
+  for entry in tiles {
+    entry.tile.destroy();
+  }
+  count
+}
+
 /// The roster's `cameraMuted`, read the way the webview reads it.
 pub fn camera_muted(participant: &RemoteParticipant) -> bool {
   video_publication(participant, TrackSource::Camera).map(|p| p.is_muted()).unwrap_or(false)

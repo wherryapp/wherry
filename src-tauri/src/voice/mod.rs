@@ -619,6 +619,15 @@ struct Shared {
   /// The key index every cryptor should sit on; walked onto new cryptors
   /// as they appear.
   key_index: Mutex<i32>,
+  /// The call's newest SFU token: the join token, then each refresh. Kept
+  /// for a page that picks the call up after a reload (`voice_current`),
+  /// which asks the SFU about the room with it as the page before it did.
+  /// Never logged.
+  token: Mutex<String>,
+  /// The SDK's reason for `RoomEvent::Disconnected`, once the room has ended:
+  /// a page loaded after that reads it from `voice_current`, since the event
+  /// itself went to the page that is gone.
+  disconnect_reason: Mutex<Option<String>>,
 }
 
 // A debug-only synthesised tone once stood in for the microphone here
@@ -653,6 +662,12 @@ struct Session {
   mic_start_failed: bool,
   pump: tauri::async_runtime::JoinHandle<()>,
   started: Instant,
+  /// The SFU this call is on, for `voice_current`.
+  url: String,
+  /// The page's opaque note about this call (`ConnectArgs::handoff`), handed
+  /// back to whichever page asks `voice_current`. Held here only, for the
+  /// session's life; never logged or written anywhere.
+  handoff: Option<String>,
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -988,6 +1003,7 @@ async fn pump(
       }
       RoomEvent::Disconnected { reason } => {
         log::info!("voice: disconnected ({reason:?})");
+        *shared.disconnect_reason.lock().unwrap() = Some(format!("{reason:?}"));
         emit(
           &app,
           session,
@@ -999,6 +1015,7 @@ async fn pump(
         );
       }
       RoomEvent::TokenRefreshed { token } => {
+        shared.token.lock().unwrap().clone_from(&token);
         emit(&app, session, Event::Token { token });
       }
       RoomEvent::E2eeStateChanged { participant, state } => {
@@ -1262,6 +1279,12 @@ pub struct ConnectArgs {
   mic_device_id: Option<String>,
   speaker_device_id: Option<String>,
   key: Option<KeyArgs>,
+  /// Opaque to the shell: what the page wants back if it is reloaded while
+  /// this call runs (client/src/voice/handoff.ts). Absent from a page built
+  /// before 2026-09-27, whose calls cannot be picked up and are closed by
+  /// the next page instead.
+  #[serde(default)]
+  handoff: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1427,6 +1450,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   );
 
   let shared = Arc::new(Shared::default());
+  shared.token.lock().unwrap().clone_from(&args.token);
   *shared.quality.lock().unwrap() = "unknown".into();
 
   let keys = if args.e2ee {
@@ -1550,6 +1574,8 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     mic_start_failed: false,
     pump: pump_task,
     started,
+    url: args.url,
+    handoff: args.handoff,
   });
   Ok(result)
 }
@@ -1848,6 +1874,106 @@ pub fn voice_pong(session: u64, sent_at: f64, visibility: String, focus: bool) {
     .map(|d| d.as_millis() as f64)
     .unwrap_or(0.0);
   log::info!("voice: pong session {session} after {:.0} ms, visibility={visibility} focus={focus}", now - sent_at);
+}
+
+/// The call this shell is running, as a page that did not start it needs to
+/// know it: `voice_current`'s answer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentCall {
+  session: u64,
+  /// `ConnectArgs::handoff`, as the page that connected left it.
+  handoff: Option<String>,
+  /// The room's own connection state: `connected`, `reconnecting` or
+  /// `disconnected` (the SFU or the network ended it while no page listened).
+  state: &'static str,
+  /// `RoomEvent::Disconnected`'s reason, once there was one.
+  reason: Option<String>,
+  quality: String,
+  roster: Roster,
+  url: String,
+  token: String,
+  /// The microphone is published, and whether it is open (unmuted).
+  mic_published: bool,
+  mic_open: bool,
+  /// The processing switch the call was joined with, which the readout needs.
+  echo_cancellation: bool,
+  /// A camera is publishing and capturing (a muted camera reads false), and a
+  /// screen share is published.
+  camera: bool,
+  screen: bool,
+}
+
+/// The call that is running, or `None`.
+///
+/// For a page loaded while the shell held a call -- a reload, which destroys
+/// the page and none of this -- so it can take the call over or close it
+/// (client/src/voice/handoff.ts decides which). A reading only: nothing about
+/// the session changes, and events keep going out under its id as before.
+#[tauri::command]
+pub fn voice_current() -> VoiceResult<Option<CurrentCall>> {
+  let snapshot = SESSION.lock().unwrap().as_ref().map(|session| {
+    (
+      session.id,
+      session.room.clone(),
+      session.shared.clone(),
+      session.handoff.clone(),
+      session.url.clone(),
+      session.mic.is_some(),
+      session.processing.echo_cancellation,
+    )
+  });
+  let Some((id, room, shared, handoff, url, mic_published, echo_cancellation)) = snapshot else {
+    return Ok(None);
+  };
+  let state = match room.connection_state() {
+    ConnectionState::Connected => "connected",
+    ConnectionState::Reconnecting => "reconnecting",
+    ConnectionState::Disconnected => "disconnected",
+  };
+  let (camera, screen) = video::local_video(id);
+  let reason = shared.disconnect_reason.lock().unwrap().clone();
+  let quality = shared.quality.lock().unwrap().clone();
+  let token = shared.token.lock().unwrap().clone();
+  log::info!(
+    "voice: session {id} read by a page that did not start it ({state}, microphone {}, camera {camera}, screen {screen}, handoff {})",
+    if !mic_published { "not published" } else if microphone_gate_open() { "open" } else { "muted" },
+    if handoff.is_some() { "present" } else { "absent" }
+  );
+  Ok(Some(CurrentCall {
+    session: id,
+    handoff,
+    state,
+    reason,
+    quality,
+    roster: roster(&room),
+    url,
+    token,
+    mic_published,
+    mic_open: mic_published && microphone_gate_open(),
+    echo_cancellation,
+    camera,
+    screen,
+  }))
+}
+
+/// The page that talked to this call is gone and another has taken it over:
+/// forget what the old one told the shell about itself.
+///
+/// Its tiles are destroyed -- they were placed against a document that no
+/// longer exists and would otherwise go on drawing over the new one at the
+/// old rects -- and so are the surfaces it said were covered. The listener's
+/// per-participant playback and gain choices are dropped too, so that a
+/// participant who joins later plays at the default; the page resets the
+/// tracks already playing (transport-native.ts). Returns how many tiles went.
+#[tauri::command]
+pub fn voice_forget_page() -> VoiceResult<usize> {
+  let (id, _, shared) = current()?;
+  shared.playback.lock().unwrap().clear();
+  shared.volume.lock().unwrap().clear();
+  let tiles = video::forget_page(id);
+  log::info!("voice: session {id} taken over by a new page; {tiles} tile(s) of the old one destroyed");
+  Ok(tiles)
 }
 
 #[tauri::command]

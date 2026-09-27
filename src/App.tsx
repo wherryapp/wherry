@@ -9,6 +9,7 @@ import { broadcast, subscribeToBroadcasts } from "./sync/leader";
 import { Chat } from "./ui/Chat";
 import { Login } from "./ui/Login";
 import { VerifyGate } from "./ui/VerifyGate";
+import { voice } from "./voice/session";
 import { VersionWall, useVersionFloor } from "./ui/VersionWall";
 import {
   ResetPassword,
@@ -82,6 +83,17 @@ export default function App() {
 
     return () => sync.stop();
   }, [session, signOutLocally, floor.blocked]);
+
+  // A call the desktop shell kept running across a reload of this page is
+  // picked up by the page it now shows, or closed when this page cannot hold
+  // a call -- rather than left playing with nothing on screen to hang it up
+  // (voice/handoff.ts). Once per page load; the first answer is the one that
+  // counts, and nothing else runs before it on a normal load.
+  const callHolder =
+    session && session.emailVerified && !floor.blocked ? session.user.id : null;
+  useEffect(() => {
+    void voice.resumeAfterReload(callHolder);
+  }, [callHolder]);
 
   // A sign-out in one tab has to reach the others, or they keep rendering a
   // dead session's history.

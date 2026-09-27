@@ -47,8 +47,11 @@ import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules
 import { nativeMediaProbe } from "./native-media";
 import { probeRoom } from "./room-probe";
 import type {
+  AdoptOptions,
   AudioKind,
   FrameTransformKind,
+  OrphanedCall,
+  OrphanedTransport,
   ScreenChoice,
   ScreenSource,
   TransportCapabilities,
@@ -126,6 +129,76 @@ type NativeDevices = {
 };
 
 type ConnectResult = { session: number; connectMs: number; roster: NativeRoster };
+
+/** voice/mod.rs `CurrentCall`: the call the shell is running, read by a page
+ *  that did not start it. */
+type NativeCurrent = {
+  session: number;
+  handoff: string | null;
+  state: string;
+  reason: string | null;
+  quality: string;
+  roster: NativeRoster;
+  url: string;
+  token: string;
+  micPublished: boolean;
+  micOpen: boolean;
+  echoCancellation: boolean;
+  camera: boolean;
+  screen: boolean;
+};
+
+function orphanedFrom(current: NativeCurrent): OrphanedCall {
+  return {
+    handoff: current.handoff,
+    state: connectionFromWord(current.state) ?? "disconnected",
+    reason: current.reason,
+    endpoint: current.url && current.token ? { url: current.url, token: current.token } : null,
+    micOpen: current.micPublished && current.micOpen,
+    camera: current.camera,
+    screen: current.screen,
+  };
+}
+
+async function tauriInvoke(): Promise<Invoke> {
+  const core = await import("@tauri-apps/api/core");
+  return (command, args) => core.invoke(command, args);
+}
+
+/**
+ * The call the shell kept running across a page reload, or null.
+ *
+ * Null outside a desktop shell (no command to answer), and from a shell built
+ * before `voice_current` existed -- which a shipped page never meets, since
+ * the desktop bundle is packaged inside its own shell.
+ */
+export async function findNativeOrphan(): Promise<OrphanedTransport | null> {
+  let invoke: Invoke;
+  let current: NativeCurrent | null;
+  try {
+    invoke = await tauriInvoke();
+    current = await invoke<NativeCurrent | null>("voice_current");
+  } catch {
+    return null;
+  }
+  if (!current) return null;
+  const session = current.session;
+  return {
+    call: orphanedFrom(current),
+    adopt: async (options, events) => {
+      const transport = new NativeTransport();
+      const call = await transport.adopt(session, options, events);
+      return { transport, call };
+    },
+    discard: async () => {
+      try {
+        await invoke("voice_disconnect");
+      } catch {
+        // Already gone.
+      }
+    },
+  };
+}
 
 /** How often a tile's rect is re-read when nothing observable moved it. */
 const RECT_POLL_MS = 500;
@@ -243,6 +316,7 @@ export class NativeTransport implements VoiceTransport {
           key: options.key
             ? { secret: Array.from(options.key.secret), keyIndex: keyIndexFor(options.key.epoch) }
             : null,
+          handoff: options.handoff,
         },
       });
       this.#session = result.session;
@@ -266,6 +340,69 @@ export class NativeTransport implements VoiceTransport {
       void this.#catchUpDevices(invoke, devices);
     } catch (error) {
       await this.disconnect();
+      throw nativeError(error);
+    }
+  }
+
+  /**
+   * Take over the shell's running call `session` for this page, which did not
+   * start it (`handoff.ts` says when): listen, read the call afresh, and
+   * answer with that reading. The session then sets its state from it.
+   *
+   * What the page before this one told the shell about itself is dropped
+   * (`voice_forget_page`): its tiles, which would go on drawing over this
+   * page at rects nobody updates, and the listener's volumes, which this
+   * page never knew -- so everybody plays at the default, which is what this
+   * page's sliders show. Throws when the shell no longer runs that session.
+   */
+  async adopt(session: number, options: AdoptOptions, events: TransportEvents): Promise<OrphanedCall> {
+    this.#events = events;
+    this.#video = options.video;
+    this.#ended = false;
+    const [invoke, event] = await Promise.all([tauriInvoke(), import("@tauri-apps/api/event")]);
+    this.#invoke = invoke;
+    this.#pending = [];
+    this.#unlisten = await event.listen<NativeEvent>("voice", (e) => this.#onEvent(e.payload));
+    try {
+      const current = await invoke<NativeCurrent | null>("voice_current");
+      if (!current || current.session !== session) throw new Error("the call is no longer running");
+      await invoke("voice_forget_page");
+      let devices: NativeDevices = { inputs: [], outputs: [] };
+      try {
+        devices = await invoke<NativeDevices>("voice_devices");
+      } catch {
+        // No devices to check against: playout reads as following the default.
+      }
+      this.#session = session;
+      this.#roster = current.roster;
+      this.#quality = qualityFromWord(current.quality);
+      this.#echoCancellation = current.echoCancellation;
+      this.#endpoint = { url: current.url, token: current.token };
+      this.#speakerChoice = options.speakerDeviceId;
+      this.#devices = devices;
+      // What the connect would have put playout on for this preference; the
+      // first device reading that disagrees moves it, as in any call.
+      this.#playoutFollowing = knownDeviceId(options.speakerDeviceId, devices.outputs) === null;
+      const pending = this.#pending ?? [];
+      this.#pending = null;
+      for (const queued of pending) this.#onEvent(queued);
+      // Unity for everybody already playing; see above.
+      for (const entry of this.#roster.participants) {
+        for (const kind of ["microphone", "screen"] as const) this.#sendPlayback(entry.identity, 1, kind);
+      }
+      const call = orphanedFrom(current);
+      if (call.state === "reconnecting") this.#watchReconnect();
+      this.#unlistenDevices = await event.listen<NativeDevices>("voice-devices", (e) =>
+        this.#onDevices(e.payload),
+      );
+      void this.#catchUpDevices(invoke, devices);
+      return call;
+    } catch (error) {
+      // Stops listening; the session decides whether the room is closed.
+      this.#unlisten?.();
+      this.#unlisten = null;
+      this.#pending = null;
+      this.#session = null;
       throw nativeError(error);
     }
   }

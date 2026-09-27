@@ -9,9 +9,9 @@
 // than by platform name -- see native-media.ts. Nothing outside this file
 // asks which one it got.
 
-import { nativeMediaSelected } from "./native-media";
-import type { VoiceTransport } from "./transport";
-import { NativeTransport } from "./transport-native";
+import { nativeMediaSelected, probeNativeMedia } from "./native-media";
+import type { OrphanedTransport, VoiceTransport } from "./transport";
+import { findNativeOrphan, NativeTransport } from "./transport-native";
 import { WebviewTransport } from "./transport-webview";
 
 /**
@@ -46,6 +46,19 @@ export function createTransport(override?: "webview" | null): VoiceTransport {
 export function transportIsNative(override?: "webview" | null): boolean {
   if (override === "webview") return false;
   return nativeMediaSelected();
+}
+
+/**
+ * A call already running when this page loaded, or null.
+ *
+ * Only the shell's engine can have one -- its room lives in the shell
+ * process and survives a page reload, where the webview's dies with the
+ * document -- so this asks the shell whatever `nativeMedia` says now: a call
+ * that is running is running, whichever engine this page would pick next.
+ */
+export async function findOrphanedCall(): Promise<OrphanedTransport | null> {
+  if (!(await probeNativeMedia())) return null;
+  return findNativeOrphan();
 }
 
 export type { VoiceTransport } from "./transport";

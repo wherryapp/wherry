@@ -43,7 +43,8 @@ import { e2e } from "../crypto";
 import { sync, type SyncEvent } from "../sync/engine";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 import { mlsSync } from "../sync/mls";
-import { createTransport, transportIsNative } from "./index";
+import { createTransport, findOrphanedCall, transportIsNative } from "./index";
+import { encodeHandoff, orphanDecision, type Handoff } from "./handoff";
 import { deriveCallKey } from "./keys";
 import { listVideoDevices } from "./devices";
 import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
@@ -68,10 +69,11 @@ import {
   type VideoSource,
 } from "./rules";
 import { followUpRoom, type RoomFollowUp } from "./room-probe";
-import { videoOptionsFor, volumeKey } from "./transport-rules";
+import { transportEndFor, videoOptionsFor, volumeKey } from "./transport-rules";
 import { blip, startRingback } from "./sounds";
 import type {
   FrameTransformKind,
+  OrphanedTransport,
   ScreenChoice,
   ScreenSource,
   TransportCapabilities,
@@ -277,6 +279,10 @@ export type VoiceDiagnostics = {
 };
 
 const LOCK_NAME = "messenger.voice";
+/** How long a page picking up a call waits for the reloaded page's hold on
+ *  the voice lock to drain. A document's locks go with the document, but
+ *  the new one can be running before that has happened. */
+const ORPHAN_LOCK_WAIT_MS = 3_000;
 const EPOCH_POLL_MS = 2_000;
 const KEY_WAIT_MS = 20_000;
 /** How often a frame that would not open may trigger a group reconcile. */
@@ -368,6 +374,10 @@ class VoiceSession {
   /** The live remote sources at the last roster read, for the chime. */
   #liveVideo: string[] = [];
   #onVisibility: (() => void) | null = null;
+  /** The reload check (`resumeAfterReload`): run once per page, and waited on
+   *  by a join, so a call started in the first moments of a page load cannot
+   *  race the shell's call from before it. */
+  #orphanCheck: Promise<void> | null = null;
 
   getState = (): VoiceState => this.#state;
 
@@ -406,6 +416,23 @@ class VoiceSession {
   /** Leave, telling the server; also the starter's cancel while ringing. */
   async leave(): Promise<void> {
     await this.#teardown({ tellServer: true, error: null });
+  }
+
+  /**
+   * Once per page load: pick up a call this page's predecessor left running
+   * in the shell, or close it (`handoff.ts`'s `orphanDecision` says which).
+   *
+   * `userId` is the account that may take a call over -- null while nobody
+   * is signed in, or the page cannot hold a call (unverified, below the
+   * version floor), in which case a running call is closed rather than left
+   * playing with nothing on screen to hang it up. Only the first call does
+   * anything; later ones return the same promise.
+   */
+  resumeAfterReload(userId: string | null): Promise<void> {
+    this.#orphanCheck ??= this.#checkOrphan(userId).catch(() => {
+      // Never throws into a caller; a failed check leaves the page as it was.
+    });
+    return this.#orphanCheck;
   }
 
   async setMicMuted(muted: boolean): Promise<void> {
@@ -720,6 +747,7 @@ class VoiceSession {
   // -- joining -------------------------------------------------------------
 
   async #join(plan: JoinPlan, engineOverride: "webview" | null = null): Promise<void> {
+    if (this.#orphanCheck) await this.#orphanCheck;
     if (this.#state.phase !== "idle" && this.#state.phase !== "elsewhere") {
       if (this.#state.conversationId === plan.conversation.id) return;
       // Switching rooms: out of the old one first, then in.
@@ -777,6 +805,23 @@ class VoiceSession {
     const grant = result.video ?? null;
     const transport = createTransport(engineOverride);
     this.#transport = transport;
+    const account = loadSession();
+    const handoff: Handoff | null = account
+      ? {
+          v: 1,
+          userId: account.user.id,
+          callId: result.call.id,
+          conversationId: plan.conversation.id,
+          hubVisibility: plan.conversation.hubVisibility ?? null,
+          kind: plan.kind,
+          e2ee,
+          // The connect's start rather than its end, a second or so early:
+          // the note has to be handed over with the connect.
+          connectedAt: Date.now(),
+          grant,
+          call: result.call,
+        }
+      : null;
     try {
       await transport.connect(
         {
@@ -793,6 +838,7 @@ class VoiceSession {
           speakerDeviceId: prefs.speakerDeviceId,
           key: derived,
           video: videoOptionsFor(grant, e2ee, prefs.videoQuality),
+          handoff: handoff ? encodeHandoff(handoff) : null,
         },
         this.#events(),
       );
@@ -862,7 +908,139 @@ class VoiceSession {
     blip("join");
   }
 
-  async #acquireLock(): Promise<boolean> {
+  // -- a call from before a reload --------------------------------------------
+
+  async #checkOrphan(userId: string | null): Promise<void> {
+    const found = await findOrphanedCall();
+    if (!found) return;
+    // The shell's call belongs to whichever page of this profile holds the
+    // voice lock. Not this one yet: the reloaded page's hold drains with its
+    // document. A lock that stays held is another window's, and so is the
+    // call -- nothing here touches it.
+    if (!(await this.#acquireLock(ORPHAN_LOCK_WAIT_MS))) return;
+    const decision = orphanDecision({ orphan: found.call, userId });
+    if (decision.kind === "adopt") {
+      await this.#adopt(found, decision.handoff);
+      return;
+    }
+    await found.discard();
+    this.#releaseLock?.();
+    this.#releaseLock = null;
+    if (decision.kind === "drop" && decision.followUp) {
+      this.#followUpRoom(decision.followUp.callId, decision.followUp.unsettled);
+    }
+  }
+
+  /**
+   * Take over the shell's running call as if this page had joined it: the
+   * same state, watchers and events as the end of `#join`, from the handoff
+   * and the shell's reading instead of a join answer. No token is fetched and
+   * nothing reconnects, so nobody in the call hears a gap.
+   *
+   * The key epoch is left unknown on purpose: the first epoch tick then
+   * derives the group's current key and hands it over, which is the key the
+   * shell already has unless the group turned while no page was watching --
+   * and then it is the repair.
+   */
+  async #adopt(found: OrphanedTransport, handoff: Handoff): Promise<void> {
+    this.#leaving = false;
+    const conversation: VoiceTarget = {
+      id: handoff.conversationId,
+      hubVisibility: handoff.hubVisibility,
+    };
+    this.#plan = {
+      kind: handoff.kind,
+      conversation,
+      // The engine switch re-runs this: the call by id, which the server
+      // takes as a join for the starter as well.
+      obtain:
+        handoff.kind === "room"
+          ? () => joinVoiceRoom(handoff.conversationId)
+          : () => answerCall(handoff.callId),
+    };
+    this.#set({
+      ...IDLE,
+      phase: "connecting",
+      conversationId: handoff.conversationId,
+      kind: handoff.kind,
+      call: handoff.call,
+      e2ee: handoff.e2ee,
+      nativeEngine: true,
+    });
+    const joined = this.#watchSync(handoff.callId);
+    const prefs = loadVoicePrefs();
+    let adopted: Awaited<ReturnType<OrphanedTransport["adopt"]>>;
+    try {
+      adopted = await found.adopt(
+        {
+          video: videoOptionsFor(handoff.grant, handoff.e2ee, prefs.videoQuality),
+          speakerDeviceId: prefs.speakerDeviceId,
+        },
+        this.#events(),
+      );
+    } catch {
+      // Could not be taken over: out the way a hang-up goes -- the shell's
+      // room closed, then the server told. By the call's id, which the
+      // handoff always has (the join-time snapshot `teardown` reads may not
+      // have survived decoding). The room was there a moment ago, so this
+      // device still holds the call's row and the leave cannot take out
+      // another device's.
+      await found.discard();
+      await this.#teardown({ tellServer: false, error: "The call ended when the page reloaded." });
+      try {
+        await leaveCall(handoff.callId);
+      } catch {
+        // The SFU's departure webhook heals a lost leave.
+      }
+      return;
+    }
+    const { transport, call } = adopted;
+    if (this.#leaving) {
+      // The room ended while the takeover was being wired, and an event
+      // replayed inside it already tore this session down -- with no
+      // transport to close yet, so it is closed here.
+      await transport.disconnect();
+      return;
+    }
+    this.#transport = transport;
+    if (call.state === "disconnected") {
+      // Ended between the two readings: what the transport would have said.
+      await this.#teardown({ tellServer: false, error: "The call ended" });
+      const unsettled = transportEndFor(call.reason, call.endpoint).unsettled;
+      if (unsettled) this.#followUpRoom(handoff.callId, unsettled);
+      return;
+    }
+    // The chime's baseline, before the first roster read that could fire it.
+    this.#liveVideo = liveVideoKeys(transport.participants());
+    this.#set({
+      phase: call.state === "reconnecting" ? "reconnecting" : "connected",
+      quality: transport.quality(),
+      connectedAt: handoff.connectedAt,
+      keyEpoch: null,
+      playbackBlocked: transport.playbackBlocked(),
+      ringing: callerIsRinging({
+        kind: handoff.kind,
+        status: handoff.call?.status ?? "active",
+        othersInRoom: transport.participants().length,
+      }),
+      grant: handoff.grant,
+      capabilities: transport.capabilities(),
+      micMuted: !call.micOpen,
+      camera: { on: call.camera, paused: false },
+      screen: { on: call.screen },
+    });
+    this.#refreshParticipants();
+    this.#announce();
+    if (this.#state.ringing) this.#ringback = startRingback();
+    if (handoff.e2ee) {
+      this.#watchEpoch(handoff.conversationId, handoff.callId);
+      void this.#refreshKey(handoff.conversationId, handoff.callId);
+    }
+    this.#watchVisibility();
+    joined();
+  }
+
+  async #acquireLock(waitMs = 0): Promise<boolean> {
     // Already held by this session, so do not ask again.
     //
     // The engine switch (`switchEngineForThisCall`) tears the transport
@@ -874,9 +1052,14 @@ class VoiceSession {
     // D-28 on 2026-09-08, the first run of that row.
     if (this.#releaseLock) return true;
     if (typeof navigator === "undefined" || !("locks" in navigator)) return true;
+    // `waitMs`: queue for the lock that long, rather than asking once.
+    const options: LockOptions =
+      waitMs > 0 && typeof AbortSignal.timeout === "function"
+        ? { signal: AbortSignal.timeout(waitMs) }
+        : { ifAvailable: true };
     return await new Promise<boolean>((resolve) => {
       void navigator.locks
-        .request(LOCK_NAME, { ifAvailable: true }, (lock) => {
+        .request(LOCK_NAME, options, (lock) => {
           if (!lock) {
             resolve(false);
             return Promise.resolve();
