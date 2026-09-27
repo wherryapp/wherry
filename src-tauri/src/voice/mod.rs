@@ -48,6 +48,12 @@
 //   one poller for the life of the process that re-reads the device list
 //   every two seconds and emits `voice-devices` when it changed, so the
 //   page needs no timer of its own for it.
+// - libwebrtc initialises its voice engine lazily, at the first
+//   PeerConnection, and that init re-selects both devices and (on Windows)
+//   turns the built-in echo canceller on. `voice_connect` therefore holds the
+//   engine initialised (`MEDIA_ENGINE`) *before* it applies anything, so the
+//   first call of a launch opens what the page chose, the same as every
+//   later call does. See `hold_media_engine`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -58,7 +64,10 @@ use livekit::e2ee::key_provider::{KeyProvider, KeyProviderOptions};
 use livekit::e2ee::{E2eeOptions, EncryptionType};
 use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::*;
+use livekit::rtc_engine::lk_runtime::LkRuntime;
 use livekit::webrtc::native::frame_cryptor::KeyDerivationAlgorithm;
+use livekit::webrtc::peer_connection::PeerConnection;
+use livekit::webrtc::peer_connection_factory::RtcConfiguration;
 use livekit::webrtc::stats::RtcStats;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -149,6 +158,114 @@ fn platform_audio() -> VoiceResult<PlatformAudio> {
     .map_err(|e| VoiceError::new("audio_unavailable", format!("PlatformAudio::new: {e:?}")))?;
   *held = Some(audio.clone());
   Ok(audio)
+}
+
+// -- the voice engine's one-time init ----------------------------------------
+//
+// libwebrtc's `WebRtcVoiceEngine` is reference-counted by the PeerConnections
+// that use it (`ConnectionContext::MediaEngineReference` in the pinned
+// libwebrtc, webrtc-89d790b): its `Init` runs when the first one is created,
+// inside `create_peer_connection`, and its `Terminate` when the last one goes.
+// That `Init` does two things to the audio device module that are nobody's
+// choice here:
+//
+// 1. `adm_helpers::Init` selects both devices again -- by *role* on Windows
+//    (the communications role, which the fork's `adm_proxy.cpp` maps to the
+//    console default for S-16), and by a fixed index 0 elsewhere as upstream's
+//    `adm_helpers.cc` reads (believed from the source; macOS has not been
+//    read in a log) -- replacing a device `voice_connect` had just chosen;
+// 2. it applies the engine's default options, echo cancellation on, and where
+//    the module has a built-in canceller (Windows: the voice-capture DMO) that
+//    is `EnableBuiltInAEC(1)`. `InitRecording` then opens the DMO at 16 kHz
+//    mono instead of plain WASAPI, and once recording is initialised the
+//    module refuses to turn it off again.
+//
+// Before 2026-09-26 the first PeerConnection was the call's own, created
+// inside `Room::connect` -- *after* `voice_connect` had applied the page's
+// devices and switches -- so the first call of every launch ran on the
+// default pair with Windows' canceller in series with (or instead of) the
+// one the Echo cancellation switch controls. Later calls in the same process
+// were right, because the engine was never terminated between them. Read on
+// the rig 2026-09-26 with WHERRY_WEBRTC_LOG=1: role-form `SetPlayoutDevice`
+// and `SetRecordingDevice` after the index-form ones, `EnableBuiltInAEC(1) =>
+// 0` at the engine's init, `Capture device index: 0, render device index: 0`
+// and `SetRecordingSampleRate(16000)` at `InitRecording` -- call one only.
+//
+// The fix is to take that init out of the call: create one PeerConnection of
+// our own before anything is applied and keep it for the life of the process.
+// Creating it runs the engine's `Init` there and then; holding it keeps the
+// reference count above zero, so no later PeerConnection -- the call's, a
+// reconnect's -- can run `Init` again, and the engine is never terminated
+// under the shell's held `PlatformAudio` either. The PeerConnection itself is
+// idle: no transceivers, no description, so it gathers nothing and sends
+// nothing. It is the same factory and the same public call LiveKit's own
+// transports use (`LkRuntime::pc_factory().create_peer_connection`).
+
+/// The PeerConnection that holds the voice engine initialised. `None` until
+/// the first `voice_connect`, and never closed or dropped once set -- closing
+/// it would be the engine's `Terminate` if it were the last reference.
+static MEDIA_ENGINE: Mutex<Option<PeerConnection>> = Mutex::new(None);
+
+enum EngineHold {
+  /// Held since an earlier connect: no engine `Init` can run in this one.
+  Already,
+  /// Created now; the engine's `Init` (if it had not run already) has just
+  /// run, before anything this connect applies.
+  Now { ms: u128 },
+  /// The factory would not create one. The call goes ahead, and its own first
+  /// PeerConnection runs the engine's `Init` as before this fix: the device
+  /// half comes back for that call, the canceller half is still repaired by
+  /// `builtin_aec_off`. Tried again on the next connect.
+  Failed(String),
+}
+
+fn hold_media_engine() -> EngineHold {
+  let mut held = MEDIA_ENGINE.lock().unwrap();
+  if held.is_some() {
+    return EngineHold::Already;
+  }
+  let started = Instant::now();
+  // The runtime `PlatformAudio` holds (and so the one `Room::connect` will
+  // use): `LkRuntime::instance()` hands back the live one while any holder
+  // exists, and `AUDIO` holds it for the life of the process.
+  let runtime = LkRuntime::instance();
+  match runtime.pc_factory().create_peer_connection(RtcConfiguration::default()) {
+    Ok(pc) => {
+      *held = Some(pc);
+      EngineHold::Now { ms: started.elapsed().as_millis() }
+    }
+    Err(error) => EngineHold::Failed(error.to_string()),
+  }
+}
+
+/// Windows' built-in canceller off, at the last moment it can still be
+/// changed: the call's PeerConnections exist, and recording -- which the
+/// module refuses to reconfigure once initialised -- is not initialised until
+/// the microphone publishes. `configure_audio_processing` already asked for
+/// this before the connect; asked again here because this is the moment that
+/// decides `InitRecording`'s path, and because the SDK only logs a refusal at
+/// warn level, never the state. The switch itself is passed through
+/// unchanged: echo cancellation stays WebRTC's own (AEC3), on or off as the
+/// page decided, and never the hardware one (`prefer_hardware_processing` is
+/// false in `voice_connect`). A module with no built-in canceller (macOS,
+/// Linux) is left alone and says so.
+fn builtin_aec_off(audio: &PlatformAudio, processing: ProcessingArgs, engine_held: bool) {
+  let aec3 = if processing.echo_cancellation { "on" } else { "off" };
+  let recording = audio.is_recording_initialized();
+  if !audio.is_hardware_aec_available() {
+    log::info!(
+      "voice: after connect, before recording -- no built-in echo canceller on this platform; AEC3 {aec3} (recording initialised {recording}, engine held {engine_held})"
+    );
+    return;
+  }
+  match audio.set_echo_cancellation(processing.echo_cancellation, false) {
+    Ok(()) => log::info!(
+      "voice: after connect, before recording -- built-in echo canceller off (EnableBuiltInAEC(0) accepted); AEC3 {aec3} (recording initialised {recording}, engine held {engine_held})"
+    ),
+    Err(error) => log::warn!(
+      "voice: after connect -- built-in echo canceller NOT turned off ({error:?}; recording initialised {recording}, engine held {engine_held}): this call may capture through Windows' voice-capture DMO at 16 kHz"
+    ),
+  }
 }
 
 // -- the session ------------------------------------------------------------
@@ -767,6 +884,28 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   let audio = platform_audio()?;
   render::remember_app(&app);
 
+  // The engine's one-time init first, so that nothing below is undone by it
+  // (see `hold_media_engine`). Every line below this one in the log is then a
+  // choice that stands for the call.
+  let engine_held = match hold_media_engine() {
+    EngineHold::Now { ms } => {
+      log::info!(
+        "voice: media engine initialised and held in {ms} ms, before this call's devices and echo settings"
+      );
+      true
+    }
+    EngineHold::Already => {
+      log::info!("voice: media engine already held -- no engine init in this call");
+      true
+    }
+    EngineHold::Failed(error) => {
+      log::warn!(
+        "voice: could not hold the media engine ({error}); if this is the first call of the launch, the engine's init in the connect will replace its devices with the defaults (the built-in echo canceller is still turned off after the connect)"
+      );
+      false
+    }
+  };
+
   // Say which devices this call actually opened, by id and by name.
   //
   // Nothing used to. The id was set silently on success, the mid-call switch
@@ -846,7 +985,12 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   if devices.inputs.is_empty() {
     log::warn!("voice: no active input device -- the call will connect and capture nothing");
   }
-  // Before the microphone track exists: these are its source's options.
+  // Before the microphone track exists: these are its source's options. With
+  // `prefer_hardware_processing` false this also turns a built-in canceller
+  // off where the module has one (Windows' DMO; `BuiltInAECIsAvailable` is 1
+  // even on the rig's VM), and after `hold_media_engine` nothing turns it back
+  // on before `builtin_aec_off` checks it after the connect. The
+  // `aec=Hardware` in the line below means only that one is *available*.
   let processing = args.processing;
   if let Err(error) = audio.configure_audio_processing(AudioProcessingOptions {
     echo_cancellation: processing.echo_cancellation,
@@ -854,8 +998,8 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     auto_gain_control: processing.auto_gain_control,
     prefer_hardware_processing: false,
   }) {
-    // Only the hardware path can fail, and desktop has none; a call is
-    // still worth having with the defaults.
+    // Only the hardware path can fail; a call is still worth having with
+    // the defaults, and `builtin_aec_off` reports the canceller's state.
     log::warn!("voice: configure_audio_processing: {error:?}");
   }
   log::info!(
@@ -914,6 +1058,9 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     keys.is_some(),
     *shared.key_index.lock().unwrap()
   );
+  // Before `SESSION` is set, so before `voice_set_mic` can publish and
+  // initialise recording.
+  builtin_aec_off(&audio, processing, engine_held);
   let pump_task =
     tauri::async_runtime::spawn(pump(app.clone(), id, room.clone(), shared.clone(), rx));
   // Debug builds: ask the page, from the shell's side, whether it is still
