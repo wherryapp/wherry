@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-report-ended"
+description = "Enables the report_ended command without any pre-configured scope."
+commands.allow = ["report_ended"]
+
+[[permission]]
+identifier = "deny-report-ended"
+description = "Denies the report_ended command without any pre-configured scope."
+commands.deny = ["report_ended"]

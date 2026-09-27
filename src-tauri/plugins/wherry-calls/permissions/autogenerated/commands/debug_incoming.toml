@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-debug-incoming"
+description = "Enables the debug_incoming command without any pre-configured scope."
+commands.allow = ["debug_incoming"]
+
+[[permission]]
+identifier = "deny-debug-incoming"
+description = "Denies the debug_incoming command without any pre-configured scope."
+commands.deny = ["debug_incoming"]

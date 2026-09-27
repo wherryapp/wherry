@@ -1,0 +1,30 @@
+# The phones' native call pieces: PushKit and CallKit on iOS, the call
+# service and the ring on Android (docs/prompts/phone-calls-plan.md §2.1,
+# §5). A Tauri mobile plugin rather than hand edits to gen/, so nothing here
+# is erased by `tauri * init`. The Rust half is a passthrough: each command
+# hands its arguments to the Kotlin or Swift plugin, and every decision is
+# the page's (client/src/voice/phone-rules.ts). The app depends on this crate
+# only in its mobile target table, so desktop builds never compile it.
+[package]
+name = "tauri-plugin-wherry-calls"
+version = "0.1.0"
+description = "Wherry's phone call integration: ring, call service, CallKit"
+authors = ["Wherry"]
+edition = "2021"
+rust-version = "1.77.2"
+links = "tauri-plugin-wherry-calls"
+publish = false
+
+[dependencies]
+# The same minors the app already resolves (client/src-tauri/Cargo.lock),
+# so adding this crate to the app adds no new version of anything.
+tauri = { version = "2.11.3" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+
+[build-dependencies]
+# Required to build any Tauri plugin: it generates the command permissions
+# and links the Swift package / hands Gradle the Android module. Already in
+# the app's graph (tauri-plugin 2.6.3).
+tauri-plugin = { version = "2.6.3", features = ["build"] }
