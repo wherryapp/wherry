@@ -45,6 +45,7 @@
 
 import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules";
 import { nativeMediaProbe } from "./native-media";
+import { probeRoom } from "./room-probe";
 import type {
   AudioKind,
   FrameTransformKind,
@@ -52,6 +53,7 @@ import type {
   ScreenSource,
   TransportCapabilities,
   TransportConnectOptions,
+  TransportEnd,
   TransportEvents,
   TransportParticipant,
   TransportStats,
@@ -62,6 +64,7 @@ import type {
 } from "./transport";
 import {
   connectionFromWord,
+  disconnectWasTold,
   isEncryptionFailure,
   knownDeviceId,
   nativeErrorName,
@@ -70,6 +73,8 @@ import {
   playoutAfterDeviceChange,
   playoutReadingChanged,
   qualityFromWord,
+  ROOM_PROBE_EVERY_MS,
+  ROOM_PROBE_FIRST_MS,
   screenAudioMode,
   screenOptionsFor,
   tileRect,
@@ -101,9 +106,15 @@ type NativeEvent = { session: number } & (
   | { kind: "speakers"; roster: NativeRoster }
   | { kind: "participant_joined" }
   | { kind: "participant_left" }
-  | { kind: "connection"; state: string; quality: string }
+  // `reason` is the SDK's `DisconnectReason` by its Rust name, on
+  // `disconnected` only. A shell built before it existed sends none, and
+  // sends `disconnected` twice (the state change, then the room event).
+  | { kind: "connection"; state: string; quality: string; reason?: string | null }
   | { kind: "encryption"; identity: string; state: string }
   | { kind: "video_changed" }
+  // The SFU's refreshed token; a shell built before 2026-09-27 never sends
+  // it, and its calls are probed with the join token (15 minutes).
+  | { kind: "token"; token: string }
 );
 
 type NativeDevices = {
@@ -182,11 +193,24 @@ export class NativeTransport implements VoiceTransport {
   /** Playout moves in order: a second device event never overtakes the
    *  first's command. */
   #playoutQueue: Promise<void> = Promise.resolve();
+  /** The call's SFU URL and its latest token, for `probeRoom`. */
+  #endpoint: { url: string; token: string } | null = null;
+  /** This call's end has been reported, or is being decided: the session
+   *  hears one `disconnected`, whichever path got there first. */
+  #ended = false;
+  /** Whether the reconnect watch is running, its pending timer, and the
+   *  episode it belongs to -- bumped whenever the connection word moves on,
+   *  so an answer that lands after a reconnect succeeded decides nothing. */
+  #watching = false;
+  #watchTimer: ReturnType<typeof setTimeout> | null = null;
+  #episode = 0;
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
     this.#events = events;
     this.#echoCancellation = options.processing.echoCancellation;
     this.#video = options.video;
+    this.#endpoint = { url: options.url, token: options.token };
+    this.#ended = false;
     const [core, event] = await Promise.all([
       import("@tauri-apps/api/core"),
       import("@tauri-apps/api/event"),
@@ -251,6 +275,8 @@ export class NativeTransport implements VoiceTransport {
     this.#unlisten = null;
     this.#unlistenDevices?.();
     this.#unlistenDevices = null;
+    this.#stopWatch();
+    this.#endpoint = null;
     this.#session = null;
     this.#pending = null;
     this.#events = {};
@@ -646,7 +672,14 @@ export class NativeTransport implements VoiceTransport {
       case "connection": {
         this.#quality = qualityFromWord(payload.quality);
         const state = connectionFromWord(payload.state);
-        if (state) events.connection?.(state, this.#quality);
+        if (!state || this.#ended) break;
+        if (state === "disconnected") {
+          void this.#end(payload.reason ?? null);
+          break;
+        }
+        if (state === "reconnecting") this.#watchReconnect();
+        else this.#stopWatch();
+        events.connection?.(state, this.#quality);
         break;
       }
       case "encryption":
@@ -655,7 +688,79 @@ export class NativeTransport implements VoiceTransport {
       case "video_changed":
         events.videoChanged?.();
         break;
+      case "token":
+        // The join token expires after 15 minutes; a probe of a longer
+        // call with it would read 401, which decides nothing.
+        if (this.#endpoint) this.#endpoint = { ...this.#endpoint, token: payload.token };
+        break;
     }
+  }
+
+  // -- a room the SFU no longer holds ------------------------------------------
+
+  /**
+   * While the shell reconnects, ask the SFU now and then whether the room is
+   * still there, and end the call as soon as it says no.
+   *
+   * The Rust SDK retries a reconnect refused with 404 "requested room does
+   * not exist" ten times over about a minute (upstream counts only 401 and
+   * 403 as final), with the call's controls on screen the whole time, where
+   * the webview engine stops at the first such answer (rig, 2026-09-27).
+   * Changing that is a fork commit, so the page asks the question the SDK
+   * asks and acts on the answer; `transport-rules.ts` says why the room
+   * cannot come back. Nothing here stops a reconnect that can land: a room
+   * that exists answers "present" and the SDK carries on.
+   */
+  #watchReconnect(): void {
+    if (this.#watching || this.#ended) return;
+    this.#watching = true;
+    const episode = this.#episode;
+    const tick = async (): Promise<void> => {
+      this.#watchTimer = null;
+      const endpoint = this.#endpoint;
+      if (!endpoint || episode !== this.#episode) return;
+      const verdict = await probeRoom(endpoint.url, endpoint.token);
+      if (episode !== this.#episode || this.#ended || this.#session === null) return;
+      if (verdict === "gone") {
+        this.#report({ roomGone: true });
+        return;
+      }
+      this.#watchTimer = setTimeout(() => void tick(), ROOM_PROBE_EVERY_MS);
+    };
+    this.#watchTimer = setTimeout(() => void tick(), ROOM_PROBE_FIRST_MS);
+  }
+
+  #stopWatch(): void {
+    this.#episode += 1;
+    this.#watching = false;
+    if (this.#watchTimer !== null) clearTimeout(this.#watchTimer);
+    this.#watchTimer = null;
+  }
+
+  /**
+   * The shell says the call is over. Unless the reason says somebody already
+   * knows (`disconnectWasTold`), ask whether the room still exists first: the
+   * SDK gives up on a vanished room with no reason at all.
+   */
+  async #end(reason: string | null): Promise<void> {
+    if (this.#ended) return;
+    this.#ended = true;
+    this.#stopWatch();
+    const endpoint = this.#endpoint;
+    let roomGone = false;
+    if (endpoint && !disconnectWasTold(reason)) {
+      roomGone = (await probeRoom(endpoint.url, endpoint.token)) === "gone";
+    }
+    // A leave pressed meanwhile has already cleared the handlers.
+    this.#events.connection?.("disconnected", this.#quality, { roomGone });
+  }
+
+  /** The end, decided here and reported once. The session's teardown then
+   *  closes the shell's room, which cancels the SDK's remaining attempts. */
+  #report(end: TransportEnd): void {
+    this.#ended = true;
+    this.#stopWatch();
+    this.#events.connection?.("disconnected", this.#quality, end);
   }
 
   /** A volume set before somebody's device appeared reaches it now. */

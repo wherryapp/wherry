@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   cameraCeilingFor,
   connectionFromWord,
+  disconnectWasTold,
   isEncryptionFailure,
   knownDeviceId,
   nativeErrorName,
@@ -12,6 +13,8 @@ import {
   playoutReadingChanged,
   publishErrorMessage,
   qualityFromWord,
+  roomProbeUrl,
+  roomProbeVerdict,
   SCREEN_AUDIENCE_STEP,
   screenAudioCapture,
   screenAudioMode,
@@ -519,6 +522,102 @@ describe("screenAudioNote", () => {
     for (const id of ["window:1", "screen:1", "rubbish"]) {
       const mentionsOneApp = /this app's sound/.test(screenAudioNote(id));
       assert.equal(mentionsOneApp, screenAudioMode(id) === "include-target");
+    }
+  });
+});
+
+describe("roomProbeUrl", () => {
+  it("asks the SFU the token names, over HTTP, at rtc/validate", () => {
+    assert.equal(
+      roomProbeUrl("wss://voice.wherry.app", "tok"),
+      "https://voice.wherry.app/rtc/validate?access_token=tok",
+    );
+    // The rig and the dev stack: ws://localhost:7880.
+    assert.equal(
+      roomProbeUrl("ws://localhost:7880", "tok"),
+      "http://localhost:7880/rtc/validate?access_token=tok",
+    );
+  });
+
+  it("keeps a path the SFU is served under, as livekit-client does", () => {
+    assert.equal(
+      roomProbeUrl("wss://example.test/livekit/", "t"),
+      "https://example.test/livekit/rtc/validate?access_token=t",
+    );
+    assert.equal(
+      roomProbeUrl("wss://example.test/livekit", "t"),
+      "https://example.test/livekit/rtc/validate?access_token=t",
+    );
+  });
+
+  it("drops a query the URL came with and encodes the token", () => {
+    assert.equal(
+      roomProbeUrl("wss://example.test/?x=1", "a+b/c="),
+      "https://example.test/rtc/validate?access_token=a%2Bb%2Fc%3D",
+    );
+  });
+
+  it("answers nothing for a URL that is not an SFU's", () => {
+    assert.equal(roomProbeUrl("not a url", "t"), null);
+    assert.equal(roomProbeUrl("file:///etc/passwd", "t"), null);
+  });
+});
+
+describe("roomProbeVerdict", () => {
+  it("reads the SFU's own sentence as a room that is gone", () => {
+    assert.equal(roomProbeVerdict(404, "requested room does not exist"), "gone");
+    assert.equal(roomProbeVerdict(404, "requested room does not exist\n"), "gone");
+  });
+
+  it("does not read any other 404 as a dead room", () => {
+    // An SFU without the path, or a proxy in front of one: ending a call on
+    // that would end calls that are fine.
+    assert.equal(roomProbeVerdict(404, "404 page not found"), "unknown");
+    assert.equal(roomProbeVerdict(404, ""), "unknown");
+  });
+
+  it("tells a live room and a refused token apart from both", () => {
+    assert.equal(roomProbeVerdict(200, "success"), "present");
+    assert.equal(roomProbeVerdict(401, "invalid token"), "refused");
+    assert.equal(roomProbeVerdict(403, ""), "refused");
+    assert.equal(roomProbeVerdict(503, "requested room does not exist"), "unknown");
+  });
+});
+
+describe("disconnectWasTold", () => {
+  it("knows the reasons somebody else already reported", () => {
+    // livekit-client's spelling and the Rust SDK's Debug spelling.
+    for (const reason of [
+      "PARTICIPANT_REMOVED",
+      "ParticipantRemoved",
+      "ROOM_DELETED",
+      "RoomDeleted",
+      "ROOM_CLOSED",
+      "DUPLICATE_IDENTITY",
+      "CLIENT_INITIATED",
+      "ClientInitiated",
+    ]) {
+      assert.equal(disconnectWasTold(reason), true, reason);
+    }
+  });
+
+  it("asks about everything else, the SFU restart's reasons included", () => {
+    // The rig's SFU restart ended the native call with UnknownReason; a
+    // graceful shutdown says ServerShutdown, and forgets the room as surely.
+    for (const reason of [
+      null,
+      undefined,
+      "",
+      "UnknownReason",
+      "UNKNOWN_REASON",
+      "ServerShutdown",
+      "SERVER_SHUTDOWN",
+      "SignalClose",
+      "JoinFailure",
+      "ConnectionTimeout",
+      "something new",
+    ]) {
+      assert.equal(disconnectWasTold(reason), false, String(reason));
     }
   });
 });

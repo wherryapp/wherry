@@ -115,6 +115,124 @@ export function connectionFromWord(word: string): TransportConnectionState | nul
   }
 }
 
+// -- a room the SFU no longer holds --------------------------------------------
+//
+// Every room is created by the server with its call row (`auto_create` is
+// off on every SFU config in deploy/livekit/), so a room that is gone never
+// comes back: an SFU restart forgets every room and everybody in it, and a
+// room that closed on its own timers is closed. A transport reconnecting to
+// one can only fail. livekit-client knows this -- its reconnect asks the SFU's
+// `rtc/validate` why the socket was refused and stops at "requested room does
+// not exist" -- while the Rust SDK treats that 404 as retryable and spends
+// ten attempts, about a minute, before it gives up (row D-75).
+//
+// And the SFU sends nobody's `participant_left` for a room it forgot, so the
+// server never hears that this device left. The page has to say it.
+
+/** What the SFU's `rtc/validate` answered for this call's token. */
+export type RoomProbeVerdict =
+  /** The room does not exist: terminal, and the server must be told. */
+  | "gone"
+  /** The token is good and the room exists: a reconnect can still land. */
+  | "present"
+  /** 401 or 403: the token expired or was refused. The SDK stops on this
+   *  itself, and it says nothing about the room. */
+  | "refused"
+  /** No answer, or one this rule does not read (a 5xx, a proxy's 404). */
+  | "unknown";
+
+/**
+ * The validate URL for a call's SFU URL and token, as livekit-client builds
+ * it: the scheme made HTTP, `rtc/validate` appended to whatever path the URL
+ * already has, and the token as `access_token`.
+ *
+ * The token rides in the query string because that is how livekit-client
+ * sends it on every connect, so this adds no exposure; a header would make
+ * the request non-simple and cost a CORS preflight the SFU was never asked
+ * to answer. It goes only to the SFU the token was minted for, never to our
+ * server, whose request log is why CLAUDE.md keeps secrets out of query
+ * strings.
+ */
+export function roomProbeUrl(url: string, token: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  switch (parsed.protocol) {
+    case "wss:":
+    case "https:":
+      parsed.protocol = "https:";
+      break;
+    case "ws:":
+    case "http:":
+      parsed.protocol = "http:";
+      break;
+    default:
+      return null;
+  }
+  const base = parsed.pathname.endsWith("/") ? parsed.pathname : `${parsed.pathname}/`;
+  parsed.pathname = `${base}rtc/validate`;
+  parsed.search = "";
+  parsed.hash = "";
+  parsed.searchParams.set("access_token", token);
+  return parsed.toString();
+}
+
+/**
+ * Reads one validate answer. Only the SFU's own sentence makes a 404 "gone",
+ * exactly as livekit-client decides it: a 404 without it is a path the SFU
+ * does not serve (an old server, a proxy in front), and reading that as a
+ * dead room would end calls that are fine.
+ */
+export function roomProbeVerdict(status: number, body: string): RoomProbeVerdict {
+  if (status >= 200 && status < 300) return "present";
+  if (status === 404 && body.includes("requested room does not exist")) return "gone";
+  if (status === 401 || status === 403) return "refused";
+  return "unknown";
+}
+
+/**
+ * The disconnect reasons that mean the SFU told this device to go for a
+ * reason somebody else already knows: our server removed it or deleted the
+ * room (`removeParticipant`, `deleteRoom`), the SFU closed the room on its
+ * own timers and sends `room_finished`, another connection took the
+ * identity, or this device asked. After one of these there is nothing to ask
+ * and nothing to tell the server.
+ *
+ * Everything else -- no reason, a server shutdown, a signal close, a join
+ * failure, a timeout -- leaves the room's fate unknown, and the transport
+ * asks `rtc/validate` before it reports the end. Asking is harmless: a room
+ * that still exists answers "present" and the page leaves as it always did.
+ *
+ * Spelled as each SDK spells it: livekit-client's `PARTICIPANT_REMOVED`, the
+ * Rust SDK's `ParticipantRemoved` (the shell sends `{reason:?}`); both fold
+ * to one key.
+ */
+const TOLD_DISCONNECTS = new Set([
+  "clientinitiated",
+  "duplicateidentity",
+  "participantremoved",
+  "roomdeleted",
+  "roomclosed",
+]);
+
+export function disconnectWasTold(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return TOLD_DISCONNECTS.has(reason.replace(/[^a-z]/gi, "").toLowerCase());
+}
+
+/** How long a reconnect runs before the native transport first asks whether
+ *  the room still exists, and how often it asks again. The first wait lets a
+ *  resume after a network blip land without a request; the SDK's own attempts
+ *  run for about a minute, and an SFU restart takes ten seconds or so before
+ *  it can answer at all (rig, 2026-09-27). */
+export const ROOM_PROBE_FIRST_MS = 2_000;
+export const ROOM_PROBE_EVERY_MS = 5_000;
+/** One validate request's bound: an SFU that is still down never answers. */
+export const ROOM_PROBE_TIMEOUT_MS = 4_000;
+
 /**
  * A stored device id is only worth sending if the shell can still see it:
  * one saved from the webview's `enumerateDevices` lives in a different id

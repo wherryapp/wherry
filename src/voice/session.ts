@@ -905,16 +905,25 @@ class VoiceSession {
         // otherwise sit unsubscribed until the next scroll.
         this.#applyAllSubscriptions();
       },
-      connection: (state, quality) => {
+      connection: (state, quality, end) => {
         if (this.#leaving) return;
         if (state === "reconnecting") this.#set({ phase: "reconnecting", quality });
         else if (state === "connected") this.#set({ phase: "connected", quality });
         else {
           // The SFU ended it (a moderator, the room closing, the call
-          // ending, or a network the transport gave up on). Nothing to
-          // tell the server: it either did this or its webhook already
-          // knows.
-          void this.#teardown({ tellServer: false, error: "The call ended" });
+          // ending, or a network the transport gave up on). Usually nothing
+          // to tell the server: it either did this or the SFU's
+          // `participant_left` webhook tells it.
+          //
+          // Except when the room itself is gone (`end.roomGone`, the SFU's
+          // own answer): an SFU that restarted forgot the room and everyone
+          // in it and sends no webhook for anybody, so without this leave
+          // the call stayed open with every `left_at` null (rig,
+          // 2026-09-27) until the sweep's hour for a room it cannot see.
+          // Leaving is safe only because the room is gone: `leaveCall` acts
+          // on this *user's* row, and while the room exists that row may
+          // be this account's other device, which took the call over.
+          void this.#teardown({ tellServer: end?.roomGone === true, error: "The call ended" });
         }
       },
       playbackChanged: (blocked) => this.#set({ playbackBlocked: blocked }),

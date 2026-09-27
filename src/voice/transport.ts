@@ -109,6 +109,17 @@ export type TransportConnectOptions = {
 export type TransportConnectionState = "connected" | "reconnecting" | "disconnected";
 
 /**
+ * What the transport learned about a `disconnected` it did not ask for.
+ *
+ * `roomGone` is the SFU's own answer that this call's room no longer exists
+ * (`transport-rules.ts`'s `roomProbeVerdict`): the SFU restarted, which
+ * forgets every room and everybody in it, or the room closed. No
+ * `participant_left` will ever reach the server for this device then, so the
+ * session tells it. False covers everything else, including "could not ask".
+ */
+export type TransportEnd = { roomGone: boolean };
+
+/**
  * Which of somebody's audio tracks is meant.
  *
  * A screen share may carry its own audio, and from 2026-09-09 that is a
@@ -168,7 +179,14 @@ export type TransportEvents = {
    *  `participants()`. Speaker changes are throttled by the session. */
   rosterChanged?: () => void;
   speakersChanged?: () => void;
-  connection?: (state: TransportConnectionState, quality: VoiceQuality) => void;
+  /** `end` comes only with `disconnected`, and only once per call: a
+   *  transport that reconnects to a room the SFU no longer holds reports it
+   *  as terminal (`end.roomGone`) rather than retrying into it. */
+  connection?: (
+    state: TransportConnectionState,
+    quality: VoiceQuality,
+    end?: TransportEnd,
+  ) => void;
   playbackChanged?: (blocked: boolean) => void;
   /** A frame this device could not open; `reason` is the SDK's word. */
   encryptionError?: (reason: string) => void;

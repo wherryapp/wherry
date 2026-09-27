@@ -13,6 +13,8 @@ import {
   ConnectionQuality,
   ConnectionState,
   BaseKeyProvider,
+  DisconnectReason,
+  EngineEvent,
   createKeyMaterialFromBuffer,
   isInsertableStreamSupported,
   isScriptTransformSupported,
@@ -36,7 +38,9 @@ import {
   type VideoPreset,
 } from "livekit-client";
 import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
+import { probeRoom } from "./room-probe";
 import {
+  disconnectWasTold,
   publishErrorMessage,
   screenAudioCapture,
   screenAudioPublish,
@@ -220,9 +224,13 @@ export class WebviewTransport implements VoiceTransport {
    * element the tile handed over on mount is still the right element.
    */
   #elements = new Map<string, Set<HTMLVideoElement>>();
+  /** The call's SFU URL and its latest token, for `probeRoom` when the room
+   *  ends. */
+  #endpoint: { url: string; token: string } | null = null;
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
     this.#events = events;
+    this.#endpoint = { url: options.url, token: options.token };
     this.#speakerDeviceId = options.speakerDeviceId;
     this.#echoCancellation = options.processing.echoCancellation;
     // Built before the Room so disconnect can terminate exactly the one
@@ -272,6 +280,13 @@ export class WebviewTransport implements VoiceTransport {
     try {
       if (keys && options.key) await keys.setEpochKey(options.key.secret, options.key.epoch);
       await room.connect(options.url, options.token);
+      // The SFU refreshes the token every few minutes and the join token
+      // expires after 15, so a room probe at the end of a longer call needs
+      // the refreshed one. The Room re-emits nothing of it; its engine, which
+      // `connect` created, does (a public field and an exported event).
+      room.engine.on(EngineEvent.TokenRefreshed, (token: string) => {
+        if (this.#endpoint) this.#endpoint = { ...this.#endpoint, token };
+      });
       if (keys) await room.setE2EEEnabled(true);
     } catch (error) {
       await this.disconnect();
@@ -286,6 +301,7 @@ export class WebviewTransport implements VoiceTransport {
     this.#keys = null;
     this.#worker = null;
     this.#events = {};
+    this.#endpoint = null;
     if (room) {
       try {
         await room.disconnect();
@@ -783,10 +799,29 @@ export class WebviewTransport implements VoiceTransport {
         if (state === ConnectionState.Reconnecting) ev().connection?.("reconnecting", this.#quality);
         else if (state === ConnectionState.Connected) ev().connection?.("connected", this.#quality);
       })
-      .on(RoomEvent.Disconnected, () => ev().connection?.("disconnected", this.#quality))
+      .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => void this.#ended(reason))
       .on(RoomEvent.EncryptionError, (error) => {
         ev().encryptionError?.(error instanceof Error ? error.message : String(error));
       });
+  }
+
+  /**
+   * The room ended without this device asking. livekit-client already stops
+   * reconnecting at "requested room does not exist", but it reports that end
+   * with no reason, the same as a network it gave up on. So unless the reason
+   * says the server already knows (`disconnectWasTold`), ask the SFU whether
+   * the room still exists; a room that is gone will never produce this
+   * device's `participant_left`, and the session has to tell the server.
+   */
+  async #ended(reason: DisconnectReason | undefined): Promise<void> {
+    const endpoint = this.#endpoint;
+    const name = reason === undefined ? null : (DisconnectReason[reason] ?? null);
+    let roomGone = false;
+    if (endpoint && !disconnectWasTold(name)) {
+      roomGone = (await probeRoom(endpoint.url, endpoint.token)) === "gone";
+    }
+    // Read after the answer: a leave pressed meanwhile cleared the handlers.
+    this.#events.connection?.("disconnected", this.#quality, { roomGone });
   }
 
   /** The live track for one tile, local or remote; null when not (yet)
