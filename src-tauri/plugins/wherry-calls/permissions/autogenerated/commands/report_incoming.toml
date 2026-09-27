@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-report-incoming"
+description = "Enables the report_incoming command without any pre-configured scope."
+commands.allow = ["report_incoming"]
+
+[[permission]]
+identifier = "deny-report-incoming"
+description = "Denies the report_incoming command without any pre-configured scope."
+commands.deny = ["report_incoming"]

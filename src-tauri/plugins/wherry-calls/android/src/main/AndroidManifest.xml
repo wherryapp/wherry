@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Merged into the app's manifest by the manifest merger, so the app's own
+  AndroidManifest.xml is never edited for calls (coordination §2).
+
+  PC1 declares nothing yet. A1 adds CallService (foregroundServiceType
+  "microphone", exported false, stopWithTask true) with FOREGROUND_SERVICE,
+  FOREGROUND_SERVICE_MICROPHONE and WAKE_LOCK; A2 adds the receivers and
+  USE_FULL_SCREEN_INTENT (docs/prompts/phone-calls-plan.md §6).
+  POST_NOTIFICATIONS is already merged in from tauri-plugin-notification
+  and is not declared again here.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application />
+</manifest>

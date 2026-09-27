@@ -1,0 +1,11 @@
+# Written by tauri-plugin's build script on every mobile build: copies of
+# Tauri's own Android and Swift API packages, and SwiftPM's output.
+/.tauri
+/android/.tauri
+/android/build
+/ios/.build
+/ios/Package.resolved
+# Only a standalone `cargo check` of this crate writes these; inside the
+# app, the app's own Cargo.lock and target directory are the ones used.
+/target
+/Cargo.lock
