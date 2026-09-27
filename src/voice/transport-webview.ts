@@ -356,10 +356,12 @@ export class WebviewTransport implements VoiceTransport {
 
   /**
    * Always empty, on every platform this transport runs on: the picker is
-   * inside `getDisplayMedia` and there is nothing for a list to add. The
-   * one platform where the browser has no picker is Windows under WebView2
-   * (S-00) — and there this transport is not the one sharing, because the
-   * shell captures instead.
+   * inside `getDisplayMedia` and there is nothing for a list to add. That
+   * includes the Windows 11 shell, where WebView2 opens its own chooser and
+   * the call settles on Share and on Cancel (row S-00, re-checked
+   * 2026-09-26). The one negative is a bare wry window on Windows 10
+   * (2026-09-09, still unexplained); the native engine's own capture is the
+   * path there.
    */
   async screenSources(): Promise<ScreenSource[]> {
     return [];
