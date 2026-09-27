@@ -37,6 +37,8 @@ import {
   type VideoEncoding,
   type VideoPreset,
 } from "livekit-client";
+import { devRelayOnly } from "./relay";
+import { parseRoute, type RouteRaw } from "./route";
 import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
 import {
   publishErrorMessage,
@@ -278,7 +280,16 @@ export class WebviewTransport implements VoiceTransport {
     this.#wire(room);
     try {
       if (keys && options.key) await keys.setEpochKey(options.key.secret, options.key.epoch);
-      await room.connect(options.url, options.token);
+      // `?devrelay=1` on a dev server only (relay.ts; turn-relay-plan.md
+      // §5.1): relay-only ICE, so a relay row can be read where a direct
+      // path works. The policy and nothing else -- never `iceServers`: the
+      // SDK takes the SFU's TURN list from the join response only while the
+      // caller passed none, so any list here would drop the one under test.
+      await room.connect(
+        options.url,
+        options.token,
+        devRelayOnly() ? { rtcConfig: { iceTransportPolicy: "relay" } } : undefined,
+      );
       // The SFU refreshes the token every few minutes and the join token
       // expires after 15, so a room probe at the end of a longer call needs
       // the refreshed one. The Room re-emits nothing of it; its engine, which
@@ -577,8 +588,11 @@ export class WebviewTransport implements VoiceTransport {
    * Stats come from the SDK's per-track getStats wrappers where they
    * exist; the echo canceller's numbers live on the media-source entry of
    * the sender's own report, which the wrapper skips, so that is read
-   * straight off the sender. Never throws: a stats call that fails leaves
-   * its numbers null.
+   * straight off the sender. That report also carries the transport and
+   * candidate entries (the spec's stats selection follows the RTP stream to
+   * its transport and on to the selected pair), which is where the route
+   * comes from. Never throws: a stats call that fails leaves its numbers
+   * null.
    */
   async sampleStats(): Promise<TransportStats | null> {
     const room = this.#room;
@@ -599,6 +613,7 @@ export class WebviewTransport implements VoiceTransport {
       echoReturnLossEnhancement: null,
       ...(this.#echoCancellation ? {} : { disabled: true }),
     };
+    let route: RouteRaw | null = null;
     if (local) {
       try {
         const stats = await local.getSenderStats();
@@ -610,6 +625,7 @@ export class WebviewTransport implements VoiceTransport {
       }
       try {
         const report = await local.sender?.getStats();
+        if (report) route = parseRoute(report.values());
         report?.forEach(
           (entry: RTCStats & { kind?: string; echoReturnLoss?: number; echoReturnLossEnhancement?: number }) => {
             if (entry.type !== "media-source" || entry.kind !== "audio") return;
@@ -643,6 +659,17 @@ export class WebviewTransport implements VoiceTransport {
           // As above.
         }
       }
+      // Nothing published, or no selected pair on the sending side yet: the
+      // first voice arriving has a transport too, and its report says how
+      // this device is reached. The same PeerConnection when the SDK runs a
+      // single one; the subscriber's when it runs two.
+      if (route === null && track?.receiver) {
+        try {
+          route = parseRoute((await track.receiver.getStats()).values());
+        } catch {
+          // As above.
+        }
+      }
       const element = track?.attachedElements[0];
       peers.push({
         identity: participant.identity,
@@ -652,7 +679,7 @@ export class WebviewTransport implements VoiceTransport {
         playing: element ? !element.paused : null,
       });
     }
-    return { mic, packetsSent, roundTripMs, echo, peers, video: await this.#videoStats(room) };
+    return { mic, packetsSent, roundTripMs, echo, peers, video: await this.#videoStats(room), route };
   }
 
   /**

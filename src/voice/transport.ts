@@ -23,6 +23,7 @@
 // Everything here is plain data or a method; no livekit type may appear
 // in this file.
 
+import type { RouteRaw } from "./route";
 import type { EchoReport, VideoQualityRequest, VideoSource } from "./rules";
 
 // `VideoSource` and `VideoQualityRequest` live in rules.ts, beside the
@@ -328,6 +329,15 @@ export type TransportStats = {
   video: TransportVideoStats[];
   /** Only the native transport has one. */
   native?: NativeVideoSummary | null;
+  /**
+   * Which path the media took: the selected candidate pair's local
+   * candidate, reduced to its type and transports (route.ts's `RouteRaw`;
+   * `routeLabel` words it). Optional because it is read, never required:
+   * `null` where the engine reported no selected pair (not connected yet,
+   * or no working path), absent from a shell too old to send it. Carries
+   * no address (docs/prompts/turn-relay-plan.md §6, T3b).
+   */
+  route?: RouteRaw | null;
 };
 
 /**

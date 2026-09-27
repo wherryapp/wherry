@@ -1514,6 +1514,19 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   options.encryption = keys
     .clone()
     .map(|key_provider| E2eeOptions { encryption_type: EncryptionType::Gcm, key_provider });
+  // `WHERRY_FORCE_RELAY=1`, debug builds only (docs/prompts/turn-relay-plan.md
+  // §5.1): relay-only ICE for this call, so a relay row can be read on a
+  // network where a direct path works. The policy and nothing else:
+  // `ice_servers` stays empty, because the SDK copies the SFU's TURN list
+  // from the join (and reconnect) response only while it is empty
+  // (`rtc_session.rs`'s `make_rtc_config`), so any list here would replace
+  // the relay under test.
+  #[cfg(debug_assertions)]
+  if std::env::var("WHERRY_FORCE_RELAY").ok().as_deref() == Some("1") {
+    options.rtc_config.ice_transport_type =
+      livekit::webrtc::peer_connection_factory::IceTransportsType::Relay;
+    log::info!("voice: WHERRY_FORCE_RELAY=1 -- this call's ICE is relay-only");
+  }
 
   let (room, rx) = Room::connect(&args.url, &args.token, options)
     .await
@@ -2061,6 +2074,74 @@ fn summarize_inbound(stats: &[RtcStats], out: &mut Value) {
   }
 }
 
+/// The media path from one stats report, in `TransportStats.route`'s shape
+/// (transport.ts; route.ts's `RouteRaw`): the selected candidate pair's local
+/// candidate, reduced to its type and its two transports in the spec's
+/// lowercase words. Nothing else crosses -- no address, port or ICE server
+/// URL. Mechanism only: which words Details shows is route.ts's
+/// `routeLabel`, one label for both engines.
+///
+/// The pair is found as `parseRoute` finds it in a webview's report: the
+/// transport's `selectedCandidatePairId` first (the serde default is an
+/// empty string, which counts as none), then a pair that is nominated and
+/// succeeded. libwebrtc reports no Firefox-style `selected` flag. `None`
+/// where the report names no selected pair: not connected yet, or no path.
+fn route_of(stats: &[RtcStats]) -> Option<Value> {
+  use livekit::webrtc::stats::{IceCandidatePairState, IceCandidateType, IceServerTransportProtocol};
+  let pair_by_id = |id: &str| {
+    stats.iter().find_map(|entry| match entry {
+      RtcStats::CandidatePair(pair) if !id.is_empty() && pair.rtc.id == id => Some(pair),
+      _ => None,
+    })
+  };
+  let pair = stats
+    .iter()
+    .find_map(|entry| match entry {
+      RtcStats::Transport(t) => pair_by_id(&t.transport.selected_candidate_pair_id),
+      _ => None,
+    })
+    .or_else(|| {
+      stats.iter().find_map(|entry| match entry {
+        RtcStats::CandidatePair(pair)
+          if pair.candidate_pair.nominated
+            && pair.candidate_pair.state == Some(IceCandidatePairState::Succeeded) =>
+        {
+          Some(pair)
+        }
+        _ => None,
+      })
+    })?;
+  let local_id = &pair.candidate_pair.local_candidate_id;
+  let local = stats.iter().find_map(|entry| match entry {
+    RtcStats::LocalCandidate(c) if !local_id.is_empty() && &c.rtc.id == local_id => {
+      Some(&c.local_candidate)
+    }
+    _ => None,
+  })?;
+  let candidate_type = local.candidate_type.map(|t| match t {
+    IceCandidateType::Host => "host",
+    IceCandidateType::Srflx => "srflx",
+    IceCandidateType::Prflx => "prflx",
+    IceCandidateType::Relay => "relay",
+  });
+  // A relay candidate's `protocol` is the relay's leg to the SFU; the
+  // client's own leg is `relayProtocol`, and only a relay has one.
+  let relay_protocol = match local.candidate_type {
+    Some(IceCandidateType::Relay) => local.relay_protocol.map(|p| match p {
+      IceServerTransportProtocol::Udp => "udp",
+      IceServerTransportProtocol::Tcp => "tcp",
+      IceServerTransportProtocol::Tls => "tls",
+    }),
+    _ => None,
+  };
+  let protocol = (!local.protocol.is_empty()).then(|| local.protocol.to_lowercase());
+  Some(json!({
+    "candidateType": candidate_type,
+    "protocol": protocol,
+    "relayProtocol": relay_protocol,
+  }))
+}
+
 /// One reading in `TransportStats`'s shape (transport.ts). Numbers a stats
 /// call cannot produce are left null; nothing here throws for a missing
 /// number.
@@ -2093,9 +2174,15 @@ pub async fn voice_stats() -> VoiceResult<Value> {
     "echo": { "echoReturnLoss": null, "echoReturnLossEnhancement": null },
     "peers": [],
   });
+  // The route comes from the microphone sender's report: libwebrtc's
+  // per-sender selection follows the RTP stream to its transport and on to
+  // the selected pair and its candidates. With nothing published, the first
+  // voice arriving answers instead (below).
+  let mut route: Option<Value> = None;
   if let Some(LocalTrack::Audio(track)) = mic.as_ref().and_then(|p| p.track()) {
     if let Ok(stats) = track.get_stats().await {
       summarize_local(&stats, &mut out);
+      route = route_of(&stats);
     }
   }
   let mut peers = Vec::new();
@@ -2112,12 +2199,16 @@ pub async fn voice_stats() -> VoiceResult<Value> {
         peer["playing"] = json!(track.rtc_track().enabled());
         if let Ok(stats) = track.get_stats().await {
           summarize_inbound(&stats, &mut peer);
+          if route.is_none() {
+            route = route_of(&stats);
+          }
         }
       }
     }
     peers.push(peer);
   }
   out["peers"] = json!(peers);
+  out["route"] = route.unwrap_or(Value::Null);
   out["video"] = json!(video::stats_rows(&room).await);
   out["native"] = video::native_summary();
   log::debug!("voice: stats sampled ({} peer(s))", peers.len());
@@ -2350,5 +2441,98 @@ fn window_occluded(window: &tauri::WebviewWindow) -> String {
   {
     let _ = window;
     "n/a".to_string()
+  }
+}
+
+#[cfg(test)]
+mod route_tests {
+  use super::route_of;
+  use livekit::webrtc::stats::RtcStats;
+  use serde_json::{json, Value};
+
+  fn report(entries: Value) -> Vec<RtcStats> {
+    serde_json::from_value(entries).expect("a report libwebrtc's serde reads")
+  }
+
+  fn candidate(id: &str, kind: &str, protocol: &str, relay: Option<&str>) -> Value {
+    let mut entry = json!({
+      "type": "local-candidate",
+      "id": id,
+      "address": "203.0.113.7",
+      "port": 50000,
+      "protocol": protocol,
+      "candidateType": kind,
+      "url": "turns:turn.example.test:443?transport=tcp",
+    });
+    if let Some(relay) = relay {
+      entry["relayProtocol"] = json!(relay);
+    }
+    entry
+  }
+
+  #[test]
+  fn follows_the_transports_selected_pair() {
+    let stats = report(json!([
+      { "type": "transport", "id": "T1", "selectedCandidatePairId": "CP2" },
+      { "type": "candidate-pair", "id": "CP1", "localCandidateId": "L1", "nominated": true, "state": "succeeded" },
+      { "type": "candidate-pair", "id": "CP2", "localCandidateId": "L2", "state": "succeeded" },
+      candidate("L1", "host", "udp", None),
+      candidate("L2", "relay", "udp", Some("tls")),
+    ]));
+    assert_eq!(
+      route_of(&stats),
+      Some(json!({ "candidateType": "relay", "protocol": "udp", "relayProtocol": "tls" }))
+    );
+  }
+
+  #[test]
+  fn falls_back_to_a_nominated_succeeded_pair() {
+    let stats = report(json!([
+      { "type": "transport", "id": "T1" },
+      { "type": "candidate-pair", "id": "CP1", "localCandidateId": "L1", "nominated": true, "state": "in-progress" },
+      { "type": "candidate-pair", "id": "CP2", "localCandidateId": "L2", "nominated": true, "state": "succeeded" },
+      candidate("L1", "relay", "udp", Some("udp")),
+      candidate("L2", "srflx", "UDP", None),
+    ]));
+    assert_eq!(
+      route_of(&stats),
+      Some(json!({ "candidateType": "srflx", "protocol": "udp", "relayProtocol": null }))
+    );
+  }
+
+  #[test]
+  fn a_direct_candidate_carries_no_relay_protocol() {
+    let stats = report(json!([
+      { "type": "transport", "id": "T1", "selectedCandidatePairId": "CP1" },
+      { "type": "candidate-pair", "id": "CP1", "localCandidateId": "L1" },
+      candidate("L1", "host", "tcp", Some("udp")),
+    ]));
+    assert_eq!(
+      route_of(&stats),
+      Some(json!({ "candidateType": "host", "protocol": "tcp", "relayProtocol": null }))
+    );
+  }
+
+  #[test]
+  fn nothing_selected_is_none() {
+    let stats = report(json!([
+      { "type": "transport", "id": "T1" },
+      { "type": "candidate-pair", "id": "CP1", "localCandidateId": "L1", "state": "in-progress" },
+      candidate("L1", "host", "udp", None),
+    ]));
+    assert_eq!(route_of(&stats), None);
+  }
+
+  #[test]
+  fn carries_no_address_port_or_url() {
+    let stats = report(json!([
+      { "type": "transport", "id": "T1", "selectedCandidatePairId": "CP1" },
+      { "type": "candidate-pair", "id": "CP1", "localCandidateId": "L1" },
+      candidate("L1", "relay", "udp", Some("tcp")),
+    ]));
+    let text = route_of(&stats).expect("a route").to_string();
+    for leak in ["203.0.113.7", "50000", "turn.example.test", "turns:"] {
+      assert!(!text.contains(leak), "{leak} leaked into {text}");
+    }
   }
 }
