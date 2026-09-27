@@ -33,6 +33,17 @@ tauri-plugin-notification = "2"
 # this to have anywhere to send people. Registration only, like the rest.
 tauri-plugin-opener = "2"
 
+# The phone shells' native plugins, in-repo under plugins/ (one directory per
+# concern, so parallel work never shares a plugin). THE one mobile table:
+# a later plugin adds its line here rather than opening a second table with
+# the same cfg (docs/prompts/native-gaps-coordination.md §2). Each is
+# registered in lib.rs's one `#[cfg(mobile)]` block.
+# wherry-push: APNs and FCM tokens, notification taps, the icon badge
+# (docs/prompts/native-push-plan.md §5). Mechanism behind
+# client/src/sync/native-push.ts.
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+tauri-plugin-wherry-push = { path = "plugins/wherry-push" }
+
 # Desktop only -- there is no second instance to guard against on mobile.
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 tauri-plugin-single-instance = "2"

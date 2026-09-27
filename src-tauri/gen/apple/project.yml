@@ -65,6 +65,16 @@ targets:
         UIBackgroundModes: [audio]
     entitlements:
       path: wherry-desktop_iOS/wherry-desktop_iOS.entitlements
+      # Hand edit 7 (docs/prompts/native-push-plan.md §5.3): APNs. XcodeGen
+      # writes the .entitlements file from these properties on every Tauri
+      # build, so the key lives here and in the file, committed together.
+      # `development` is what a development-signed build and the simulator
+      # carry; Xcode's App Store / TestFlight export rewrites it to
+      # `production` from the distribution profile (believed; row I-49).
+      # No `remote-notification` background mode: v1 sends no
+      # content-available pushes (coordination §2, correction 4).
+      properties:
+        aps-environment: development
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full

@@ -1,0 +1,20 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Everything the page needs to drive native push: read the state, obtain and
+forget the token, consume a notification tap, clear delivered notifications,
+set the icon badge, open the system settings page, and listen for the
+`token`, `opened` and `received` events. docs/prompts/native-push-plan.md §5.1.
+"""
+permissions = [
+  "allow-status",
+  "allow-register",
+  "allow-unregister",
+  "allow-take-open",
+  "allow-clear",
+  "allow-set-badge",
+  "allow-open-settings",
+  "allow-register-listener",
+  "allow-remove-listener",
+]

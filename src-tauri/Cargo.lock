@@ -4671,6 +4671,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-wherry-push"
+version = "0.1.0"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "tauri-runtime"
 version = "2.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5655,6 +5663,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tauri-plugin-wherry-push",
  "tokio",
  "windows",
  "windows-core",

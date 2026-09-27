@@ -1,0 +1,11 @@
+# Written by tauri-plugin's build step on every mobile build: a copy of
+# Tauri's own Swift and Kotlin API, which ios/Package.swift and
+# android/settings.gradle point at.
+/.tauri
+/android/.tauri
+/ios/.build
+/ios/.swiftpm
+/android/build
+/target
+Cargo.lock
+/ios/Package.resolved

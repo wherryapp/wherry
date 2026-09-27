@@ -1,0 +1,4 @@
+<!-- P2's stub declares nothing. P3 adds the FirebaseMessagingService here;
+     the plugin's manifest merges into the app's, so the app's own
+     AndroidManifest.xml is never edited for push. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

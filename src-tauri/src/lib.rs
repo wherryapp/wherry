@@ -166,6 +166,19 @@ pub fn run() {
     // open and when (api/shell.ts's openExternal); this provides the API.
     .plugin(tauri_plugin_opener::init());
 
+  // The phone shells' native plugins (plugins/, Cargo.toml's one mobile
+  // table). THE one mobile block: a later plugin adds its `.plugin(...)`
+  // line here (docs/prompts/native-gaps-coordination.md §2).
+  //
+  // After the notification plugin, and the order is load-bearing on iOS:
+  // wherry-push wraps the UNUserNotificationCenter delegate that
+  // plugin-notification installs when it initialises, and Tauri initialises
+  // plugins in registration order. Registered the other way round, the
+  // notification plugin would take the delegate back and every tap on a push
+  // would be dropped (docs/prompts/native-push-plan.md §5.2).
+  #[cfg(mobile)]
+  let builder = builder.plugin(tauri_plugin_wherry_push::init());
+
   // One `generate_handler!` per platform shape: the macro takes a single
   // list, and the voice commands exist only where the media crate does.
   #[cfg(not(desktop))]
