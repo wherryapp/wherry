@@ -2,6 +2,12 @@
 // Shown on every device of the callee until one of them answers, the
 // caller cancels, or the window closes -- voice/rules.ts decides which
 // rings are live; this only draws the first of them and plays the tone.
+//
+// On a phone it is also where the ring meets the native call pieces
+// (voice/phone-bridge.ts; docs/prompts/phone-calls-plan.md §5.3): the ring
+// is reported to the plugin, and where the plugin owns ringing (CallKit)
+// the sheet, its tone and its back layer stand down while the bridge keeps
+// running.
 
 import { useEffect } from "react";
 import { declineCall } from "../../api/client";
@@ -17,6 +23,13 @@ import { useSelfStatus } from "../hooks";
 import { voice } from "../../voice/session";
 import { notifyDesktopCall, windowIsFocused } from "../../sync/desktop-notify";
 import { useBackLayer } from "../back";
+import {
+  notePhoneAnswered,
+  notePhoneDeclined,
+  usePhoneCallBridge,
+  usePhoneCapabilities,
+} from "../../voice/phone-bridge";
+import { ringUiOwnsRinging } from "../../voice/phone-rules";
 
 export function IncomingCall({
   ring,
@@ -36,7 +49,11 @@ export function IncomingCall({
   const title = conversation ? conversationTitle(conversation, selfUserId) : "";
   const isGroup = (conversation?.members.length ?? 0) > 2;
   const selfStatus = useSelfStatus();
-  const audible = shouldRingAudibly({
+  // CallKit rings on its own screen in every app state; a second ring on
+  // the page would be two answers to one call.
+  const nativeOwnsRing = ringUiOwnsRinging(usePhoneCapabilities());
+  usePhoneCallBridge({ ring, selfUserId, onDismiss });
+  const audible = !nativeOwnsRing && shouldRingAudibly({
     conversationMuted: conversation?.muted ?? false,
     ringtoneEnabled: prefs.ringtone,
     // Do-not-disturb: the ring still shows, silently -- the server already
@@ -53,17 +70,19 @@ export function IncomingCall({
   // The desktop shell has no push: a ring that lands while the window is
   // in the background gets the plugin's notification instead.
   useEffect(() => {
-    if (windowIsFocused()) return;
+    if (nativeOwnsRing || windowIsFocused()) return;
     void notifyDesktopCall(callerName);
-  }, [ring.callId, callerName]);
+  }, [ring.callId, callerName, nativeOwnsRing]);
 
   const answer = (): void => {
     if (!conversation) return;
+    notePhoneAnswered(ring.callId);
     onDismiss(ring.callId);
     void voice.answerCall(ring.callId, conversation);
   };
 
   const decline = (): void => {
+    notePhoneDeclined(ring.callId);
     onDismiss(ring.callId);
     void declineCall(ring.callId).catch(() => {});
   };
@@ -80,8 +99,12 @@ export function IncomingCall({
   // pressing Escape to leave Settings as it lands must not turn a call away
   // -- and the sheet is modal, so the key must not reach the screen under it
   // either, which it did while every layer listened for itself.
-  useBackLayer(true, decline, { escape: "never" });
+  //
+  // Not while CallKit owns the ring: nothing is drawn, so there is no layer
+  // for back to close.
+  useBackLayer(!nativeOwnsRing, decline, { escape: "never" });
 
+  if (nativeOwnsRing) return null;
 
   return (
     <div
