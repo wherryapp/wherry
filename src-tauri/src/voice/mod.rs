@@ -2536,3 +2536,122 @@ mod route_tests {
     }
   }
 }
+
+/// `route_of` against a report libwebrtc really produced, not one written by
+/// hand: two PeerConnections from the SDK's own factory (`LkRuntime`'s, the
+/// one `Room::connect` uses, WARP field trial and all) connected to each
+/// other over this machine's host candidates, one sending a pushed audio
+/// track. What it settles is the claim `voice_stats` rests on: that a
+/// *per-sender* report (`RtpSender::get_stats`, which webrtc-sys implements as
+/// `GetStats(sender_, observer)`, the selector form) carries the transport,
+/// the selected pair and its local candidate, and that a per-receiver report
+/// does too. No SFU, TURN or network beyond this host: a relay route is
+/// turn-relay-plan.md §7's rows (T4); this reads only that the entries arrive.
+///
+/// Needs UDP between two sockets on this machine's own interfaces; a host
+/// with none but loopback gathers nothing and fails on the assertion after
+/// 15 s rather than hanging. The runtime is `tokio`'s current-thread builder,
+/// whose `rt` feature reaches this crate through livekit's `rt-multi-thread`
+/// (Cargo unifies a crate's features across the graph).
+#[cfg(test)]
+mod route_runtime_tests {
+  use super::route_of;
+  use livekit::rtc_engine::lk_runtime::LkRuntime;
+  use livekit::webrtc::audio_source::native::NativeAudioSource;
+  use livekit::webrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
+  use livekit::webrtc::prelude::*;
+  use serde_json::json;
+  use std::sync::{Arc, Mutex};
+  use std::time::{Duration, Instant};
+
+  /// Candidates as their three strings, so the callback holds nothing of
+  /// libwebrtc's across threads.
+  type Gathered = Arc<Mutex<Vec<(String, i32, String)>>>;
+
+  fn gather(pc: &PeerConnection) -> Gathered {
+    let gathered: Gathered = Default::default();
+    let sink = gathered.clone();
+    pc.on_ice_candidate(Some(Box::new(move |c: IceCandidate| {
+      sink.lock().unwrap().push((c.sdp_mid(), c.sdp_mline_index(), c.candidate()));
+    })));
+    gathered
+  }
+
+  async fn deliver(from: &Gathered, to: &PeerConnection, sent: &mut usize) {
+    let fresh: Vec<_> = from.lock().unwrap()[*sent..].to_vec();
+    for (mid, index, sdp) in fresh {
+      let candidate = IceCandidate::parse(&mid, index, &sdp).expect("a candidate libwebrtc wrote");
+      to.add_ice_candidate(candidate).await.expect("the peer accepts it");
+      *sent += 1;
+    }
+  }
+
+  #[test]
+  fn a_real_sender_and_receiver_report_name_the_selected_pair() {
+    let rt = tokio::runtime::Builder::new_current_thread().build().expect("a runtime");
+    rt.block_on(async {
+      let runtime = LkRuntime::instance();
+      let factory = runtime.pc_factory();
+      let sender_pc = factory.create_peer_connection(RtcConfiguration::default()).unwrap();
+      let receiver_pc = factory.create_peer_connection(RtcConfiguration::default()).unwrap();
+      let from_sender = gather(&sender_pc);
+      let from_receiver = gather(&receiver_pc);
+
+      // A pushed source, 48 kHz mono, fed below: RTP stats (and with them
+      // the report's path to the transport) exist only once packets flow.
+      let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+      let track = factory.create_audio_track("route-test", source.clone());
+      let sender = sender_pc.add_track(track.into(), &["route-test"]).expect("a sender");
+
+      let offer = sender_pc.create_offer(OfferOptions::default()).await.unwrap();
+      sender_pc.set_local_description(offer.clone()).await.unwrap();
+      receiver_pc.set_remote_description(offer).await.unwrap();
+      let answer = receiver_pc.create_answer(AnswerOptions::default()).await.unwrap();
+      receiver_pc.set_local_description(answer.clone()).await.unwrap();
+      sender_pc.set_remote_description(answer).await.unwrap();
+
+      let tone: Vec<i16> = (0..480).map(|i| ((i as f32 * 0.2).sin() * 3000.0) as i16).collect();
+      let frame = AudioFrame {
+        data: tone.as_slice().into(),
+        sample_rate: 48_000,
+        num_channels: 1,
+        samples_per_channel: 480,
+      };
+      let (mut to_receiver, mut to_sender) = (0usize, 0usize);
+      let (mut sent_route, mut received_route) = (None, None);
+      let started = Instant::now();
+      while started.elapsed() < Duration::from_secs(15) {
+        deliver(&from_sender, &receiver_pc, &mut to_receiver).await;
+        deliver(&from_receiver, &sender_pc, &mut to_sender).await;
+        for _ in 0..5 {
+          source.capture_frame(&frame).await.expect("a 10 ms frame");
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        if sent_route.is_none() {
+          sent_route = route_of(&sender.get_stats().await.unwrap());
+        }
+        if received_route.is_none() {
+          if let Some(receiver) = receiver_pc.receivers().first() {
+            received_route = route_of(&receiver.get_stats().await.unwrap());
+          }
+        }
+        if sent_route.is_some() && received_route.is_some() {
+          break;
+        }
+      }
+      let states = (sender_pc.ice_connection_state(), receiver_pc.ice_connection_state());
+      sender_pc.close();
+      receiver_pc.close();
+
+      // Both ends of a host-to-host pair on one machine: direct, over UDP,
+      // with no relay leg.
+      let direct = json!({ "candidateType": "host", "protocol": "udp", "relayProtocol": null });
+      assert_eq!(
+        sent_route.as_ref(),
+        Some(&direct),
+        "the sender's report named no selected pair (ICE {states:?}, {to_receiver} candidate(s) delivered)"
+      );
+      assert_eq!(received_route.as_ref(), Some(&direct), "the receiver's report named no selected pair");
+    });
+  }
+}
