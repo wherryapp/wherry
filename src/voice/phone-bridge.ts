@@ -70,7 +70,9 @@ import {
   nativeActiveCall,
   nativeApiBase,
   nativeEndReason,
+  PAGE_ALIVE_EVERY_MS,
   PAGE_ONLY,
+  pageAliveWanted,
   pendingActionVerdict,
   PROBE_PATIENCE_MS,
   REPORT_PATIENCE_MS,
@@ -180,6 +182,8 @@ class PhoneBridge {
   #shown = new Map<string, boolean>();
   #shownTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #activeKey = "";
+  /** Row I-60's liveness line, while a native call is up (`pageAliveWanted`). */
+  #aliveTimer: ReturnType<typeof setInterval> | null = null;
 
   // -- the account's run ----------------------------------------------------
 
@@ -221,6 +225,7 @@ class PhoneBridge {
       document.removeEventListener("visibilitychange", onVisibility);
       this.#cancelStop();
       this.#stopRun();
+      this.#setPageAlive(false);
     };
     // Caught up in case the engine was already running when this loaded
     // (it is not today: App.tsx starts it after the first render).
@@ -480,6 +485,7 @@ class PhoneBridge {
         this.#activeKey = key;
         void this.#native.setActive(report);
       }
+      this.#setPageAlive(pageAliveWanted(this.#present, this.#capabilities, report));
       // An outgoing call, once the server has given it an id: CallKit (N1)
       // and Android's telecom (A3) want to hear of it. A no-op until then.
       const run = this.#run;
@@ -498,6 +504,31 @@ class PhoneBridge {
     } catch (error) {
       console.warn("[wherry] calls: voice state not mirrored", error);
     }
+  }
+
+  /**
+   * Row I-60's instrument: one `calls: page alive` line a second while a
+   * native call is up, through the same `log` as the bridge's other lines.
+   * The count and the seconds since the call began are both in the line, so
+   * a reader counting lines per 10 s through a locked call sees a throttled
+   * or suspended page as a gap rather than having to infer it. It reports;
+   * it decides nothing. Stopped when the call ends or the bridge uninstalls.
+   */
+  #setPageAlive(wanted: boolean): void {
+    if (wanted === (this.#aliveTimer !== null)) return;
+    if (!wanted) {
+      if (this.#aliveTimer !== null) clearInterval(this.#aliveTimer);
+      this.#aliveTimer = null;
+      log("page alive stopped");
+      return;
+    }
+    const since = Date.now();
+    let count = 0;
+    this.#aliveTimer = setInterval(() => {
+      count += 1;
+      const seconds = ((Date.now() - since) / 1000).toFixed(1);
+      log(`page alive ${count} (+${seconds} s, ${document.visibilityState})`);
+    }, PAGE_ALIVE_EVERY_MS);
   }
 
   // -- rings ----------------------------------------------------------------

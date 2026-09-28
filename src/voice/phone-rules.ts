@@ -416,6 +416,26 @@ export function nativeActiveCall(
   };
 }
 
+/** How often the page says it is alive while a native call is up. */
+export const PAGE_ALIVE_EVERY_MS = 1_000;
+
+/**
+ * Whether the page logs `calls: page alive` once a second: only while a
+ * native call is up, that is a plugin answered, the page has told it a call
+ * is active, and the plugin holds that call natively (CallKit on iOS, the
+ * call service on Android). Row I-60 counts those lines per 10 s through a
+ * locked call to see whether the page's timers run; a page-only ring or
+ * call (the simulator, a browser) has nothing to measure and stays quiet.
+ */
+export function pageAliveWanted(
+  present: boolean | null,
+  capabilities: PhoneCapabilities | null,
+  report: Pick<ActiveReport, "active">,
+): boolean {
+  if (present !== true || capabilities === null || !report.active) return false;
+  return capabilities.ringUi === "callkit" || capabilities.callService;
+}
+
 // ---------------------------------------------------------------------------
 // Labels
 // ---------------------------------------------------------------------------

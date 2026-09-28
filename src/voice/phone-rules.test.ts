@@ -12,6 +12,7 @@ import {
   nativeApiBase,
   nativeEndReason,
   PAGE_ONLY,
+  pageAliveWanted,
   pageRingDuties,
   pendingActionVerdict,
   readAction,
@@ -521,4 +522,24 @@ test("native code gets an absolute API base or none", () => {
   assert.equal(nativeApiBase(""), null);
   assert.equal(nativeApiBase("https://"), null);
   assert.equal(nativeApiBase("tauri://localhost/api"), null);
+});
+
+// -- row I-60's liveness line -------------------------------------------------
+
+test("the page says it is alive only while a native call is up", () => {
+  const callkit: PhoneCapabilities = { ringUi: "callkit", callService: false, voip: true };
+  const android: PhoneCapabilities = { ringUi: "notification", callService: true, voip: false };
+  const active = { active: true };
+  const idle = { active: false };
+  assert.equal(pageAliveWanted(true, callkit, active), true);
+  assert.equal(pageAliveWanted(true, android, active), true);
+  // No call, or the call ended.
+  assert.equal(pageAliveWanted(true, callkit, idle), false);
+  assert.equal(pageAliveWanted(true, android, idle), false);
+  // No plugin, or not answered yet: nothing native to measure.
+  assert.equal(pageAliveWanted(false, PAGE_ONLY, active), false);
+  assert.equal(pageAliveWanted(null, null, active), false);
+  assert.equal(pageAliveWanted(true, null, active), false);
+  // A plugin that holds no call natively (the iOS simulator's `page`).
+  assert.equal(pageAliveWanted(true, PAGE_ONLY, active), false);
 });
