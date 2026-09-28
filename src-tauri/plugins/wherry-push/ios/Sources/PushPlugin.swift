@@ -62,6 +62,10 @@ class PushPlugin: Plugin {
     NotificationCenter.default.addObserver(
       self, selector: #selector(didFinishLaunching),
       name: UIApplication.didFinishLaunchingNotification, object: nil)
+
+    #if DEBUG
+      debugClearOnActive()
+    #endif
   }
 
   override func load(webview: WKWebView) {
@@ -165,18 +169,36 @@ class PushPlugin: Plugin {
 
   @objc func clear(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ClearArgs.self)
+    clearDelivered(ref: args.ref, source: "page") { invoke.resolve() }
+  }
+
+  /// Removes the delivered notifications whose thread or `w.r` is `ref`. The
+  /// log line carries the raw count beside the matched one, so "nothing in
+  /// Notification Center" and "nothing for this reference" read differently
+  /// (row I-44); a debug build also lists each delivered notification.
+  private func clearDelivered(ref: String, source: String, done: @escaping () -> Void) {
     let center = UNUserNotificationCenter.current()
     center.getDeliveredNotifications { delivered in
+      #if DEBUG
+        for notification in delivered {
+          let content = notification.request.content
+          NSLog(
+            "[wherry-push] delivered id=%@ thread=%@ r=%@ push=%d",
+            notification.request.identifier, content.threadIdentifier,
+            PushCenterDelegate.wherryFields(content.userInfo).ref ?? "-",
+            notification.request.trigger is UNPushNotificationTrigger ? 1 : 0)
+        }
+      #endif
       let ids = delivered.filter { notification in
         let content = notification.request.content
-        return content.threadIdentifier == args.ref
-          || PushCenterDelegate.wherryFields(content.userInfo).ref == args.ref
+        return content.threadIdentifier == ref
+          || PushCenterDelegate.wherryFields(content.userInfo).ref == ref
       }.map { $0.request.identifier }
       if !ids.isEmpty {
         center.removeDeliveredNotifications(withIdentifiers: ids)
       }
-      NSLog("[wherry-push] cleared %ld", ids.count)
-      invoke.resolve()
+      NSLog("[wherry-push] cleared %ld of %ld delivered (%@)", ids.count, delivered.count, source)
+      done()
     }
   }
 
@@ -241,6 +263,59 @@ class PushPlugin: Plugin {
       invoke.reject("failed:\(error.localizedDescription)")
     }
   }
+
+  // MARK: - Debug instruments
+
+  #if DEBUG
+    /// Debug builds only: `WHERRY_DEBUG_CLEAR=<ref>` runs `clear`'s code for
+    /// that reference each time the app becomes active, with no page and no
+    /// server (`SIMCTL_CHILD_WHERRY_DEBUG_CLEAR=<ref> xcrun simctl launch`),
+    /// `WHERRY_DEBUG_CLEAR_AFTER` seconds later (default 1). A simulator has
+    /// nobody to answer the permission prompt, so an undetermined permission
+    /// is asked for provisionally, which iOS grants without one: pushes then
+    /// go quietly to Notification Center, which is where `clear` looks.
+    /// `WHERRY_DEBUG_CLEAR_ON=foreground` runs it at willEnterForeground
+    /// instead (about when the page's `visibilitychange` fires), and
+    /// `WHERRY_DEBUG_CLEAR_BADGE=<n>` sets the icon badge first, as the page
+    /// does at every launch. Row I-44's simulator reading (2026-09-28) used
+    /// all three; none changed the answer.
+    private func debugClearOnActive() {
+      let environment = ProcessInfo.processInfo.environment
+      guard let ref = environment["WHERRY_DEBUG_CLEAR"], !ref.isEmpty else { return }
+      let after = Double(environment["WHERRY_DEBUG_CLEAR_AFTER"] ?? "") ?? 1
+      let center = UNUserNotificationCenter.current()
+      center.getNotificationSettings { settings in
+        NSLog(
+          "[wherry-push] debug-clear: permission %ld", settings.authorizationStatus.rawValue)
+        guard settings.authorizationStatus == .notDetermined else { return }
+        center.requestAuthorization(options: [.alert, .sound, .badge, .provisional]) {
+          granted, _ in
+          NSLog("[wherry-push] debug-clear: provisional %@", granted ? "granted" : "refused")
+        }
+      }
+      let foreground = environment["WHERRY_DEBUG_CLEAR_ON"] == "foreground"
+      NotificationCenter.default.addObserver(
+        forName: foreground
+          ? UIApplication.willEnterForegroundNotification
+          : UIApplication.didBecomeActiveNotification,
+        object: nil, queue: .main
+      ) { [weak self] _ in
+        let source = foreground ? "debug-foreground" : "debug-active"
+        let badge = Int(environment["WHERRY_DEBUG_CLEAR_BADGE"] ?? "")
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, after)) {
+          guard let badge = badge, #available(iOS 16.0, *) else {
+            self?.clearDelivered(ref: ref, source: source) {}
+            return
+          }
+          // What the page does at launch: a badge set before the clear.
+          center.setBadgeCount(badge) { _ in
+            NSLog("[wherry-push] debug-clear: badge set to %ld", badge)
+            self?.clearDelivered(ref: ref, source: source) {}
+          }
+        }
+      }
+    }
+  #endif
 
   // MARK: - Helpers
 
