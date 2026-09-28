@@ -109,15 +109,13 @@ const NATIVE_PUSH: PushContract = {
     // the keys are the calls plugin's own pair (M-1 = E). Missing either,
     // `registerNativeToken` throws before any request, which lands here.
     //
-    // Owed by PUSH, not fixable here (PC1b review, 2026-09-27): a
-    // successful registration runs native-push-rules.ts's `withEntry`,
-    // which sets `declined: false` for every provider. An `apns_voip`
-    // registration is not evidence of notification permission, so once I1
-    // answers a real token this call erases a refused alert prompt and
-    // Settings reads "ready" instead of "blocked". The fix is in
-    // `withEntry` (clear `declined` only for `apns` and `fcm`); the PC1b
-    // stage log carries it as a handoff. Until I1 the stub answers
-    // `{ token: null }` and nothing registers.
+    // A registration here is not evidence of notification permission
+    // (PushKit asks for none), so it must not erase a refused alert prompt.
+    // native-push-rules.ts's `withEntry` owns that: it clears `declined`
+    // only for a provider other than `apns_voip` whose `alerts` is not
+    // false, so this call leaves Settings' "blocked" as it was. Only the
+    // iOS plugin (I1) answers `voip: true`; the run asks for no token
+    // anywhere else, so this is never reached on Android.
     withNativePush((native) =>
       native
         .registerNativeToken(provider, voip.token, {
@@ -140,7 +138,8 @@ function log(message: string): void {
 }
 
 /** Who feeds the page's rings: the whole list from an always-rendered
- *  place, or the one ring the sheet shows until that place exists. */
+ *  place (Chat.tsx's body), or the one ring the sheet shows, for a page
+ *  that mounts the sheet without that place. */
 type FeedSource = "page" | "sheet";
 
 /** One signed-in account's time with the bridge. Async work started for a
