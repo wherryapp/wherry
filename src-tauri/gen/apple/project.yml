@@ -63,6 +63,24 @@ targets:
         NSMicrophoneUsageDescription: Wherry uses the microphone for voice calls and voice rooms.
         NSCameraUsageDescription: Wherry uses the camera for video calls.
         UIBackgroundModes: [audio]
+        # Hand edit 14 (docs/prompts/regen-hand-edits.md): the UIScene life
+        # cycle. UIKit refuses to launch a build from the iOS 27 SDK that has
+        # not adopted scenes ("UIScene life cycle is required for apps built
+        # with this SDK"). tao 0.35.3 adopts them only when this manifest
+        # says UIApplicationSupportsMultipleScenes: it then answers
+        # application:configurationForConnectingSceneSession:options: with
+        # its own TaoSceneDelegate and defers its launch to the first scene
+        # (tao src/platform_impl/ios/{scene,view,app_state}.rs). No
+        # UISceneConfigurations: tao supplies the configuration in code. The
+        # flag also lets iPadOS open a second window, which Wherry does not
+        # handle (row I-76), and a scene that reconnects in a live process
+        # is believed to get a blank window (row I-77). Deferring to the
+        # first scene defers the webview, the page and every plugin's
+        # load(webview:). A background launch (PushKit) is believed to
+        # connect no scene, so work that must run then starts from a
+        # plugin's init or didFinishLaunching, never from load (edit 14).
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
     entitlements:
       path: wherry-desktop_iOS/wherry-desktop_iOS.entitlements
       # Hand edit 7 (docs/prompts/native-push-plan.md §5.3): APNs. XcodeGen
