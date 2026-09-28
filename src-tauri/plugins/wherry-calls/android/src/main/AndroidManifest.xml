@@ -5,8 +5,14 @@
 
   A1 (docs/prompts/phone-calls-plan.md §6.1): CallService, the call's
   foreground service, and CallActionReceiver, which takes the ongoing
-  notification's Hang up. A2 adds the ring's receivers and
-  USE_FULL_SCREEN_INTENT (§6.2).
+  notification's Hang up.
+
+  A2 (§6.2): the ring. IncomingCallReceiver takes the push plugin's forward,
+  CallActionReceiver also takes the ring's Decline, CallsInitProvider
+  installs the activity callbacks at process start, and
+  USE_FULL_SCREEN_INTENT puts the ring over the lock screen (on Android 14+
+  only for an app the store lets call itself a calling app; otherwise the
+  ring is a heads-up). The debug-only DebugPushReceiver is in src/debug.
 
   POST_NOTIFICATIONS is already merged in from tauri-plugin-notification
   and is not declared again here. RECORD_AUDIO is the app's own (voice);
@@ -18,6 +24,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- The proximity wake lock (screen off at the ear) on an audio-only call. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The ring's full-screen intent (A2). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application>
         <!-- stopWithTask: a webview-engine call dies with its task, and a
@@ -27,9 +35,26 @@
             android:exported="false"
             android:stopWithTask="true"
             android:foregroundServiceType="microphone" />
-        <!-- Only this app's own PendingIntents reach it (explicit, immutable). -->
+        <!-- Only this app's own PendingIntents reach it (explicit, immutable):
+             Hang up (A1) and the ring's Decline (A2). -->
         <receiver
             android:name="app.wherry.calls.CallActionReceiver"
+            android:exported="false" />
+        <!-- The push plugin's forward of a ring or its end (coordination §4):
+             an explicit broadcast to this package; not exported, so the
+             plaintext fields never leave the app. -->
+        <receiver
+            android:name="app.wherry.calls.IncomingCallReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.wherry.calls.PUSH" />
+            </intent-filter>
+        </receiver>
+        <!-- Installs the activity callbacks when the process starts, before
+             Tauri creates any plugin. Serves no data. See CallsInitProvider.kt. -->
+        <provider
+            android:name="app.wherry.calls.CallsInitProvider"
+            android:authorities="${applicationId}.wherry-calls-init"
             android:exported="false" />
     </application>
 </manifest>

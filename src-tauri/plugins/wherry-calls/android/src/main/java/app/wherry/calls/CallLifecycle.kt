@@ -14,12 +14,20 @@
 //  2. Keep-resumed (built, off): measured by A-57 before it is ever on. See
 //     below.
 //
+//  3. A2's ring (plan §6.2): whether an activity is resumed (RingHandler
+//     posts no ring while one is: the page's sheet rings), and the ring's
+//     launches into the activity (RingLaunch), from every created activity's
+//     launch intent and every new intent.
+//
 // Why not the plugin's own onPause/onResume: in tauri 2.11.5 nothing calls
 // them. `TauriLifecycleObserver` (mobile/android-codegen/TauriActivity.kt) is
 // defined and never registered; the only ProcessLifecycleOwner observer is
 // wry's `WryLifecycleObserver`, which calls Rust, not PluginManager.
 //
-// One per process: installed once, holding the WebView weakly.
+// One per process, installed at process start by CallsInitProvider (a ring
+// pushed to a killed app runs with no plugin, and an Answer that re-creates
+// the activity reaches onNewIntent before any plugin exists), and again,
+// harmlessly, by the plugin. Holds the WebView weakly.
 package app.wherry.calls
 
 import android.app.Activity
@@ -31,7 +39,10 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.webkit.WebView
+import androidx.core.app.OnNewIntentProvider
+import androidx.core.util.Consumer
 import java.io.File
+import java.util.WeakHashMap
 import java.lang.ref.WeakReference
 
 /** Debug builds only: a file in the app's own files directory that turns
@@ -62,16 +73,47 @@ object CallLifecycle {
     private var webView: WeakReference<WebView>? = null
     private var keptResumed = false
     private var appContext: Context? = null
+    private var resumedCount = 0
+    /** Activities whose new intents are already observed. */
+    private val adopted = WeakHashMap<Activity, Boolean>()
 
-    /** Called by the plugin's constructor and load (any thread). */
-    fun install(activity: Activity) {
-        val app = activity.application
-        main.post {
-            if (installed) return@post
-            installed = true
-            appContext = app.applicationContext
-            app.registerActivityLifecycleCallbacks(callbacks)
+    /** An activity of this app is resumed: a ring then goes to the page's
+     *  sheet, not to a notification (plan §2.7). False while no activity is
+     *  alive, which is what a ring pushed to a killed app sees. */
+    @Volatile
+    var resumed: Boolean = false
+        private set
+
+    /** CallsInitProvider, at process start (on the main thread). */
+    fun install(app: Application) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post { install(app) }
+            return
         }
+        if (installed) return
+        installed = true
+        appContext = app.applicationContext
+        app.registerActivityLifecycleCallbacks(callbacks)
+    }
+
+    /** The plugin's constructor (any thread). The provider has normally run
+     *  long before; this covers a process without it. The activity already
+     *  exists then, so its new intents are observed from here and its launch
+     *  intent is read now (a no-op when the provider adopted it). */
+    fun install(activity: Activity) {
+        install(activity.application)
+        main.post { adopt(activity, null) }
+    }
+
+    private fun adopt(activity: Activity, savedInstanceState: Bundle?) {
+        if (adopted.containsKey(activity)) return
+        adopted[activity] = true
+        (activity as? OnNewIntentProvider)?.addOnNewIntentListener(
+            Consumer { intent -> RingLaunch.capture(activity, intent, "new intent") },
+        )
+        // A re-created activity's intent is the one it was first launched
+        // with, possibly a press already carried out in an earlier process.
+        if (savedInstanceState == null) RingLaunch.capture(activity, activity.intent, "launch")
     }
 
     fun attachWebView(view: WebView) {
@@ -86,6 +128,9 @@ object CallLifecycle {
         }
     }
 
+    /** The page has a call up (its last setActive was true). */
+    fun hasCall(): Boolean = synchronized(lock) { wanted != null }
+
     /** setActive(false): forget it, stop the service, and put the WebView
      *  back where WryActivity left it if the call ended in the background. */
     fun inactive(context: Context) {
@@ -94,6 +139,7 @@ object CallLifecycle {
             CallService.stop(context)
         }
         main.post { releaseKeptResumed() }
+        RingLaunch.callEnded()
     }
 
     // -- 1. the retry -----------------------------------------------------
@@ -143,6 +189,8 @@ object CallLifecycle {
 
     private val callbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(activity: Activity) {
+            resumedCount += 1
+            resumed = true
             main.removeCallbacks(keepResumedCheck)
             // WryActivity.onResume() resumes the WebView itself.
             keptResumed = false
@@ -150,14 +198,23 @@ object CallLifecycle {
         }
 
         override fun onActivityPaused(activity: Activity) {
+            resumedCount = maxOf(0, resumedCount - 1)
+            resumed = resumedCount > 0
             main.removeCallbacks(keepResumedCheck)
             main.postDelayed(keepResumedCheck, KEEP_RESUMED_DELAY_MS)
         }
 
-        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+            adopt(activity, savedInstanceState)
+        }
+
+        override fun onActivityDestroyed(activity: Activity) {
+            adopted.remove(activity)
+            RingLaunch.destroyed(activity)
+        }
+
         override fun onActivityStarted(activity: Activity) {}
         override fun onActivityStopped(activity: Activity) {}
         override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
-        override fun onActivityDestroyed(activity: Activity) {}
     }
 }
