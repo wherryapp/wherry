@@ -36,4 +36,7 @@ dependencies {
     // neighbours), so this adds nothing to the APK; plain `core`, since no
     // Kotlin extension is used.
     implementation("androidx.core:core:1.13.1")
+    // RingTest runs Ring (no Android API) on the JVM, as the push plugin's
+    // tests do.
+    testImplementation("junit:junit:4.13.2")
 }

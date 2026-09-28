@@ -49,17 +49,23 @@ class CallActionReceiver : BroadcastReceiver() {
         /** Decline: one PendingIntent per call, since two rings can be posted
          *  at once and each Decline must name its own. The token rides in the
          *  PendingIntent, not in memory, so a press after the process was
-         *  killed still carries it. */
-        internal fun declineIntent(context: Context, ring: Ring, signed: Boolean): PendingIntent {
-            val intent = intent(context, CallActions.DECLINE, ring.callId, ring.conversationId)
-            if (signed) {
-                intent.putExtra(EXTRA_DEVICE_ID, ring.deviceId)
-                    .putExtra(EXTRA_EXP, ring.exp)
-                    .putExtra(EXTRA_SIG, ring.dsig)
+         *  killed still carries it; its three fields are the ones the server
+         *  signed together (`DeclineToken`), never the ring's own `exp`. */
+        internal fun declineIntent(
+            context: Context,
+            callId: String,
+            conversationId: String?,
+            token: DeclineToken?,
+        ): PendingIntent {
+            val intent = intent(context, CallActions.DECLINE, callId, conversationId)
+            if (token != null) {
+                intent.putExtra(EXTRA_DEVICE_ID, token.deviceId)
+                    .putExtra(EXTRA_EXP, token.exp)
+                    .putExtra(EXTRA_SIG, token.sig)
             }
             return PendingIntent.getBroadcast(
                 context,
-                (CallActions.DECLINE + ring.callId).hashCode(),
+                (CallActions.DECLINE + callId).hashCode(),
                 intent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
@@ -110,17 +116,26 @@ class CallActionReceiver : BroadcastReceiver() {
         val deviceId = intent.getStringExtra(EXTRA_DEVICE_ID)
         val exp = intent.getLongExtra(EXTRA_EXP, 0L)
         val sig = intent.getStringExtra(EXTRA_SIG)
+        val token = if (deviceId != null && sig != null && exp > 0) DeclineToken(deviceId, exp, sig) else null
         val apiBase = CallsStore.apiBase(context)
-        if (deviceId == null || sig == null || apiBase == null) {
+        if (token == null || apiBase == null) {
             // No token: the page carries it (it was listening when the ring
             // was posted).
+            deliver(action)
+            return
+        }
+        if (token.expired(System.currentTimeMillis())) {
+            // The server would refuse it and answer 204 all the same, so
+            // nothing would ever say the press was lost. The page declines
+            // through its session instead, live or when it next runs.
+            Log.w(TAG, "[wherry] calls: decline token expired; the page carries the press")
             deliver(action)
             return
         }
         val pending = goAsync()
         Thread {
             try {
-                val status = SignedDecline.post(apiBase, callId, deviceId, exp, sig)
+                val status = SignedDecline.post(apiBase, callId, token.deviceId, token.exp, token.sig)
                 if (status == 204) {
                     Log.i(TAG, "[wherry] calls: decline pressed call=$callId (signed decline sent, 204)")
                 } else {

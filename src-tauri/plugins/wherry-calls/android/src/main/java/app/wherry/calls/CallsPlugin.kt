@@ -110,8 +110,8 @@ class CallsPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     /** { callId, conversationId, label, group, exp } -> { shown }: the ring
-     *  is posted only while no activity is resumed, and shown = true only
-     *  when it was. False (resumed, notifications off, or any failure)
+     *  is posted only while no activity is in front, and shown = true only
+     *  when it was. False (in front, notifications off, or any failure)
      *  leaves the page's sheet and tone ringing (phone-calls.ts's
      *  IncomingAnswer). */
     @Command
@@ -126,11 +126,11 @@ class CallsPlugin(private val activity: Activity) : Plugin(activity) {
                 Ring(
                     callId = callId!!,
                     conversationId = args.getString("conversationId", null)?.takeIf { Ids.isId(it) },
-                    deviceId = null,
                     group = args.getBoolean("group", false),
                     exp = exp,
-                    dsig = null,
+                    token = null,
                     label = args.getString("label", null),
+                    pageKnown = true,
                 ),
             )
         } else {

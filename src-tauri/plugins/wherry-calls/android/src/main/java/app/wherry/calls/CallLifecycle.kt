@@ -14,10 +14,12 @@
 //  2. Keep-resumed (built, off): measured by A-57 before it is ever on. See
 //     below.
 //
-//  3. A2's ring (plan §6.2): whether an activity is resumed (RingHandler
-//     posts no ring while one is: the page's sheet rings), and the ring's
-//     launches into the activity (RingLaunch), from every created activity's
-//     launch intent and every new intent.
+//  3. A2's ring (plan §6.2): whether an activity is in front (RingHandler
+//     posts no ring while one is: the page's sheet rings; and it withdraws,
+//     when one comes to the front, a posted ring the page holds, posting it
+//     again when the person leaves), and the ring's launches into the
+//     activity (RingLaunch), from every created activity's launch intent and
+//     every new intent.
 //
 // Why not the plugin's own onPause/onResume: in tauri 2.11.5 nothing calls
 // them. `TauriLifecycleObserver` (mobile/android-codegen/TauriActivity.kt) is
@@ -32,6 +34,7 @@ package app.wherry.calls
 
 import android.app.Activity
 import android.app.Application
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.os.Bundle
@@ -57,6 +60,12 @@ private const val KEEP_RESUMED_FLAG = "wherry-keep-resumed"
  *  so a rotation or a quick dialog, which resumes within it, is not
  *  treated as leaving. */
 private const val KEEP_RESUMED_DELAY_MS = 700L
+
+/** How long after the activity's pause, or its window's loss of focus, a
+ *  withdrawn ring is posted again if the page has not come back:
+ *  ProcessLifecycleOwner's 700 ms, for the same reason (a rotation or a
+ *  quick dialog is not leaving). */
+private const val LEFT_DELAY_MS = 700L
 
 object CallLifecycle {
 
@@ -84,6 +93,27 @@ object CallLifecycle {
     var resumed: Boolean = false
         private set
 
+    /** The resumed activity's window has input focus, from the window-focus
+     *  listener each activity is given on its first resume. */
+    @Volatile
+    private var focused = false
+
+    /** Activities whose window focus is already observed. */
+    private val watched = WeakHashMap<Activity, Boolean>()
+
+    /**
+     * The person can see the page and hear its tone: an activity is resumed
+     * **and its window has focus**. The page's own test is the same one
+     * (`windowIsFocused()`, `document.hasFocus()`), and pageRingDuties plays
+     * the sheet's tone only while it holds, so a ring is left to the page
+     * exactly when the page will ring it. Resumed alone is not enough: a
+     * full-screen intent resumes the activity behind a secure keyguard
+     * without showing it (read on API 36: `ResumedActivity` MainActivity
+     * with `isKeyguardShowing=true`), and there the lock screen's ring must
+     * stay. Any thread.
+     */
+    fun inFront(): Boolean = resumed && focused
+
     /** CallsInitProvider, at process start (on the main thread). */
     fun install(app: Application) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
@@ -94,6 +124,36 @@ object CallLifecycle {
         installed = true
         appContext = app.applicationContext
         app.registerActivityLifecycleCallbacks(callbacks)
+    }
+
+    /** Main thread. Focus comes after the resume, and it comes back with no
+     *  new resume when the keyguard or the shade goes away over an activity
+     *  that stayed resumed, so it is watched rather than read once. */
+    private fun watchFocus(activity: Activity) {
+        if (watched.containsKey(activity)) return
+        val observer = activity.window?.decorView?.viewTreeObserver ?: return
+        if (!observer.isAlive) return
+        watched[activity] = true
+        observer.addOnWindowFocusChangeListener { hasFocus ->
+            focused = hasFocus
+            if (hasFocus) {
+                cameToFront(activity.applicationContext)
+            } else {
+                main.removeCallbacks(leftCheck)
+                main.postDelayed(leftCheck, LEFT_DELAY_MS)
+            }
+        }
+    }
+
+    /** A2: the page is in front now; a posted ring it holds is withdrawn. */
+    private fun cameToFront(context: Context) {
+        main.removeCallbacks(leftCheck)
+        if (inFront()) RingHandler.pageInFront(context)
+    }
+
+    private val leftCheck = Runnable {
+        val context = appContext ?: return@Runnable
+        if (!inFront()) RingHandler.left(context)
     }
 
     /** The plugin's constructor (any thread). The provider has normally run
@@ -195,13 +255,26 @@ object CallLifecycle {
             // WryActivity.onResume() resumes the WebView itself.
             keptResumed = false
             retryWanted(activity.applicationContext)
+            watchFocus(activity)
+            focused = activity.hasWindowFocus()
+            if (focused) {
+                cameToFront(activity.applicationContext)
+            } else {
+                val keyguard = activity.getSystemService(KeyguardManager::class.java)
+                if (keyguard?.isKeyguardLocked == true) {
+                    Log.i(TAG, "[wherry] calls: resumed behind the lock screen: rings stay posted")
+                }
+            }
         }
 
         override fun onActivityPaused(activity: Activity) {
             resumedCount = maxOf(0, resumedCount - 1)
             resumed = resumedCount > 0
+            if (!resumed) focused = false
             main.removeCallbacks(keepResumedCheck)
             main.postDelayed(keepResumedCheck, KEEP_RESUMED_DELAY_MS)
+            main.removeCallbacks(leftCheck)
+            main.postDelayed(leftCheck, LEFT_DELAY_MS)
         }
 
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
@@ -210,6 +283,7 @@ object CallLifecycle {
 
         override fun onActivityDestroyed(activity: Activity) {
             adopted.remove(activity)
+            watched.remove(activity)
             RingLaunch.destroyed(activity)
         }
 
