@@ -22,7 +22,7 @@ import { startRing } from "../../voice/sounds";
 import { useVoicePrefs } from "../../voice/hooks";
 import { useSelfStatus } from "../hooks";
 import { voice } from "../../voice/session";
-import { notifyDesktopCall, windowIsFocused } from "../../sync/desktop-notify";
+import { closeDesktopCall, notifyDesktopCall, windowIsFocused } from "../../sync/desktop-notify";
 import { useBackLayer } from "../back";
 import {
   notePhoneAnswered,
@@ -100,10 +100,22 @@ export function IncomingCall({
   // window is not in front gets plugin-notification's notification instead.
   // Decided when the ring lands, or when the native side's answer does --
   // focus is read here, not a dependency, so a later blur posts nothing.
+  //
+  // And taken down when the ring ends, however it ends: this sheet is
+  // mounted exactly while its ring is the page's first (Chat.tsx), so the
+  // cleanup runs on an answer, a decline, the caller's cancel, the window
+  // running out, or an answer elsewhere -- and when the native answer that
+  // follows says the page owes no notification after all (a late `shown`).
+  // A notification nothing closed stayed on Android's shade for 25 minutes
+  // after its ring (row A-63). desktop-notify.ts runs posts and closes in
+  // the order they are asked for, so a close is never overtaken by its own
+  // post, nor a re-post (the caller's name arriving) by the close before it.
   useEffect(() => {
     const now = pageRingDuties({ capabilities, native, windowFocused: windowIsFocused() });
     if (!now.notification) return;
-    void notifyDesktopCall(callerName);
+    const callId = ring.callId;
+    void notifyDesktopCall(callerName, callId);
+    return () => void closeDesktopCall(callId);
   }, [ring.callId, callerName, capabilities, native]);
 
   const answer = (): void => {

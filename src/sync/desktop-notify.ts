@@ -80,14 +80,54 @@ export async function notifyDesktop(senderName: string): Promise<void> {
 }
 
 /**
- * "Incoming call from <name>" in the desktop shell, for a ring that lands
- * while the window is not focused -- the same who-but-never-what contract
- * as above. The plugin has no notification actions on desktop; the
- * window is where the call is answered, and the single-instance plugin
- * brings it up.
+ * The notification id a ring's plain notification is posted under, so that
+ * it can be taken down when the ring ends (`closeDesktopCall`). Derived from
+ * the call id (FNV-1a, kept to 31 bits because the plugin's id is an `i32`),
+ * so the page needs no table of what it posted and a second post for the
+ * same ring replaces the first. Without one the plugin's Rust side picks a
+ * random id (`NotificationData`'s `default_id`) that the page never learns,
+ * which is why the ring notification could not be closed before.
  */
-export async function notifyDesktopCall(callerName: string): Promise<void> {
-  if (!isTauriShell()) return;
+export function callNotificationId(callId: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < callId.length; i += 1) {
+    hash ^= callId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash & 0x7fffffff;
+}
+
+/**
+ * "Incoming call from <name>" in a shell, for a ring that lands while the
+ * window is not focused (phone-rules.ts's `pageRingDuties` decides) -- the
+ * same who-but-never-what contract as above. The plugin has no
+ * notification actions on desktop; the window is where the call is
+ * answered, and the single-instance plugin brings it up.
+ *
+ * Posted under `callNotificationId(callId)`, and the ring's end must call
+ * `closeDesktopCall` with the same call: nothing else takes it down, and on
+ * Android it stayed on the shade for 25 minutes after its ring (row A-63).
+ */
+export function notifyDesktopCall(callerName: string, callId: string): Promise<void> {
+  if (!isTauriShell()) return Promise.resolve();
+  return inRingOrder(() => postCall(callerName, callId));
+}
+
+/**
+ * Ring notifications' posts and closes, one after another in the order they
+ * were asked for. A post awaits the plugin's import and perhaps the
+ * permission prompt, so without this a ring that ends at once would close
+ * before its own post landed, and the close before a re-post (the sheet's
+ * effect re-runs when the caller's name arrives) could land after it.
+ */
+let ringOrder: Promise<void> = Promise.resolve();
+
+function inRingOrder(step: () => Promise<void>): Promise<void> {
+  ringOrder = ringOrder.then(step, step);
+  return ringOrder;
+}
+
+async function postCall(callerName: string, callId: string): Promise<void> {
   try {
     const plugin = await import("@tauri-apps/plugin-notification");
     if (permission !== "granted") {
@@ -99,8 +139,40 @@ export async function notifyDesktopCall(callerName: string): Promise<void> {
       permission = granted ? "granted" : "denied";
       if (!granted) return;
     }
-    plugin.sendNotification({ title: `Incoming call from ${callerName}` });
+    plugin.sendNotification({
+      id: callNotificationId(callId),
+      title: `Incoming call from ${callerName}`,
+    });
   } catch {
     // Best effort by contract; see above.
   }
+}
+
+/**
+ * Takes down the ring notification `notifyDesktopCall` posted for this call,
+ * when the ring ends however it ends (answered, declined, cancelled, timed
+ * out, answered elsewhere): the sheet unmounting is that moment.
+ *
+ * `removeActive` exists on the phones only. tauri-plugin-notification's
+ * desktop half (2.4.0) registers `notify`, `request_permission` and
+ * `is_permission_granted` and nothing else, so on the desktop the command
+ * is not found and the promise rejects -- absorbed here. There a posted
+ * toast or banner cannot be withdrawn through the plugin at all; it goes
+ * the way the system's own notifications go. On the phones Tauri hands a
+ * command the Rust side lacks to the native plugin (`removeActive`), and the
+ * capability's `notification:default` grants `allow-remove-active`. On
+ * Android that is `NotificationManager.cancel(id)` (no tag: the plugin
+ * posts with none, so the calls plugin's tagged `ring.<callId>` is never
+ * touched); on iOS the delivered notification with that identifier goes.
+ */
+export function closeDesktopCall(callId: string): Promise<void> {
+  if (!isTauriShell()) return Promise.resolve();
+  return inRingOrder(async () => {
+    try {
+      const plugin = await import("@tauri-apps/plugin-notification");
+      await plugin.removeActive([{ id: callNotificationId(callId) }]);
+    } catch {
+      // Best effort by contract; see above.
+    }
+  });
 }
