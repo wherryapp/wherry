@@ -2125,15 +2125,17 @@ fn route_of(stats: &[RtcStats]) -> Option<Value> {
     IceCandidateType::Relay => "relay",
   });
   // A relay candidate's `protocol` is the relay's leg to the SFU; the
-  // client's own leg is `relayProtocol`, and only a relay has one.
-  let relay_protocol = match local.candidate_type {
-    Some(IceCandidateType::Relay) => local.relay_protocol.map(|p| match p {
-      IceServerTransportProtocol::Udp => "udp",
-      IceServerTransportProtocol::Tcp => "tcp",
-      IceServerTransportProtocol::Tls => "tls",
-    }),
-    _ => None,
-  };
+  // client's own leg is `relayProtocol`. It is passed on whatever the
+  // candidate's type: when a relayed check is answered from a port the
+  // allocation did not name, libwebrtc re-labels the local candidate `prflx`
+  // and keeps its `relayProtocol` (turn-relay-plan.md, T4 finding 1, rows
+  // D-80 to D-82). Emitting it only for `relay` made that call read
+  // `direct · udp`. Which type counts as a relay is route.ts's decision.
+  let relay_protocol = local.relay_protocol.map(|p| match p {
+    IceServerTransportProtocol::Udp => "udp",
+    IceServerTransportProtocol::Tcp => "tcp",
+    IceServerTransportProtocol::Tls => "tls",
+  });
   let protocol = (!local.protocol.is_empty()).then(|| local.protocol.to_lowercase());
   Some(json!({
     "candidateType": candidate_type,
@@ -2501,15 +2503,30 @@ mod route_tests {
   }
 
   #[test]
-  fn a_direct_candidate_carries_no_relay_protocol() {
+  fn a_candidate_without_a_relay_protocol_emits_null() {
     let stats = report(json!([
       { "type": "transport", "id": "T1", "selectedCandidatePairId": "CP1" },
       { "type": "candidate-pair", "id": "CP1", "localCandidateId": "L1" },
-      candidate("L1", "host", "tcp", Some("udp")),
+      candidate("L1", "host", "tcp", None),
     ]));
     assert_eq!(
       route_of(&stats),
       Some(json!({ "candidateType": "host", "protocol": "tcp", "relayProtocol": null }))
+    );
+  }
+
+  #[test]
+  fn a_relay_re_labelled_prflx_keeps_its_relay_protocol() {
+    // The rig's relayed calls (T4 finding 1): libwebrtc turned `relay:udp`
+    // into `prflx:udp` and kept the client-to-relay transport on it.
+    let stats = report(json!([
+      { "type": "transport", "id": "T1", "selectedCandidatePairId": "CP1" },
+      { "type": "candidate-pair", "id": "CP1", "localCandidateId": "L1" },
+      candidate("L1", "prflx", "udp", Some("tcp")),
+    ]));
+    assert_eq!(
+      route_of(&stats),
+      Some(json!({ "candidateType": "prflx", "protocol": "udp", "relayProtocol": "tcp" }))
     );
   }
 

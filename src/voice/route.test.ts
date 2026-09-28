@@ -149,6 +149,50 @@ describe("parseRoute and routeLabel: every label", () => {
   });
 });
 
+describe("parseRoute and routeLabel: a relay libwebrtc re-labelled prflx (T4 finding 1)", () => {
+  it("reads a prflx carrying relayProtocol as a relay (WebView2's and the native engine's rig reading)", () => {
+    const report = chromeReport({ candidateType: "prflx", protocol: "udp", relayProtocol: "tcp", url: TURN_URL });
+    assert.deepEqual(parseRoute(report), { candidateType: "prflx", protocol: "udp", relayProtocol: "tcp" });
+    assert.equal(labelOf(report), "relay · tcp");
+    // As the native engine's route_of now emits it: no URL, relayProtocol kept.
+    assert.equal(routeLabel({ candidateType: "prflx", protocol: "udp", relayProtocol: "udp" }), "relay · udp");
+  });
+
+  it("falls back to a prflx's turn: URL when it carries no relayProtocol", () => {
+    const report = chromeReport({ candidateType: "prflx", protocol: "udp", url: "turn:turn.wherry.app:3478?transport=tcp" });
+    assert.equal(labelOf(report), "relay · tcp");
+  });
+
+  it("reads a srflx whose url is a turn: URL as direct: production's ordinary call", () => {
+    // With rtc.turn_servers set, LiveKit hands out only the TURN host, so every
+    // production srflx names it in `url`. That is where the candidate was
+    // gathered from, not a relay.
+    for (const url of [TURN_URL, "turn:turn.wherry.app:3478?transport=udp", "turn:turn.wherry.app:3478"]) {
+      const report = chromeReport({ candidateType: "srflx", protocol: "udp", url });
+      assert.deepEqual(parseRoute(report), { candidateType: "srflx", protocol: "udp", relayProtocol: null }, url);
+      assert.equal(labelOf(report), "direct · udp", url);
+    }
+  });
+
+  it("reads a host candidate as direct, whatever its url", () => {
+    const report = chromeReport({ candidateType: "host", protocol: "udp", url: TURN_URL });
+    assert.equal(labelOf(report), "direct · udp");
+  });
+
+  it("reads a prflx with neither relayProtocol nor a turn: URL as direct", () => {
+    assert.equal(labelOf(chromeReport({ candidateType: "prflx", protocol: "udp" })), "direct · udp");
+    assert.equal(
+      labelOf(chromeReport({ candidateType: "prflx", protocol: "udp", url: "stun:stun.example.test:3478" })),
+      "direct · udp",
+    );
+  });
+
+  it("leaves a plain relay as it was", () => {
+    assert.equal(labelOf(chromeReport({ candidateType: "relay", protocol: "udp", relayProtocol: "tls" })), "relay · tls");
+    assert.equal(labelOf(chromeReport({ candidateType: "relay", protocol: "udp", url: TURN_URL })), "relay · tls");
+  });
+});
+
 describe("parseRoute: finding the selected pair", () => {
   it("reads Firefox's shape: no selectedCandidatePairId, a pair marked selected", () => {
     const report = [

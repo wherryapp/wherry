@@ -23,6 +23,18 @@
 // A relay candidate's `protocol` is the relay's leg to the SFU (always UDP
 // with our coturn: `no-tcp-relay`), not the client's leg to the relay. The
 // client's leg is `relayProtocol`, which is what the label must read.
+//
+// **A relay is not always typed `relay`.** When the SFU answers a relayed
+// connectivity check from a port the allocation did not name, libwebrtc
+// re-labels the local candidate `prflx` and keeps `relayProtocol` on it (rows
+// D-80 to D-82 read `direct · udp` for a relayed call because of that;
+// turn-relay-plan.md, T4 finding 1). So `relayProtocol` is read on a
+// candidate of any type, and its presence is what makes a route a relay.
+// The `url` fallback is narrower: only a `relay` or `prflx` candidate's
+// `turn:` URL is read, never a `srflx` or `host` one's, because the spec sets
+// `url` on a `srflx` too, naming the ICE server it came from, and in
+// production that server is the TURN host: every ordinary production call
+// would read as relayed.
 
 /** The selected pair's local candidate, reduced to what the label needs.
  *  Values are the spec's strings, lowercased; `null` where the engine did
@@ -32,8 +44,9 @@ export type RouteRaw = {
   candidateType: string | null;
   /** `udp` or `tcp`: the candidate's own transport. */
   protocol: string | null;
-  /** For a relay candidate only: the client-to-relay transport, `udp`,
-   *  `tcp` or `tls`. */
+  /** The client-to-relay transport, `udp`, `tcp` or `tls`: set on a `relay`
+   *  candidate, and on a `prflx` one libwebrtc re-labelled from a relay.
+   *  Present means relayed, whatever `candidateType` says. */
   relayProtocol: string | null;
 };
 
@@ -72,6 +85,11 @@ function lower(value: unknown): string | null {
  * `turn:` is TCP when `?transport=tcp` says so and UDP otherwise (RFC 7065's
  * default). The URL itself is never kept.
  */
+/** The candidate types whose `url` may name a relay. Never `srflx` or
+ *  `host`: their `url` is the ICE server they were gathered from, a `turn:`
+ *  URL in production. */
+const URL_RELAY_TYPES: ReadonlySet<string> = new Set(["relay", "prflx"]);
+
 function relayProtocolFromUrl(url: string | null): string | null {
   if (url === null) return null;
   const lowered = url.toLowerCase();
@@ -118,10 +136,13 @@ export function parseRoute(stats: Iterable<unknown>): RouteRaw | null {
   if (!local || local["type"] !== "local-candidate") return null;
 
   const candidateType = lower(local["candidateType"]);
+  // `relayProtocol` on any type; the ICE server URL only where it can name a
+  // relay (see the file's head: a srflx's `turn:` URL is not a relay).
   const relayProtocol =
-    candidateType === "relay"
-      ? (lower(local["relayProtocol"]) ?? relayProtocolFromUrl(str(local["url"])))
-      : null;
+    lower(local["relayProtocol"]) ??
+    (candidateType !== null && URL_RELAY_TYPES.has(candidateType)
+      ? relayProtocolFromUrl(str(local["url"]))
+      : null);
   return { candidateType, protocol: lower(local["protocol"]), relayProtocol };
 }
 
@@ -136,6 +157,7 @@ const DIRECT_LABELS: ReadonlyMap<string, RouteLabel> = new Map([
 ]);
 // host, server-reflexive and peer-reflexive all reach the SFU with no relay
 // between: which of them won says something about NAT, nothing about TURN.
+// Unless it carries a `relayProtocol` (below).
 const DIRECT_TYPES: ReadonlySet<string> = new Set(["host", "srflx", "prflx"]);
 
 /**
@@ -148,10 +170,14 @@ const DIRECT_TYPES: ReadonlySet<string> = new Set(["host", "srflx", "prflx"]);
 export function routeLabel(raw: RouteRaw | null | undefined): RouteLabel {
   if (!raw) return "unknown";
   const type = raw.candidateType?.toLowerCase();
+  const relayVia = raw.relayProtocol?.toLowerCase() ?? null;
   if (type === "relay") {
-    return RELAY_LABELS.get(raw.relayProtocol?.toLowerCase() ?? "") ?? "relay";
+    return RELAY_LABELS.get(relayVia ?? "") ?? "relay";
   }
   if (type !== undefined && DIRECT_TYPES.has(type)) {
+    // A client-to-relay transport on a candidate of another known type is a
+    // relay libwebrtc re-labelled (the file's head), not a direct path.
+    if (relayVia !== null) return RELAY_LABELS.get(relayVia) ?? "relay";
     return DIRECT_LABELS.get(raw.protocol?.toLowerCase() ?? "") ?? "unknown";
   }
   return "unknown";
