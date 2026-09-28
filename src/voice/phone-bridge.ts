@@ -210,9 +210,15 @@ class PhoneBridge {
     void this.#probeCapabilities();
     const offSync = sync.subscribe((event) => this.#onSyncEvent(event));
     const offVoice = voice.subscribe(() => this.#onVoice());
+    // Coming to the front is when a CallKit call must give way to the
+    // page's (`pageOwnsAudio`, branch B of I-58), whether or not the voice
+    // state moved.
+    const onVisibility = (): void => this.#onVoice();
+    document.addEventListener("visibilitychange", onVisibility);
     this.#uninstall = () => {
       offSync();
       offVoice();
+      document.removeEventListener("visibilitychange", onVisibility);
       this.#cancelStop();
       this.#stopRun();
     };
@@ -464,7 +470,11 @@ class PhoneBridge {
     if (this.#present === false) return;
     try {
       const state = voice.getState();
-      const report = nativeActiveCall(state, this.#labels);
+      const report = nativeActiveCall(
+        state,
+        this.#labels,
+        document.visibilityState === "visible",
+      );
       const key = JSON.stringify(report);
       if (key !== this.#activeKey) {
         this.#activeKey = key;

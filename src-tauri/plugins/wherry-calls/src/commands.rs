@@ -65,12 +65,14 @@ pub(crate) async fn set_active<R: Runtime>(
     call_id: Option<String>,
     label: Option<String>,
     audio_only: bool,
+    page_owns_audio: Option<bool>,
 ) -> Result<()> {
     app.wherry_calls().set_active(ActiveArgs {
         active,
         call_id,
         label,
         audio_only,
+        page_owns_audio: page_owns_audio.unwrap_or(false),
     })
 }
 

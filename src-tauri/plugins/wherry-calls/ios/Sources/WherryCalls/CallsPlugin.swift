@@ -76,6 +76,8 @@ struct ActiveArgs: Decodable {
   let callId: String?
   let label: String?
   let audioOnly: Bool
+  /// Absent from an older page: false.
+  let pageOwnsAudio: Bool?
 }
 
 struct EndedArgs: Decodable {
@@ -347,6 +349,16 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
         call.claimed = true
         call.watchdog?.cancel()
         call.watchdog = nil
+        // Branch B of row I-58 (2026-09-28, iPhone, iOS 26.6.2): with a
+        // CallKit call live and the app in front, WebKit re-activates the
+        // audio session and interrupts its own microphone, so the call is
+        // silent while Wherry is on screen. Once the page's call is up in
+        // front, CallKit has carried the ring: end its call as a local end,
+        // which is never sent back to the page as a hangup.
+        if args.pageOwnsAudio == true, call.answered, !call.endRequested {
+          NSLog("[wherry] calls: page owns audio; ending CallKit's call uuid=%@", call.callId)
+          self.endLocally(call)
+        }
       }
       if !args.active {
         // Only calls the page had claimed: a run starting after a

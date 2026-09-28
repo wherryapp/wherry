@@ -92,6 +92,10 @@ pub struct ActiveArgs {
     pub call_id: Option<String>,
     pub label: Option<String>,
     pub audio_only: bool,
+    /// Branch B of row I-58: the page's call is up in front, so iOS ends
+    /// CallKit's call (never the page's). Absent from an older page: false.
+    #[serde(default)]
+    pub page_owns_audio: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

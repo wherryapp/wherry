@@ -62,7 +62,7 @@ export type PhoneCapabilities = {
  *
  * | reason               | iOS (CallKit)                                         | Android                      |
  * |----------------------|-------------------------------------------------------|------------------------------|
- * | `answered`           | **end nothing.** A CallKit call answered here stays up; its end arrives later as `ended` or `setActive({active: false})` | cancel the ring notification |
+ * | `answered`           | **end nothing.** A CallKit call answered here stays up; its end arrives later as `ended`, `setActive({active: false})`, or `setActive({pageOwnsAudio: true})` once the page's call is up in front (branch B of I-58) | cancel the ring notification |
  * | `answered_elsewhere` | `reportCall(with:endedAt:reason: .answeredElsewhere)` | cancel the ring notification |
  * | `declined_elsewhere` | `reportCall(…, reason: .declinedElsewhere)`           | cancel the ring notification |
  * | `cancelled`          | `reportCall(…, reason: .remoteEnded)` (the caller hung up) | cancel the ring notification |
@@ -166,6 +166,10 @@ export type ActiveReport = {
   /** No camera or screen either way: Android holds a proximity wake lock,
    *  iOS turns proximity monitoring on. */
   audioOnly: boolean;
+  /** The page's call is connected and the page is in front: CallKit has
+   *  carried the ring, and the iOS plugin ends its call without ending the
+   *  page's (branch B of row I-58; phone-rules.ts's `nativeActiveCall`). */
+  pageOwnsAudio: boolean;
 };
 
 export interface PhoneCalls {

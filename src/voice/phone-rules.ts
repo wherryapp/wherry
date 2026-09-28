@@ -385,13 +385,26 @@ export function callServiceWanted(state: Pick<ActiveCallInput, "phase">): boolea
 }
 
 /** What `setActive` is told. The call id is null while the join is still
- *  asking the server for its token. */
+ *  asking the server for its token.
+ *
+ *  `pageOwnsAudio` is branch B of row I-58 (phone-calls-plan.md §7),
+ *  measured on an iPhone on 2026-09-28: while a CallKit call is live and the
+ *  page is in front, WebKit re-activates the audio session CallKit owns and
+ *  marks its own microphone interrupted, so the call is silent both ways
+ *  for exactly as long as Wherry is on screen. So once the page's call has
+ *  connected and the page is in front, CallKit has carried the ring and the
+ *  plugin ends its call (never the page's); a call answered on the lock
+ *  screen keeps CallKit until the app is opened. The plugin ignores it
+ *  where it holds no CallKit call (Android; an outgoing call). */
 export function nativeActiveCall(
   state: ActiveCallInput,
   labels: Readonly<Record<string, string>>,
+  inFront: boolean,
 ): ActiveReport {
   const active = callServiceWanted(state);
-  if (!active) return { active: false, callId: null, label: null, audioOnly: true };
+  if (!active) {
+    return { active: false, callId: null, label: null, audioOnly: true, pageOwnsAudio: false };
+  }
   const video =
     state.camera.on || state.screen.on || state.participants.some((p) => p.camera || p.screen);
   return {
@@ -399,6 +412,7 @@ export function nativeActiveCall(
     callId: state.call?.id ?? null,
     label: state.conversationId ? (labels[state.conversationId] ?? null) : null,
     audioOnly: !video,
+    pageOwnsAudio: inFront && state.phase === "connected" && state.call !== null,
   };
 }
 

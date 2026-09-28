@@ -414,34 +414,46 @@ test("the call service runs from the join's start until idle, and never for anot
 
 test("setActive carries the call, its label and whether anybody's video is on", () => {
   const labels = { conv: "Alice" };
-  assert.deepEqual(nativeActiveCall(state(), labels), {
+  assert.deepEqual(nativeActiveCall(state(), labels, true), {
     active: false,
     callId: null,
     label: null,
     audioOnly: true,
+    pageOwnsAudio: false,
   });
   // Still asking the server for a token: active, no id yet.
-  assert.deepEqual(nativeActiveCall(state({ phase: "connecting", conversationId: "conv" }), labels), {
-    active: true,
-    callId: null,
-    label: "Alice",
-    audioOnly: true,
-  });
+  assert.deepEqual(
+    nativeActiveCall(state({ phase: "connecting", conversationId: "conv" }), labels, true),
+    { active: true, callId: null, label: "Alice", audioOnly: true, pageOwnsAudio: false },
+  );
   const connected = state({ phase: "connected", conversationId: "conv", call: { id: "c" } });
-  assert.deepEqual(nativeActiveCall(connected, labels), {
+  assert.deepEqual(nativeActiveCall(connected, labels, false), {
     active: true,
     callId: "c",
     label: "Alice",
     audioOnly: true,
+    pageOwnsAudio: false,
   });
-  assert.equal(nativeActiveCall({ ...connected, camera: { on: true } }, labels).audioOnly, false);
-  assert.equal(nativeActiveCall({ ...connected, screen: { on: true } }, labels).audioOnly, false);
-  assert.equal(
-    nativeActiveCall({ ...connected, participants: [{ camera: false, screen: true }] }, labels)
-      .audioOnly,
-    false,
-  );
-  assert.equal(nativeActiveCall({ ...connected, conversationId: "other" }, labels).label, null);
+  const at = (over: Partial<ActiveCallInput>) =>
+    nativeActiveCall({ ...connected, ...over }, labels, false);
+  assert.equal(at({ camera: { on: true } }).audioOnly, false);
+  assert.equal(at({ screen: { on: true } }).audioOnly, false);
+  assert.equal(at({ participants: [{ camera: false, screen: true }] }).audioOnly, false);
+  assert.equal(at({ conversationId: "other" }).label, null);
+});
+
+test("the page owns the call's audio only once connected and in front (I-58, branch B)", () => {
+  const connected = state({ phase: "connected", conversationId: "conv", call: { id: "c" } });
+  assert.equal(nativeActiveCall(connected, {}, true).pageOwnsAudio, true);
+  // In the background CallKit keeps the call: that is where its audio works.
+  assert.equal(nativeActiveCall(connected, {}, false).pageOwnsAudio, false);
+  // Not before the page's own call is up, or CallKit would end with nothing
+  // carrying the call.
+  for (const phase of ["connecting", "reconnecting"] as const) {
+    assert.equal(nativeActiveCall({ ...connected, phase }, {}, true).pageOwnsAudio, false);
+  }
+  assert.equal(nativeActiveCall({ ...connected, call: null }, {}, true).pageOwnsAudio, false);
+  assert.equal(nativeActiveCall({ ...connected, phase: "elsewhere" }, {}, true).pageOwnsAudio, false);
 });
 
 // -- labels -----------------------------------------------------------------
