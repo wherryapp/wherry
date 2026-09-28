@@ -5,7 +5,9 @@
 // `pendingActionVerdict`); this only carries it.
 //
 // A1 produces `hangup` (the ongoing notification's button). A2 adds
-// `answer` and `decline` from the ring.
+// `answer` (RingLaunch) and `decline` from the ring (CallActionReceiver, when
+// the decline is not signed or the signed one failed; RingLaunch, when it
+// had to open the app).
 package app.wherry.calls
 
 import app.tauri.plugin.JSObject
@@ -41,8 +43,11 @@ internal object CallActions {
 
     /** Where a press goes when the page listens: the plugin, which answers
      *  whether a listener took it. */
-    fun interface Sink {
+    interface Sink {
         fun offer(action: CallAction): Boolean
+
+        /** A page is listening for `action` now. */
+        fun listening(): Boolean
     }
 
     private var sink: WeakReference<Sink>? = null
@@ -52,6 +57,11 @@ internal object CallActions {
     fun attach(sink: Sink) {
         this.sink = WeakReference(sink)
     }
+
+    /** Whether a press made now would reach a page at once (A2 gives an
+     *  unsigned Decline to the page only then). */
+    @Synchronized
+    fun live(): Boolean = sink?.get()?.listening() == true
 
     /** Delivered live, or queued for `takePendingActions`. Answers whether
      *  it was delivered live. */
