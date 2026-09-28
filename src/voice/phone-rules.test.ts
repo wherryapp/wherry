@@ -11,6 +11,7 @@ import {
   nativeActiveCall,
   nativeApiBase,
   nativeEndReason,
+  nativeRingOf,
   PAGE_ONLY,
   pageAliveWanted,
   pageRingDuties,
@@ -28,6 +29,7 @@ import {
   type ActiveCallInput,
   type ActionView,
   type CallFrame,
+  type NativeRing,
 } from "./phone-rules";
 import { RING_TIMEOUT_MS } from "./rules";
 
@@ -95,12 +97,22 @@ test("an action needs a known kind and a call id; the rest is optional", () => {
 // -- one ring UI per device -----------------------------------------------
 
 test("only an explicit shown: true reads as a ring the native side took", () => {
-  assert.deepEqual(readIncomingAnswer({ shown: true }), { shown: true });
-  // A stub's empty resolve, a failure's null, anything odd: the page rings.
-  assert.deepEqual(readIncomingAnswer(null), { shown: false });
-  assert.deepEqual(readIncomingAnswer({}), { shown: false });
-  assert.deepEqual(readIncomingAnswer({ shown: "true" }), { shown: false });
-  assert.deepEqual(readIncomingAnswer({ shown: false }), { shown: false });
+  assert.deepEqual(readIncomingAnswer({ shown: true }), { shown: true, answered: true });
+  // A stub's empty resolve, a failure's null, anything odd: the page rings,
+  // and nothing was answered.
+  assert.deepEqual(readIncomingAnswer(null), { shown: false, answered: false });
+  assert.deepEqual(readIncomingAnswer({}), { shown: false, answered: false });
+  assert.deepEqual(readIncomingAnswer({ shown: "true" }), { shown: false, answered: false });
+  // Said in so many words: not shown, and answered.
+  assert.deepEqual(readIncomingAnswer({ shown: false }), { shown: false, answered: true });
+});
+
+test("the native answer tells an explicit no from no answer at all", () => {
+  assert.equal(nativeRingOf(readIncomingAnswer({ shown: true })), "shown");
+  assert.equal(nativeRingOf(readIncomingAnswer({ shown: false })), "not_shown");
+  // `phone-calls.ts`'s `#call` turns a rejected command into null.
+  assert.equal(nativeRingOf(readIncomingAnswer(null)), "no_answer");
+  assert.equal(nativeRingOf(readIncomingAnswer({})), "no_answer");
 });
 
 test("a VoIP token is read with its environment and keys, for the three-argument registration", () => {
@@ -151,14 +163,16 @@ const NOTHING = { sheet: false, tone: false, notification: false };
 const ALONE_IN_FRONT = { sheet: true, tone: true, notification: false };
 const ALONE_BEHIND = { sheet: true, tone: true, notification: true };
 
+const ANSWERS: readonly (NativeRing | null)[] = [null, "shown", "not_shown", "no_answer"];
+
 test("the page alone rings where there is no native ring UI, and notifies only when not in front", () => {
-  for (const nativeShown of [null, false, true]) {
+  for (const native of ANSWERS) {
     assert.deepEqual(
-      pageRingDuties({ capabilities: PAGE_ONLY, nativeShown, windowFocused: true }),
+      pageRingDuties({ capabilities: PAGE_ONLY, native, windowFocused: true }),
       ALONE_IN_FRONT,
     );
     assert.deepEqual(
-      pageRingDuties({ capabilities: PAGE_ONLY, nativeShown, windowFocused: false }),
+      pageRingDuties({ capabilities: PAGE_ONLY, native, windowFocused: false }),
       ALONE_BEHIND,
     );
   }
@@ -169,7 +183,7 @@ test("before the plugin has answered, a shell's page draws, sounds and posts not
   // sheet, a tone and a notification started now would be a second ring.
   for (const windowFocused of [true, false]) {
     assert.deepEqual(
-      pageRingDuties({ capabilities: null, nativeShown: null, windowFocused }),
+      pageRingDuties({ capabilities: null, native: null, windowFocused }),
       NOTHING,
     );
   }
@@ -178,45 +192,72 @@ test("before the plugin has answered, a shell's page draws, sounds and posts not
 test("under CallKit the page stays silent for a ring CallKit took, and waits for the answer", () => {
   for (const windowFocused of [true, false]) {
     assert.deepEqual(
-      pageRingDuties({ capabilities: CALLKIT, nativeShown: true, windowFocused }),
+      pageRingDuties({ capabilities: CALLKIT, native: "shown", windowFocused }),
       NOTHING,
     );
     assert.deepEqual(
-      pageRingDuties({ capabilities: CALLKIT, nativeShown: null, windowFocused }),
+      pageRingDuties({ capabilities: CALLKIT, native: null, windowFocused }),
       NOTHING,
     );
   }
 });
 
-test("a ring CallKit refused rings on the page as if there were no plugin", () => {
-  assert.deepEqual(
-    pageRingDuties({ capabilities: CALLKIT, nativeShown: false, windowFocused: true }),
-    ALONE_IN_FRONT,
-  );
-  assert.deepEqual(
-    pageRingDuties({ capabilities: CALLKIT, nativeShown: false, windowFocused: false }),
-    ALONE_BEHIND,
-  );
+test("a ring CallKit refused, or never answered, rings on the page as if there were no plugin", () => {
+  for (const native of ["not_shown", "no_answer"] as const) {
+    assert.deepEqual(
+      pageRingDuties({ capabilities: CALLKIT, native, windowFocused: true }),
+      ALONE_IN_FRONT,
+    );
+    assert.deepEqual(
+      pageRingDuties({ capabilities: CALLKIT, native, windowFocused: false }),
+      ALONE_BEHIND,
+    );
+  }
 });
 
 test("under Android's ring notification the page never posts a second one, and is silent behind", () => {
   // Backgrounded (windowIsFocused() is false there even though
   // document.hasFocus() is true): the CallStyle ring is the one ring.
-  for (const nativeShown of [null, true]) {
+  for (const native of [null, "shown"] as const) {
     assert.deepEqual(
-      pageRingDuties({ capabilities: ANDROID_RING, nativeShown, windowFocused: false }),
+      pageRingDuties({ capabilities: ANDROID_RING, native, windowFocused: false }),
       { sheet: true, tone: false, notification: false },
     );
     // In front: the plugin posts nothing, so the sheet and the tone ring.
     assert.deepEqual(
-      pageRingDuties({ capabilities: ANDROID_RING, nativeShown, windowFocused: true }),
+      pageRingDuties({ capabilities: ANDROID_RING, native, windowFocused: true }),
       ALONE_IN_FRONT,
     );
   }
-  // The plugin said it posted nothing: the page is the only ring.
+});
+
+test("Android's plugin saying it posted nothing is authoritative over the webview's focus (row A-63)", () => {
+  // The emulator, 2026-09-28 (API 36, dev shell): the app brought to the
+  // front by `am start` with no touch. The plugin answered `shown: false`
+  // (CallLifecycle.inFront: resumed and window focused) while the webview's
+  // document.hasFocus() read false, so windowIsFocused() was false; the page
+  // posted its own plain "Incoming call from X" on channel `default` beside
+  // its sheet, and it stayed on the shade for 25 minutes after the ring.
+  const emulator = {
+    capabilities: ANDROID_RING,
+    native: nativeRingOf(readIncomingAnswer({ shown: false })),
+    windowFocused: false,
+  };
+  assert.deepEqual(pageRingDuties(emulator), ALONE_IN_FRONT);
+  // The same answer with the webview agreeing (after one real tap).
+  assert.deepEqual(pageRingDuties({ ...emulator, windowFocused: true }), ALONE_IN_FRONT);
+});
+
+test("an Android plugin that never answered leaves the page ringing alone, notification included", () => {
+  // A command that failed, or hung past REPORT_PATIENCE_MS: nothing native
+  // may be ringing, and behind, the page's notification is the one ring.
   assert.deepEqual(
-    pageRingDuties({ capabilities: ANDROID_RING, nativeShown: false, windowFocused: false }),
+    pageRingDuties({ capabilities: ANDROID_RING, native: "no_answer", windowFocused: false }),
     ALONE_BEHIND,
+  );
+  assert.deepEqual(
+    pageRingDuties({ capabilities: ANDROID_RING, native: "no_answer", windowFocused: true }),
+    ALONE_IN_FRONT,
   );
 });
 

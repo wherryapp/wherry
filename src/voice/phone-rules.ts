@@ -83,10 +83,31 @@ export function readAction(raw: unknown): PhoneAction | null {
 
 /** A `reportIncoming` answer. Anything but an explicit `shown: true` --
  *  a stub's empty answer, a failure's null -- reads as not shown, so the
- *  page's sheet rings. */
+ *  page's sheet rings. Only a boolean `shown` counts as the native side
+ *  having answered: `phone-calls.ts`'s `#call` turns every failure into
+ *  null. */
 export function readIncomingAnswer(raw: unknown): IncomingAnswer {
-  if (typeof raw !== "object" || raw === null) return { shown: false };
-  return { shown: (raw as Record<string, unknown>)["shown"] === true };
+  if (typeof raw !== "object" || raw === null) return { shown: false, answered: false };
+  const shown = (raw as Record<string, unknown>)["shown"];
+  return { shown: shown === true, answered: typeof shown === "boolean" };
+}
+
+/**
+ * What the page knows of the native side's answer for one ring
+ * (phone-bridge.ts keeps one per ring; null until there is one):
+ * - `"shown"`: the native side rings it (CallKit took it; Android posted its
+ *   ring notification);
+ * - `"not_shown"`: the native side answered, in so many words, that it rings
+ *   nothing for it;
+ * - `"no_answer"`: nothing came -- the command failed, there was no plugin
+ *   or no account run to report it, or `REPORT_PATIENCE_MS` passed first. A
+ *   late answer replaces it.
+ */
+export type NativeRing = "shown" | "not_shown" | "no_answer";
+
+export function nativeRingOf(answer: IncomingAnswer): NativeRing {
+  if (answer.shown) return "shown";
+  return answer.answered ? "not_shown" : "no_answer";
 }
 
 /** A `pushToken()` answer or a `push-token` event (plan §5.2, hunk H4):
@@ -132,6 +153,10 @@ export type PageRingDuties = {
 
 const RING_NOTHING: PageRingDuties = { sheet: false, tone: false, notification: false };
 
+/** The sheet and its tone, and no notification: the page rings where the
+ *  person is looking at it. */
+const RING_PAGE_IN_FRONT: PageRingDuties = { sheet: true, tone: true, notification: false };
+
 /** The page is the only ring: the sheet and the tone, and the plain
  *  notification when the window is not in front, because nothing else would
  *  say a call is coming. The web and the desktop shell, always. */
@@ -150,34 +175,52 @@ function pageAlone(windowFocused: boolean): PageRingDuties {
  *   the bridge gives up waiting after `PROBE_PATIENCE_MS`).
  * - `"page"`: the page alone rings.
  * - `"callkit"`: CallKit rings in every app state, so the page stays silent
- *   *for a ring CallKit took* (`nativeShown` true). Until `reportIncoming`
- *   has answered, nothing; if CallKit did not take it, the page rings as if
- *   there were no plugin -- a half-working plugin must never cost the ring.
+ *   *for a ring CallKit took* (`native` is `"shown"`). Until
+ *   `reportIncoming` has answered, nothing; if CallKit did not take it, the
+ *   page rings as if there were no plugin -- a half-working plugin must
+ *   never cost the ring.
  * - `"notification"` (Android from A2): the plugin posts its `CallStyle`
- *   ring only while the activity is not resumed, with the channel's own
+ *   ring only while the activity is not in front, with the channel's own
  *   sound. The sheet stays (it is what the person sees on coming back, and
  *   invisible until then); the tone plays only in front, where the plugin
- *   posts nothing; the plain notification never, unless the plugin said it
- *   rang nothing -- then the page rings alone.
+ *   posts nothing; the plain notification never while the plugin answers.
+ *   - `"not_shown"` is the plugin saying, in so many words, that it posts
+ *     nothing: because the activity is in front (`CallLifecycle.inFront`,
+ *     resumed and its window focused), or because this phone's
+ *     notifications are off, or because the ring is already over here. That
+ *     answer is authoritative over `windowFocused`, which on Android is the
+ *     webview's `document.hasFocus()` and can read false in a window Android
+ *     reports focused (row A-63: after `am start` with no touch, the page
+ *     posted its own plain notification beside its sheet, and it stayed on
+ *     the shade after the ring). So the sheet and the tone ring and nothing
+ *     is posted: in front a notification is a second ring, and with
+ *     notifications off it could not post either.
+ *   - `"no_answer"` (a plugin that failed or hung): the page rings alone,
+ *     notification included, since nothing native may be ringing.
  *
  * `windowFocused` is desktop-notify.ts's `windowIsFocused()`, which is false
- * in a backgrounded Android shell (unlike `document.hasFocus()`).
+ * in a backgrounded Android shell (unlike `document.hasFocus()`). It remains
+ * the whole question on the web and the desktop, where `hasFocus()` is right.
  */
 export function pageRingDuties(input: {
   capabilities: PhoneCapabilities | null;
-  /** This ring's `reportIncoming` answer; null until it has come. */
-  nativeShown: boolean | null;
+  /** This ring's native answer; null until one has come (or its patience
+   *  has run out, which reads `"no_answer"`). */
+  native: NativeRing | null;
   windowFocused: boolean;
 }): PageRingDuties {
-  const { capabilities, nativeShown, windowFocused } = input;
+  const { capabilities, native, windowFocused } = input;
   if (capabilities === null) return RING_NOTHING;
   switch (capabilities.ringUi) {
     case "page":
       return pageAlone(windowFocused);
     case "callkit":
-      return nativeShown === false ? pageAlone(windowFocused) : RING_NOTHING;
+      return native === "not_shown" || native === "no_answer"
+        ? pageAlone(windowFocused)
+        : RING_NOTHING;
     case "notification":
-      if (nativeShown === false) return pageAlone(windowFocused);
+      if (native === "no_answer") return pageAlone(windowFocused);
+      if (native === "not_shown") return RING_PAGE_IN_FRONT;
       return { sheet: true, tone: windowFocused, notification: false };
   }
 }

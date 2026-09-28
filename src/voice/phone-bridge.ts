@@ -70,6 +70,7 @@ import {
   nativeActiveCall,
   nativeApiBase,
   nativeEndReason,
+  nativeRingOf,
   PAGE_ALIVE_EVERY_MS,
   PAGE_ONLY,
   pageAliveWanted,
@@ -82,6 +83,7 @@ import {
   ringLabels,
   ringsDiff,
   type CallFrame,
+  type NativeRing,
 } from "./phone-rules";
 import type { Ring } from "./rules";
 import { voice } from "./session";
@@ -175,10 +177,10 @@ class PhoneBridge {
   /** A ring's end, deferred one tick so a remount can cancel it. */
   #goneTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #dismissBy: Record<FeedSource, ((callId: string) => void) | null> = { page: null, sheet: null };
-  /** Per ring: whether the native side took it (`reportIncoming`'s answer,
-   *  or false once `REPORT_PATIENCE_MS` passed without one). Absent until
-   *  then. */
-  #shown = new Map<string, boolean>();
+  /** Per ring: what the native side answered (`reportIncoming`, read by
+   *  `nativeRingOf`), or `"no_answer"` once `REPORT_PATIENCE_MS` passed
+   *  without one or the report could not be made. Absent until then. */
+  #shown = new Map<string, NativeRing>();
   #shownTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #activeKey = "";
   /** Row I-60's liveness line, while a native call is up (`pageAliveWanted`). */
@@ -250,7 +252,7 @@ class PhoneBridge {
 
   capabilities = (): PhoneCapabilities | null => this.#capabilities;
 
-  ringShown(callId: string): boolean | null {
+  ringShown(callId: string): NativeRing | null {
     return this.#shown.get(callId) ?? null;
   }
 
@@ -574,10 +576,10 @@ class PhoneBridge {
     const run = this.#run;
     if (run && this.#present !== false) this.#report(ring, run);
     // Nobody to report it: nothing native rings, so the page must.
-    else this.#setShown(ring.callId, false);
+    else this.#setShown(ring.callId, "no_answer");
   }
 
-  #setShown(callId: string, shown: boolean): void {
+  #setShown(callId: string, shown: NativeRing): void {
     const timer = this.#shownTimers.get(callId);
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -598,20 +600,20 @@ class PhoneBridge {
   #report(ring: Ring, run: Run): void {
     if (this.#reported.has(ring.callId)) return;
     this.#reported.set(ring.callId, ring.receivedAt);
-    // The page rings if the answer is slow; a late `shown: true` still
-    // stands it down.
+    // The page rings if the answer is slow; a late answer still replaces
+    // the `"no_answer"` (a `shown: true` stands it down).
     if (!this.#shown.has(ring.callId) && !this.#shownTimers.has(ring.callId)) {
       this.#shownTimers.set(
         ring.callId,
         setTimeout(() => {
           this.#shownTimers.delete(ring.callId);
-          if (!this.#shown.has(ring.callId)) this.#setShown(ring.callId, false);
+          if (!this.#shown.has(ring.callId)) this.#setShown(ring.callId, "no_answer");
         }, REPORT_PATIENCE_MS),
       );
     }
     void (async () => {
       if (!(await this.#native.available()) || !run.alive) {
-        if (run.alive) this.#setShown(ring.callId, false);
+        if (run.alive) this.#setShown(ring.callId, "no_answer");
         return;
       }
       if (!this.#conversations.some((c) => c.id === ring.conversationId)) {
@@ -632,9 +634,11 @@ class PhoneBridge {
       });
       // Only while the ring is still the page's: a late answer for one that
       // has gone must not bring its entry back.
-      if (run.alive && this.#reported.has(ring.callId)) this.#setShown(ring.callId, answer.shown);
+      if (run.alive && this.#reported.has(ring.callId)) {
+        this.#setShown(ring.callId, nativeRingOf(answer));
+      }
     })().catch(() => {
-      if (run.alive && this.#reported.has(ring.callId)) this.#setShown(ring.callId, false);
+      if (run.alive && this.#reported.has(ring.callId)) this.#setShown(ring.callId, "no_answer");
     });
   }
 
@@ -827,9 +831,9 @@ export function usePhoneCapabilities(): PhoneCapabilities | null {
   return useSyncExternalStore(bridge.subscribe, bridge.capabilities, bridge.capabilities);
 }
 
-/** Whether the native side took this ring (`reportIncoming`'s answer);
- *  null until it has answered or `REPORT_PATIENCE_MS` has passed. */
-export function usePhoneRingShown(callId: string): boolean | null {
+/** What the native side answered for this ring (`NativeRing`); null until
+ *  it has answered or `REPORT_PATIENCE_MS` has passed. */
+export function usePhoneRingShown(callId: string): NativeRing | null {
   const read = useCallback(() => bridge.ringShown(callId), [callId]);
   return useSyncExternalStore(bridge.subscribe, read, read);
 }

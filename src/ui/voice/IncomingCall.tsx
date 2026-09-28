@@ -75,10 +75,10 @@ export function IncomingCall({
   // then CallKit) has answered, the page waits; a refusal rings the page.
   usePhoneSheetRing({ ring, onDismiss });
   const capabilities = usePhoneCapabilities();
-  const nativeShown = usePhoneRingShown(ring.callId);
+  const native = usePhoneRingShown(ring.callId);
   const duties = pageRingDuties({
     capabilities,
-    nativeShown,
+    native,
     windowFocused: useWindowFocused(),
   });
   const audible = duties.tone && shouldRingAudibly({
@@ -101,10 +101,10 @@ export function IncomingCall({
   // Decided when the ring lands, or when the native side's answer does --
   // focus is read here, not a dependency, so a later blur posts nothing.
   useEffect(() => {
-    const now = pageRingDuties({ capabilities, nativeShown, windowFocused: windowIsFocused() });
+    const now = pageRingDuties({ capabilities, native, windowFocused: windowIsFocused() });
     if (!now.notification) return;
     void notifyDesktopCall(callerName);
-  }, [ring.callId, callerName, capabilities, nativeShown]);
+  }, [ring.callId, callerName, capabilities, native]);
 
   const answer = (): void => {
     if (!conversation) return;

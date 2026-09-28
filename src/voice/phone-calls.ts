@@ -145,8 +145,18 @@ export type IncomingReport = {
  * page's sheet then rings exactly as it does without a plugin. A native
  * side that cannot tell answers false: a double ring is a defect, a missed
  * one is a missed call.
+ *
+ * `answered` says whether that `shown` came from the native side at all:
+ * true when it said `shown: true` or `shown: false` in so many words, false
+ * when the command failed, the plugin is absent or the answer was
+ * unreadable. The page reads an explicit `false` from Android's plugin
+ * differently from no answer (phone-rules.ts's `pageRingDuties`, row A-63):
+ * the plugin posts nothing *because* the activity is in front, or because
+ * nothing on this phone can notify, and in neither case would the page's
+ * own plain notification help. Not on the wire: the plugins send `shown`
+ * only.
  */
-export type IncomingAnswer = { shown: boolean };
+export type IncomingAnswer = { shown: boolean; answered: boolean };
 
 /**
  * The PushKit token and what its registration needs (plan §5.2, hunk H4),
