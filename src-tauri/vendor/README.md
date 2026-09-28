@@ -16,6 +16,8 @@ Tauri pins has moved to it: delete the directory and its `[patch]` line, run
 a device release build, and read I-75 on a phone. File both upstream
 (`docs/upstream/`).
 
+Upstream drafts and status: `docs/upstream/tao-ios-scene-configuration-use-after-free.md`, `docs/upstream/swift-rs-xcode27-cdecl-globalize.md`.
+
 ## `tao/` — 0.35.3 (the version `tauri` 2.11.5 pins)
 
 `src/platform_impl/ios/view.rs`, `configuration_for_connecting_scene_session`.
