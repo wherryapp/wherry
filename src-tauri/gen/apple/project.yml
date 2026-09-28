@@ -73,7 +73,12 @@ targets:
         # (tao src/platform_impl/ios/{scene,view,app_state}.rs). No
         # UISceneConfigurations: tao supplies the configuration in code. The
         # flag also lets iPadOS open a second window, which Wherry does not
-        # handle (row I-76).
+        # handle (row I-76), and a scene that reconnects in a live process
+        # is believed to get a blank window (row I-77). Deferring to the
+        # first scene defers the webview, the page and every plugin's
+        # load(webview:). A background launch (PushKit) is believed to
+        # connect no scene, so work that must run then starts from a
+        # plugin's init or didFinishLaunching, never from load (edit 14).
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
     entitlements:
