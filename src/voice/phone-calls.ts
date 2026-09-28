@@ -40,16 +40,25 @@ import {
  *  §2.7). */
 export type RingUi = "page" | "notification" | "callkit";
 
-/** What the native side can do *as built*. A stub answers `"page"` and
- *  false everywhere; each stage flips its own field when its native body
- *  lands (A1 `callService`, A2 `"notification"`, I1 `"callkit"` and
- *  `voip`), so a half-built plugin never silences the page's ring. */
+/** What the native side can do *as built*. Where nothing native rings
+ *  (the web, the desktop shell, the iOS simulator) the answer is `"page"`
+ *  and false everywhere; each field was flipped by the stage that built its
+ *  native body (A1 `callService`, A2 `"notification"`, I1 `"callkit"` and
+ *  `voip`), and anything unreadable reads as `"page"` and false, so a
+ *  half-built plugin never silences the page's ring. */
 export type PhoneCapabilities = {
   ringUi: RingUi;
   /** Android: a `microphone` foreground service runs for every call. */
   callService: boolean;
   /** iOS: PushKit issues a VoIP token (the `push-token` event). */
   voip: boolean;
+  /** A native ring may take the whole screen of a locked or sleeping
+   *  phone. Android answers `canUseFullScreenIntent()` on API 34+ (true
+   *  before it): without the grant its ring is a heads-up and a sleeping
+   *  phone stays dark (row A-59c). iOS answers true where CallKit rings.
+   *  Read once at page load, for Settings -> Voice's sentence only
+   *  (phone-rules.ts's `ringIsHeadsUpOnly`). */
+  fullScreen: boolean;
 };
 
 /**

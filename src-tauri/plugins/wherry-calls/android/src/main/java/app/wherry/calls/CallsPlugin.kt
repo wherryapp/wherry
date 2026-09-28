@@ -12,6 +12,8 @@
 //       (RingHandler), its Answer (RingLaunch) and Decline
 //       (CallActionReceiver, SignedDecline), the push's way in
 //       (IncomingCallReceiver) and the label cache (CallsStore). Built.
+//   fullScreen, a PC1 follow-up: whether the ring may take the screen
+//       (canUseFullScreenIntent on API 34+), for Settings -> Voice.
 // Events the page listens for, with their payloads (trigger(...)):
 //   "action"  { kind: "answer"|"decline"|"hangup", callId, conversationId?, at? }
 //   "mute"    { callId, muted }   (iOS only in practice)
@@ -20,7 +22,9 @@
 package app.wherry.calls
 
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.pm.ApplicationInfo
+import android.os.Build
 import android.util.Log
 import android.webkit.WebView
 import app.tauri.annotation.Command
@@ -73,6 +77,11 @@ class CallsPlugin(private val activity: Activity) : Plugin(activity) {
         answer.put("ringUi", "notification")
         answer.put("callService", true)
         answer.put("voip", false)
+        // Android 14+ grants USE_FULL_SCREEN_INTENT only to calling and alarm
+        // apps; without it RingHandler's ring is a heads-up and a sleeping
+        // phone stays dark (row A-59c), which Settings -> Voice states.
+        val manager = activity.getSystemService(NotificationManager::class.java)
+        answer.put("fullScreen", Build.VERSION.SDK_INT < 34 || manager?.canUseFullScreenIntent() == true)
         invoke.resolve(answer)
     }
 

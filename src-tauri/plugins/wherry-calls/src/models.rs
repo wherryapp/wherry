@@ -17,6 +17,12 @@ pub struct Capabilities {
     pub call_service: bool,
     #[serde(default)]
     pub voip: bool,
+    /// Whether a ring may take the whole screen of a locked or sleeping
+    /// phone. Android: `canUseFullScreenIntent()` on API 34+, else true;
+    /// without it the ring is a heads-up (row A-59c). iOS: true where
+    /// CallKit shows rings. Read by Settings → Voice only.
+    #[serde(default)]
+    pub full_screen: bool,
 }
 
 impl Capabilities {
@@ -26,6 +32,7 @@ impl Capabilities {
             ring_ui: "page".into(),
             call_service: false,
             voip: false,
+            full_screen: false,
         }
     }
 }

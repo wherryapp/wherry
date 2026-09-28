@@ -22,6 +22,7 @@ import {
   ringDisplay,
   ringExpiry,
   ringGoneReason,
+  ringIsHeadsUpOnly,
   ringLabels,
   ringsDiff,
   type ActiveCallInput,
@@ -40,20 +41,37 @@ test("a stub or absent plugin reads as page-only, never as a ring UI that silenc
   assert.deepEqual(readCapabilities(null), PAGE_ONLY);
   assert.deepEqual(readCapabilities("callkit"), PAGE_ONLY);
   assert.deepEqual(readCapabilities({}), PAGE_ONLY);
-  assert.deepEqual(readCapabilities({ ringUi: "siren", callService: "yes", voip: 1 }), PAGE_ONLY);
+  assert.deepEqual(
+    readCapabilities({ ringUi: "siren", callService: "yes", voip: 1, fullScreen: "true" }),
+    PAGE_ONLY,
+  );
 });
 
 test("a full answer is read as given", () => {
-  assert.deepEqual(readCapabilities({ ringUi: "callkit", callService: false, voip: true }), {
-    ringUi: "callkit",
-    callService: false,
-    voip: true,
-  });
+  assert.deepEqual(
+    readCapabilities({ ringUi: "callkit", callService: false, voip: true, fullScreen: true }),
+    { ringUi: "callkit", callService: false, voip: true, fullScreen: true },
+  );
   assert.deepEqual(readCapabilities({ ringUi: "notification", callService: true }), {
     ringUi: "notification",
     callService: true,
     voip: false,
+    fullScreen: false,
   });
+});
+
+test("Settings says the ring is a heads-up only for Android's ring without the full-screen grant", () => {
+  const android = readCapabilities({ ringUi: "notification", callService: true, fullScreen: false });
+  assert.equal(ringIsHeadsUpOnly(android), true);
+  assert.equal(ringIsHeadsUpOnly({ ...android, fullScreen: true }), false);
+  // An answer without the field reads as not granted: the sentence is a
+  // caution, and saying it wrongly costs less than hiding it.
+  assert.equal(ringIsHeadsUpOnly(readCapabilities({ ringUi: "notification" })), true);
+  // CallKit takes the screen regardless; the page's own sheet degrades nothing.
+  assert.equal(ringIsHeadsUpOnly({ ...android, ringUi: "callkit" }), false);
+  assert.equal(ringIsHeadsUpOnly(PAGE_ONLY), false);
+  // Nothing is said before the plugin has answered.
+  assert.equal(ringIsHeadsUpOnly(null), false);
 });
 
 test("an action needs a known kind and a call id; the rest is optional", () => {
@@ -122,8 +140,13 @@ test("a token without its environment or keys is passed on with them null, for r
   assert.equal(readVoipToken({ token: "ab12", p256dh: "B", auth: "" })?.keys, null);
 });
 
-const CALLKIT: PhoneCapabilities = { ringUi: "callkit", callService: false, voip: true };
-const ANDROID_RING: PhoneCapabilities = { ringUi: "notification", callService: true, voip: false };
+const CALLKIT: PhoneCapabilities = { ringUi: "callkit", callService: false, voip: true, fullScreen: true };
+const ANDROID_RING: PhoneCapabilities = {
+  ringUi: "notification",
+  callService: true,
+  voip: false,
+  fullScreen: true,
+};
 const NOTHING = { sheet: false, tone: false, notification: false };
 const ALONE_IN_FRONT = { sheet: true, tone: true, notification: false };
 const ALONE_BEHIND = { sheet: true, tone: true, notification: true };
@@ -527,8 +550,8 @@ test("native code gets an absolute API base or none", () => {
 // -- row I-60's liveness line -------------------------------------------------
 
 test("the page says it is alive only while a native call is up", () => {
-  const callkit: PhoneCapabilities = { ringUi: "callkit", callService: false, voip: true };
-  const android: PhoneCapabilities = { ringUi: "notification", callService: true, voip: false };
+  const callkit: PhoneCapabilities = { ringUi: "callkit", callService: false, voip: true, fullScreen: true };
+  const android: PhoneCapabilities = { ringUi: "notification", callService: true, voip: false, fullScreen: true };
   const active = { active: true };
   const idle = { active: false };
   assert.equal(pageAliveWanted(true, callkit, active), true);
