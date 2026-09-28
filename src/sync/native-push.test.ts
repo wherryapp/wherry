@@ -256,8 +256,30 @@ function quiet<T>(run: () => Promise<T>): Promise<T> {
   });
 }
 
+// WebCrypto completes on libuv's threadpool, not in event-loop turns, so a
+// fixed number of turns can run out before a digest or HMAC resolves on a
+// loaded machine (the CI runner, the Windows guest). Count the calls in
+// flight and settle only once none is pending and 20 turns have passed quiet.
+let subtleInFlight = 0;
+const subtle = globalThis.crypto.subtle;
+for (const name of ["digest", "importKey", "sign"] as const) {
+  const original = subtle[name].bind(subtle) as (...args: unknown[]) => Promise<unknown>;
+  Object.defineProperty(subtle, name, {
+    configurable: true,
+    value: (...args: unknown[]) => {
+      subtleInFlight += 1;
+      return original(...args).finally(() => {
+        subtleInFlight -= 1;
+      });
+    },
+  });
+}
+
 async function settle(): Promise<void> {
-  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  for (let quietTurns = 0, turns = 0; quietTurns < 20 && turns < 10_000; turns += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    quietTurns = subtleInFlight === 0 ? quietTurns + 1 : 0;
+  }
 }
 
 beforeEach(() => {
