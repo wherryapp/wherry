@@ -79,17 +79,17 @@ function lower(value: unknown): string | null {
   return s === null ? null : s.toLowerCase();
 }
 
+/** The candidate types whose `url` may name a relay. Never `srflx` or
+ *  `host`: their `url` is the ICE server they were gathered from, a `turn:`
+ *  URL in production. */
+const URL_RELAY_TYPES: ReadonlySet<string> = new Set(["relay", "prflx"]);
+
 /**
  * The client-to-relay transport from a relay candidate's ICE server URL, for
  * an engine that reports `url` but not `relayProtocol`. `turns:` is TLS;
  * `turn:` is TCP when `?transport=tcp` says so and UDP otherwise (RFC 7065's
  * default). The URL itself is never kept.
  */
-/** The candidate types whose `url` may name a relay. Never `srflx` or
- *  `host`: their `url` is the ICE server they were gathered from, a `turn:`
- *  URL in production. */
-const URL_RELAY_TYPES: ReadonlySet<string> = new Set(["relay", "prflx"]);
-
 function relayProtocolFromUrl(url: string | null): string | null {
   if (url === null) return null;
   const lowered = url.toLowerCase();
