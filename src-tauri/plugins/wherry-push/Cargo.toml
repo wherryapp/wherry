@@ -15,14 +15,14 @@ links = "tauri-plugin-wherry-push"
 # decisions about when to ask, register or open are the client's
 # (client/src/sync/native-push.ts). docs/prompts/native-push-plan.md §5.
 [dependencies]
-tauri = { version = "2.11.3", default-features = false }
+tauri = { version = "2.12.0", default-features = false }
 
 # `register_ios_plugin` reaches the webview through `with_webview`, which is
 # behind tauri's `wry` feature. The app enables it anyway; declared here so
 # this crate does not depend on that unification (tauri-plugin-notification
 # declares it the same way).
 [target.'cfg(target_os = "ios")'.dependencies]
-tauri = { version = "2.11.3", default-features = false, features = ["wry"] }
+tauri = { version = "2.12.0", default-features = false, features = ["wry"] }
 
 [build-dependencies]
-tauri-plugin = { version = "2.6.3", features = ["build"] }
+tauri-plugin = { version = "2.7.0", features = ["build"] }
