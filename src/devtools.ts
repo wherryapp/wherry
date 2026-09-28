@@ -152,6 +152,19 @@
 //                                    "Switch engine for this call". What it
 //                                    found (or did not) goes to the collector.
 //
+//   ?devsteps=<step>;<step>;…        A scripted sequence against the rendered
+//                                    page (click, key, wait, and the readings
+//                                    rows W-58, W-103 and D-66 name), for the
+//                                    macOS shell, which no DevTools protocol
+//                                    can drive. See maybeDevSteps. A `+` in a
+//                                    key chord must be written %2B.
+//   ?devnomic=1                      The native transport answers
+//                                    setMicrophoneEnabled(true) with
+//                                    `no_microphone` without asking the shell:
+//                                    a listen-only call that never opens the
+//                                    device (for a machine whose consent
+//                                    prompt nobody can answer).
+//
 //   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
 //   VITE_TRACE / VITE_DEVUI          environment rather than the URL, for a
 //   VITE_DEVCLICK                    shell in `tauri ios dev` -- which loads
@@ -823,6 +836,213 @@ function maybeDevUi(params: URLSearchParams): void {
 }
 
 /**
+ * The readings rows W-58 and W-103 name, taken from the rendered page.
+ *
+ * Added 2026-09-27 to read those rows on the macOS shell, which (unlike
+ * WebView2 on the rig) takes no DevTools protocol: the expressions are the
+ * rows' own, so a reading here means what it means on the rig.
+ */
+function snapshotRows(): Record<string, unknown> {
+  const dialog = document.querySelector<HTMLElement>('[role=dialog][aria-label^="Call — "]');
+  const headers = Array.from(document.querySelectorAll("header span")).map((s) => s.textContent ?? "");
+  const state: unknown = window.history.state;
+  const layer =
+    typeof state === "object" && state !== null ? (state as Record<string, unknown>)["wherryBackLayer"] : undefined;
+  const bar = document.querySelector("[class*='bg-accent-50']");
+  return {
+    calling: Array.from(document.querySelectorAll("*")).some(
+      (e) => e.childElementCount === 0 && e.textContent === "Calling…",
+    ),
+    callPage: dialog?.getAttribute("aria-label") ?? null,
+    settings: headers.includes("Settings"),
+    search: headers.includes("Search"),
+    headers: headers.slice(0, 8),
+    backLayer: layer ?? null,
+    dialogs: Array.from(document.querySelectorAll("[role=dialog], [role=alertdialog]")).map(
+      (d) => d.getAttribute("aria-label") ?? d.tagName,
+    ),
+    hangUps: Array.from(document.querySelectorAll("button")).filter(
+      (b) => (b.getAttribute("aria-label") ?? b.textContent?.trim() ?? "").startsWith("Hang up"),
+    ).length,
+    bar: bar?.textContent?.trim().slice(0, 200) ?? null,
+  };
+}
+
+type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+function tauriInvoke(): TauriInvoke | null {
+  const internals = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: TauriInvoke } }).__TAURI_INTERNALS__;
+  return internals?.invoke ?? null;
+}
+
+/** The shell's tiles and received video rows, as `scripts/rig/tile-bind.mjs` reads them. */
+async function tileReading(): Promise<Record<string, unknown>> {
+  const invoke = tauriInvoke();
+  if (!invoke) return { error: "no shell" };
+  const stats = (await invoke("voice_stats")) as {
+    native?: { bound?: number; tiles?: number; drawn?: number };
+    video?: { direction: string; identity: string; source: string; width?: number; height?: number; fps?: number }[];
+    peers?: { identity: string }[];
+  };
+  return {
+    identity: stats.peers?.[0]?.identity ?? null,
+    bound: stats.native?.bound ?? null,
+    tiles: stats.native?.tiles ?? null,
+    drawn: stats.native?.drawn ?? null,
+    received: (stats.video ?? [])
+      .filter((r) => r.direction === "received")
+      .map((r) => `${r.identity}/${r.source} ${r.width ?? "?"}x${r.height ?? "?"}@${r.fps ?? "?"}`),
+  };
+}
+
+/**
+ * `?devnomic=1` (dev only, desktop shell): the native transport answers
+ * `setMicrophoneEnabled(true)` with the error the shell gives on a machine
+ * with no input device (`no_microphone`, a `NotFoundError`) without asking
+ * the shell, so the session takes its listen-only path.
+ *
+ * Added 2026-09-27 for a Mac whose microphone consent prompt was pending and
+ * could not be answered (the screen was locked): every native call's first
+ * `StartRecording` then stalled the shell for minutes. Nothing read with it
+ * needs the microphone (the engine hold, the connect, the tiles, the call
+ * page, the SFU restart), and this keeps the engine off the device. Patched
+ * on the prototype because `__TAURI_INTERNALS__.invoke` is read-only.
+ */
+async function maybeDevNoMic(params: URLSearchParams): Promise<void> {
+  if (params.get("devnomic") !== "1") return;
+  try {
+    const { NativeTransport } = await import("./voice/transport-native");
+    const proto = NativeTransport.prototype as unknown as {
+      setMicrophoneEnabled: (on: boolean) => Promise<void>;
+    };
+    const original = proto.setMicrophoneEnabled;
+    proto.setMicrophoneEnabled = function (this: unknown, on: boolean): Promise<void> {
+      if (!on) return original.call(this, on);
+      record("call", { method: "__dev-nomic", args: [{ refused: "setMicrophoneEnabled(true)" }] });
+      const error = new Error("devnomic: no microphone for this run");
+      error.name = "NotFoundError";
+      return Promise.reject(error);
+    };
+    record("call", { method: "__dev-nomic", args: [{ installed: true }] });
+  } catch (error) {
+    record("call", { method: "__dev-nomic", args: [{ installed: false, error: String(error) }] });
+  }
+}
+
+/**
+ * `?devsteps=<step>;<step>;…` (dev only): a scripted sequence against the
+ * rendered page, for a shell no protocol can drive (the macOS WKWebView).
+ * Each step's outcome goes to the collector as `__dev-step`.
+ *
+ *   wait:<ms>          pause
+ *   waitfor:<label>    until a button whose aria-label or text starts with
+ *                      <label> (case-insensitive) exists, up to 120 s
+ *   click:<label>      press that button (the same match as ?devclick)
+ *   key:<mods+Key>     a keydown then keyup on the focused element, e.g.
+ *                      key:Escape, key:Meta+Shift+F. Synthetic: the app's
+ *                      document listener cannot tell, a trusted-event
+ *                      check would
+ *   snap:<tag>         snapshotRows() with the tag
+ *   tiles:<tag>        the shell's voice_stats tiles, and 2 s later again,
+ *                      with frames drawn in between (tile-bind's `moving`)
+ *   sub:<q>[,<q>…]     voice_set_video_subscription for the first peer's
+ *                      camera, each quality with no await between them
+ *                      (tile-bind's `burst` is `sub:off,low`)
+ *   sample:<ms>,<n>    snapRows every <ms>, <n> times, posted as one entry
+ */
+function maybeDevSteps(params: URLSearchParams): void {
+  const raw = params.get("devsteps");
+  if (!raw) return;
+  const steps = raw.split(";").map((s) => s.trim()).filter((s) => s !== "");
+  const post = (detail: Record<string, unknown>): void =>
+    record("call", { method: "__dev-step", args: [detail] });
+  const findButton = (label: string): HTMLButtonElement | undefined => {
+    const wanted = label.toLowerCase();
+    return Array.from(document.querySelectorAll("button")).find((candidate) => {
+      const aria = candidate.getAttribute("aria-label")?.toLowerCase() ?? "";
+      const text = candidate.textContent?.trim().toLowerCase() ?? "";
+      return aria.startsWith(wanted) || text.startsWith(wanted);
+    });
+  };
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const run = async (): Promise<void> => {
+    for (const [index, step] of steps.entries()) {
+      const colon = step.indexOf(":");
+      const verb = colon < 0 ? step : step.slice(0, colon);
+      const arg = colon < 0 ? "" : step.slice(colon + 1);
+      const at = { step: index, verb, arg };
+      try {
+        if (verb === "wait") {
+          await sleep(Number(arg));
+        } else if (verb === "waitfor") {
+          const deadline = Date.now() + DEV_CLICK_WAIT_MS;
+          while (!findButton(arg) && Date.now() < deadline) await sleep(250);
+          post({ ...at, found: !!findButton(arg) });
+        } else if (verb === "click") {
+          const button = findButton(arg);
+          button?.click();
+          post({ ...at, found: !!button, disabled: button?.disabled ?? null });
+        } else if (verb === "key") {
+          const parts = arg.split("+");
+          const key = parts.pop() ?? "";
+          const init: KeyboardEventInit = {
+            key,
+            bubbles: true,
+            cancelable: true,
+            ctrlKey: parts.includes("Ctrl"),
+            metaKey: parts.includes("Meta"),
+            shiftKey: parts.includes("Shift"),
+            altKey: parts.includes("Alt"),
+          };
+          const target = document.activeElement ?? document.body;
+          const before = snapshotRows();
+          target.dispatchEvent(new KeyboardEvent("keydown", init));
+          target.dispatchEvent(new KeyboardEvent("keyup", init));
+          await sleep(300);
+          post({ ...at, target: target.tagName, before, after: snapshotRows() });
+        } else if (verb === "snap") {
+          post({ ...at, rows: snapshotRows() });
+        } else if (verb === "tiles") {
+          const a = await tileReading();
+          await sleep(2_000);
+          const b = await tileReading();
+          const drawnA = typeof a["drawn"] === "number" ? a["drawn"] : 0;
+          const drawnB = typeof b["drawn"] === "number" ? b["drawn"] : 0;
+          const verdict =
+            b["bound"] === 0 ? "NOT BOUND" : drawnB > drawnA ? `drawing (+${drawnB - drawnA} in 2 s)` : "bound, NOT DRAWING";
+          post({ ...at, reading: b, verdict });
+        } else if (verb === "sub") {
+          const invoke = tauriInvoke();
+          const { identity } = await tileReading();
+          if (!invoke || typeof identity !== "string") {
+            post({ ...at, error: "no shell or no peer" });
+          } else {
+            for (const quality of arg.split(",")) {
+              void invoke("voice_set_video_subscription", { identity, source: "camera", quality });
+            }
+            post({ ...at, identity });
+          }
+        } else if (verb === "sample") {
+          const [every, count] = arg.split(",").map(Number);
+          const samples: unknown[] = [];
+          for (let i = 0; i < (count ?? 1); i++) {
+            const rows = snapshotRows();
+            samples.push({ t: new Date().toISOString(), calling: rows["calling"], bar: rows["bar"] });
+            await sleep(every ?? 250);
+          }
+          post({ ...at, samples });
+        } else {
+          post({ ...at, error: "unknown step" });
+        }
+      } catch (error) {
+        post({ ...at, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+      }
+    }
+    post({ step: steps.length, verb: "done" });
+  };
+  void run();
+}
+
+/**
  * Press buttons by label, in order, on a timer.
  *
  * Prefix and case-insensitive on purpose: a row is written against the
@@ -1042,10 +1262,12 @@ export async function installDevtools(restore: (() => Promise<void>) | null): Pr
   // first asks for a track.
   maybeDevCamera(params);
   maybeDevTone(params);
+  await maybeDevNoMic(params);
   maybeDevCall(params);
   maybeDevRing(params);
   maybeDevUi(params);
   maybeDevClick(params);
+  maybeDevSteps(params);
   maybeDevScreen(params);
 }
 
