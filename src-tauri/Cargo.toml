@@ -163,3 +163,11 @@ windows-core = "0.61"
 # plain std thread with no runtime on it. Already in the graph through
 # futures; this makes it a direct dependency for that one call.
 futures-executor = "0.3"
+
+# Two crates carried as vendored copies with one fix each, because the iOS
+# release build does not launch without both; `vendor/README.md` has the
+# faults, the diffs against the published crates, and when to drop them.
+# Only the iOS paths change: every other target compiles the published code.
+[patch.crates-io]
+tao = { path = "vendor/tao" }
+swift-rs = { path = "vendor/swift-rs" }
