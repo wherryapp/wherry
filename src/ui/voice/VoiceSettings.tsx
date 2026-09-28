@@ -1,5 +1,6 @@
-// Settings → Voice: the join-mute preference, the ringtone switch, the
-// microphone's processing switches, default devices, and a microphone meter
+// Settings → Voice: the join-mute preference, the ringtone switch (and, on
+// an Android phone without the full-screen grant, what that does to a ring),
+// the microphone's processing switches, default devices, and a microphone meter
 // that proves the device works before a call depends on it. All device-local
 // (voice/prefs.ts).
 
@@ -16,6 +17,8 @@ import {
 } from "../../voice/devices";
 import { useNativeMediaAvailable, useVoicePrefs } from "../../voice/hooks";
 import { nativeMediaProbe, nativeMediaSelected, nativeVideoAvailable } from "../../voice/native-media";
+import { usePhoneCapabilities } from "../../voice/phone-bridge";
+import { ringIsHeadsUpOnly } from "../../voice/phone-rules";
 import {
   saveVoicePrefs,
   type VideoPreviewMode,
@@ -98,6 +101,9 @@ export function VoiceSettings({
   /** The engine is here and this device chose it: the lists below come
    *  from the shell, and the browser's microphone test does not apply. */
   const native = nativeAvailable && prefs.nativeMedia;
+  /** Android's ring without the full-screen grant: said beside the
+   *  ringtone switch, the one place a person looks for how calls ring. */
+  const headsUpOnly = ringIsHeadsUpOnly(usePhoneCapabilities());
   const [devices, setDevices] = useState<AudioDevices>({ inputs: [], outputs: [] });
 
   useEffect(() => {
@@ -174,6 +180,18 @@ export function VoiceSettings({
         />
         Play a sound for incoming calls
       </label>
+
+      {headsUpOnly && (
+        // phone-calls-plan §6.2: where Android 14+ withholds full-screen
+        // intents the ring degrades, and the person should hear it here
+        // rather than from a missed call (row A-59c).
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          Android has not allowed the app to show calls full screen on this
+          phone, so an incoming call rings as a notification at the top of the
+          screen rather than as a call screen, and a phone that is asleep rings
+          without lighting its screen.
+        </p>
+      )}
 
       {nativeAvailable && (
         <label className="flex items-start gap-2 text-sm text-neutral-700 dark:text-neutral-200">

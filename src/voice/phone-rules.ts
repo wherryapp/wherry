@@ -25,7 +25,12 @@ import { RING_TIMEOUT_MS } from "./rules";
 
 /** What a build without the plugin -- or a stub of it -- can do: nothing
  *  native, and the page's own sheet rings. */
-export const PAGE_ONLY: PhoneCapabilities = { ringUi: "page", callService: false, voip: false };
+export const PAGE_ONLY: PhoneCapabilities = {
+  ringUi: "page",
+  callService: false,
+  voip: false,
+  fullScreen: false,
+};
 
 function isRingUi(value: unknown): value is RingUi {
   return value === "page" || value === "notification" || value === "callkit";
@@ -41,7 +46,20 @@ export function readCapabilities(raw: unknown): PhoneCapabilities {
     ringUi: isRingUi(record["ringUi"]) ? record["ringUi"] : "page",
     callService: record["callService"] === true,
     voip: record["voip"] === true,
+    fullScreen: record["fullScreen"] === true,
   };
+}
+
+/**
+ * Whether Settings -> Voice says that this phone's call ring is only a
+ * heads-up (phone-calls-plan §6.2): Android's notification ring, where
+ * Android 14+ has not granted full-screen intents, so a locked phone shows
+ * no call screen and a sleeping one stays dark (row A-59c). Nothing to say
+ * where the page rings (nothing native is degraded) or where CallKit rings,
+ * nor before the plugin has answered.
+ */
+export function ringIsHeadsUpOnly(capabilities: PhoneCapabilities | null): boolean {
+  return capabilities !== null && capabilities.ringUi === "notification" && !capabilities.fullScreen;
 }
 
 /** A queued or live native action, or null for anything malformed. */

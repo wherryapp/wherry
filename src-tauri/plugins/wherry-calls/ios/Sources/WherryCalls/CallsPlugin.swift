@@ -255,7 +255,12 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   @objc public func capabilities(_ invoke: Invoke) {
     let callKit = Self.callKitShowsRings
     invoke.resolve(
-      ["ringUi": callKit ? "callkit" : "page", "callService": false, "voip": callKit] as JsonObject)
+      [
+        "ringUi": callKit ? "callkit" : "page", "callService": false, "voip": callKit,
+        // CallKit's incoming-call screen takes a locked phone's whole screen,
+        // and needs no permission for it.
+        "fullScreen": callKit,
+      ] as JsonObject)
   }
 
   /// { apiBase, deviceId }: where the lock screen's decline goes. Kept in

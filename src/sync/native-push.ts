@@ -292,13 +292,14 @@ function rememberServer(
  *
  * `environment` is required for the two APNs providers. It defaults to what
  * the wherry-push plugin's `status` reports -- an app's alert and VoIP
- * tokens come from the same signed build, so they share the APNs host --
- * **but that status reports an environment only once the plugin holds an
- * alert token this process** (ng/push-p2's `PushPlugin.swift`), which it
- * never does for somebody who has not turned notifications on. A PushKit
- * token needs no notification permission, so the calls plugin must pass
- * `environment` itself (or §5.1 must be amended so `status` always reports
- * it; hunk H6). Without one, this throws before sending, rather than
+ * tokens come from the same signed build, so they share the APNs host. On
+ * iOS that status reports the environment whether or not the plugin holds
+ * an alert token (`ApsEnvironment.current`, a property of the signed build;
+ * hunk H6, `d715c34`), so the fallback holds for somebody who never turned
+ * notifications on. The calls plugin still passes the environment it read
+ * itself with a PushKit token (hunk H4): belt and braces, not a gap. Android
+ * reports null, which only `fcm` meets, and it needs none. Without an
+ * environment an APNs provider throws here before sending, rather than
  * sending what the server refuses with 400 INVALID_PUSH_TOKEN.
  *
  * `keys` are required for `fcm` and `apns_voip`, the providers whose rings
