@@ -201,3 +201,64 @@ enum PageEnd: Equatable {
     }
   }
 }
+
+/// Calls this device has already ended -- declined, hung up, cancelled,
+/// answered or declined elsewhere, expired -- kept until their ring window
+/// has closed, so that a ring arriving late for one of them is not a new
+/// ring.
+///
+/// Why it is needed: a ring reaches this device twice, over the page's
+/// socket (`reportIncoming`) and as a VoIP push, and the push can land after
+/// the call has already ended here (APNs latency is often 0.3 to 2 s). Once
+/// ended, the call is gone from the plugin's `calls`, so without this the
+/// late push is reported as a new call and CallKit rings again. After a
+/// decline on this device nothing would stop that second ring before its
+/// expiry: the server leaves the declining device out of `ring_ended`
+/// (call-push-rules.ts `ringEndedTargets`, `actorDeviceId`).
+///
+/// Kept until `exp` plus `margin`, on this device's clock: once `exp` has
+/// passed, a late ring is ended at once anyway (the expired-ring path), so
+/// the margin only has to cover a phone clock running behind the server's.
+/// `exp` is capped at `maxWindow` from now, so a far-future `exp` cannot hold
+/// an entry for long, and the set holds at most `capacity` entries, the
+/// soonest to lapse dropped first. In memory only: a push that launches a
+/// fresh process after this one died is not covered (believed rare -- a
+/// decline and its late push are seconds apart, and the process that
+/// declined stays alive for the signed decline's background task).
+///
+/// Foundation only (no CallKit), so run-tests.sh tests it on the Mac.
+struct EndedCalls {
+  static let margin: Int64 = 120
+  static let maxWindow: Int64 = 600
+  static let capacity = 64
+
+  private var entries: [UUID: (until: Int64, end: RingEnd)] = [:]
+
+  var count: Int { return entries.count }
+
+  /// Records `uuid` as ended here; `end` is what a late ring for it is
+  /// ended with.
+  mutating func add(_ uuid: UUID, exp: Int64, end: RingEnd, now: Int64) {
+    prune(now: now)
+    let until = min(exp, now + Self.maxWindow) + Self.margin
+    entries[uuid] = (until, end)
+    while entries.count > Self.capacity {
+      guard let soonest = entries.min(by: { $0.value.until < $1.value.until }) else { break }
+      entries[soonest.key] = nil
+    }
+  }
+
+  /// How `uuid` ended here, while its entry lasts; nil otherwise.
+  func ended(_ uuid: UUID, now: Int64) -> RingEnd? {
+    guard let entry = entries[uuid], entry.until > now else { return nil }
+    return entry.end
+  }
+
+  mutating func prune(now: Int64) {
+    entries = entries.filter { $0.value.until > now }
+  }
+
+  mutating func removeAll() {
+    entries.removeAll()
+  }
+}

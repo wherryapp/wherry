@@ -230,5 +230,47 @@ check(PageEnd.forPageReason("unanswered") == .report(.unanswered), "unanswered")
 check(PageEnd.forPageReason("answered_elsewhere") == .report(.answeredElsewhere), "answered elsewhere")
 check(PageEnd.forPageReason("declined_elsewhere") == .report(.declinedElsewhere), "declined elsewhere")
 
+// MARK: - EndedCalls (a late ring for a call ended here)
+
+do {
+  let x = UUID()
+  let y = UUID()
+  let now: Int64 = 1_000_000
+  var ended = EndedCalls()
+  check(ended.ended(x, now: now) == nil, "an unknown call is not ended")
+  ended.add(x, exp: now + 45, end: .remoteEnded, now: now)
+  check(ended.ended(x, now: now) == .remoteEnded, "a declined call reads as ended at once")
+  check(ended.ended(x, now: now + 44) == .remoteEnded, "still ended inside the ring window")
+  check(
+    ended.ended(x, now: now + 45 + EndedCalls.margin - 1) == .remoteEnded,
+    "still ended inside the margin after exp")
+  check(ended.ended(x, now: now + 45 + EndedCalls.margin) == nil, "lapses at exp plus the margin")
+  check(ended.ended(y, now: now) == nil, "another call is not ended")
+
+  ended.add(y, exp: now + 1_000_000, end: .unanswered, now: now)
+  check(
+    ended.ended(y, now: now + EndedCalls.maxWindow + EndedCalls.margin) == nil,
+    "a far-future exp is capped")
+  ended.add(y, exp: now - 10, end: .unanswered, now: now)
+  check(ended.ended(y, now: now) == .unanswered, "an expired call is still kept for the margin")
+  ended.add(y, exp: now + 45, end: .answeredElsewhere, now: now)
+  check(ended.ended(y, now: now) == .answeredElsewhere, "a later end replaces the reason")
+
+  var full = EndedCalls()
+  let first = UUID()
+  full.add(first, exp: now + 1, end: .failed, now: now)
+  for index in 0..<EndedCalls.capacity {
+    full.add(UUID(), exp: now + 100 + Int64(index), end: .failed, now: now)
+  }
+  check(full.count == EndedCalls.capacity, "bounded at capacity")
+  check(full.ended(first, now: now) == nil, "the soonest to lapse is dropped first")
+
+  let later = now + 100 + Int64(EndedCalls.capacity) + EndedCalls.margin
+  full.add(UUID(), exp: later + 45, end: .failed, now: later)
+  check(full.count == 1, "lapsed entries are pruned on add")
+  full.removeAll()
+  check(full.count == 0, "removeAll empties it")
+}
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

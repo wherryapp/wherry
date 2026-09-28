@@ -17,7 +17,9 @@
 // - The push handler (`handlePush`): opens the RFC 8291 envelope with the
 //   ring key (M-1 = E; RingEnvelope, RingKeys), then reports to CallKit.
 //   **Every push reports a call** before its completion runs, including one
-//   that does not open, as Apple requires (plan §7's table).
+//   that does not open, as Apple requires (plan §7's table). A ring for a
+//   call already ended on this device (EndedCalls, in RingMessage.swift) is
+//   reported and ended at once, never rung again.
 // - The provider delegate: Answer, End (a signed decline while ringing, a
 //   hang-up once answered), Mute, reset.
 // - The commands the page drives, `debugIncoming` (debug builds) and a
@@ -139,6 +141,8 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   private var registry: PKPushRegistry?
   private let controller = CXCallController()
   private var calls: [UUID: TrackedCall] = [:]
+  /// Calls ended here, so a late ring for one is not a new ring (EndedCalls).
+  private var ended = EndedCalls()
   private var pending: [JSObject] = []
   private var voipToken: String?
   private var proximityWanted = false
@@ -289,9 +293,11 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   /// { callId, conversationId, label, group, exp } -> { shown }: a ring the
   /// page heard over the socket. shown is true when CallKit took it:
   /// reported, or already reported (a VoIP push got there first), or
-  /// filtered on purpose (Do Not Disturb, the block list -- the page must
-  /// not ring over the system). Anything else is false, and the page's sheet
-  /// rings instead (phone-calls.ts's IncomingAnswer).
+  /// already ended here (declined in CallKit before the socket's ring came:
+  /// not reported again), or filtered on purpose (Do Not Disturb, the block
+  /// list -- the page must not ring over the system). Anything else is
+  /// false, and the page's sheet rings instead (phone-calls.ts's
+  /// IncomingAnswer).
   @objc public func reportIncoming(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(IncomingArgs.self)
     onMain {
@@ -305,6 +311,11 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       }
       if let known = self.calls[uuid] {
         if known.conversationId == nil { known.conversationId = args.conversationId }
+        invoke.resolve(["shown": true] as JsonObject)
+        return
+      }
+      if self.ended.ended(uuid, now: Self.nowSeconds()) != nil {
+        NSLog("[wherry] calls: reportIncoming %@ already ended here; not reported", args.callId)
         invoke.resolve(["shown": true] as JsonObject)
         return
       }
@@ -404,6 +415,9 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       for call in Array(self.calls.values) {
         self.endReported(call.uuid, .remoteEnded)
       }
+      // Ended calls are the account's too: a call the next account is also
+      // rung for must not be taken for one already ended.
+      self.ended.removeAll()
       NSLog("[wherry] calls: account reset")
       invoke.resolve()
     }
@@ -523,6 +537,19 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       }
       return
     }
+    if let end = ended.ended(uuid, now: Self.nowSeconds()) {
+      // Ended here already -- declined, hung up, cancelled -- and this push
+      // came late. Reported, as Apple requires, and ended at once, like an
+      // expired ring; never rung again (EndedCalls says why nothing else
+      // would stop it after a decline here).
+      report(uuid, label: label(for: push.conversationId)) { error in
+        completion()
+        guard error == nil else { return }
+        self.provider?.reportCall(with: uuid, endedAt: Date(), reason: Self.cxReason(end))
+        NSLog("[wherry] calls: late ring for ended uuid=%@ ended (%@)", uuid.uuidString.lowercased(), "\(end)")
+      }
+      return
+    }
     let call = TrackedCall(uuid: uuid, callId: push.callId, exp: push.exp)
     call.conversationId = push.conversationId
     call.deviceId = push.deviceId
@@ -600,8 +627,8 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   /// A ring or call ended for a reason CallKit shows (no delegate action
   /// follows a `reportCall`).
   private func endReported(_ uuid: UUID, _ end: RingEnd) {
-    guard calls[uuid] != nil else { return }
-    forget(uuid)
+    guard let call = calls[uuid] else { return }
+    retire(call, end)
     provider?.reportCall(with: uuid, endedAt: Date(), reason: Self.cxReason(end))
     NSLog("[wherry] calls: ended uuid=%@ (%@)", uuid.uuidString.lowercased(), "\(end)")
   }
@@ -633,9 +660,20 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     }
   }
 
+  /// Drops a call CallKit never took (its report failed): a later ring for
+  /// it may still be reported.
   private func forget(_ uuid: UUID) {
     calls[uuid]?.cancelTimers()
     calls[uuid] = nil
+  }
+
+  /// Drops a call that has ended here, and remembers it until its ring
+  /// window closes, so a late push for it is ended rather than rung
+  /// (EndedCalls). Every end goes through this; only a failed report uses
+  /// `forget` alone.
+  private func retire(_ call: TrackedCall, _ end: RingEnd) {
+    ended.add(call.uuid, exp: call.exp, end: end, now: Self.nowSeconds())
+    forget(call.uuid)
   }
 
   /// Ends a ring CallKit still shows once its window closes, in case the
@@ -662,7 +700,7 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       if call.answered && !call.endRequested {
         deliver("hangup", call)
       }
-      forget(call.uuid)
+      retire(call, .failed)
     }
   }
 
@@ -692,7 +730,10 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       action.fulfill()
       return
     }
-    forget(call.uuid)
+    // Remembered as ended, so a VoIP push for it that lands after this
+    // (the server sends a declining device no ring_ended) is ended at once
+    // rather than rung again; .remoteEnded is only what CallKit is told then.
+    retire(call, .remoteEnded)
     if call.endRequested {
       action.fulfill()
       return
