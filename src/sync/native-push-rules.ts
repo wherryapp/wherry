@@ -511,11 +511,15 @@ export function withEntry(
 ): StoredNative {
   const base = withPending(stored, owner, provider, false);
   const next: StoredNative = { ...base, entries: { ...base.entries, [provider]: entry } };
-  // Only an alert registration is evidence the notification prompt was
-  // granted; PushKit (apns_voip) needs no permission, so a VoIP token
-  // registered after a refused prompt must not erase the refusal (it would
-  // turn "blocked" into a "ready" whose Turn on cannot prompt again).
-  if (provider === "apns" || provider === "fcm") next.declined = false;
+  // Only a registration with alerts on is evidence the notification prompt
+  // was granted. PushKit (apns_voip) needs no permission, and an `fcm` row
+  // with `alerts: false` may be the phone-calls plan's ring registration on
+  // Android (R9), made whether or not POST_NOTIFICATIONS was granted.
+  // Either one after a refused prompt must keep the refusal: erasing it
+  // turns "blocked" into a "ready" whose Turn on cannot prompt again.
+  // Android's Turn off (`alerts: false` after a Turn on) keeps what the
+  // record held, which that Turn on already set false.
+  if (provider !== "apns_voip" && entry.alerts !== false) next.declined = false;
   return next;
 }
 

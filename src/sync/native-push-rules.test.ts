@@ -276,6 +276,27 @@ test("withEntry keeps a remembered refusal when the registration is VoIP (PushKi
   assert.equal(withEntry(next, OWNER, "apns", next.entries.apns_voip!).declined, false);
 });
 
+test("withEntry keeps a remembered refusal when an fcm registration has alerts off (the Android ring)", () => {
+  // POST_NOTIFICATIONS was refused under an earlier sign-in; a new sign-in
+  // on this device carries the refusal over.
+  const refused: StoredNative = { v: 1, owner: "dev1:a", entries: {}, declined: true };
+  const carried = carryOver(refused, "dev1:b")!;
+  assert.equal(carried.declined, true);
+  // The phone-calls plan's ring registration creates the fcm row with alerts off.
+  const ring = { token: fcmStatus.token!, environment: null, refKey: REF_KEY, alerts: false as const };
+  const next = withEntry(carried, "dev1:b", "fcm", ring);
+  assert.equal(next.declined, true);
+  assert.equal(
+    nativeStateFrom({ status: fcmStatus, server: bothOn, permissionGranted: false, stored: next, owner: "dev1:b" }),
+    "blocked",
+  );
+  // Turn on (alerts on) is evidence of the grant and clears it; the Turn off
+  // that follows (alerts off again) keeps the cleared value.
+  const on = withEntry(next, "dev1:b", "fcm", { token: ring.token, environment: null, refKey: REF_KEY });
+  assert.equal(on.declined, false);
+  assert.equal(withEntry(on, "dev1:b", "fcm", ring).declined, false);
+});
+
 // ---------------------------------------------------------------------------
 // Carrying a record across sign-ins
 // ---------------------------------------------------------------------------
