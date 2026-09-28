@@ -62,7 +62,12 @@ targets:
         # plan records rather than works around.
         NSMicrophoneUsageDescription: Wherry uses the microphone for voice calls and voice rooms.
         NSCameraUsageDescription: Wherry uses the camera for video calls.
-        UIBackgroundModes: [audio]
+        # Hand edit 10 (docs/prompts/phone-calls-plan.md §7): `voip` lets
+        # PushKit wake or launch the app for an incoming call, which the
+        # wherry-calls plugin reports to CallKit. Without it PushKit issues
+        # no VoIP token. No `remote-notification`: v1 sends no
+        # content-available pushes (coordination §2, correction 4).
+        UIBackgroundModes: [audio, voip]
         # Hand edit 14 (docs/prompts/regen-hand-edits.md): the UIScene life
         # cycle. UIKit refuses to launch a build from the iOS 27 SDK that has
         # not adopted scenes ("UIScene life cycle is required for apps built
