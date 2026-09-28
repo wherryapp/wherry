@@ -34,6 +34,7 @@
 
 import type { AuthResult, Platform, PublicDevice, PublicUser } from "./types";
 import { vaultDelete, vaultGet, vaultSet } from "../vault";
+import { isTauriShell } from "./shell";
 
 const SESSION_KEY = "messenger.session";
 const DEVICE_KEY = "messenger.device";
@@ -326,16 +327,35 @@ function detectPlatform(): Platform {
  * shape. It exists so a user with three devices can tell them apart.
  */
 export function defaultDeviceName(): string {
-  const ua = navigator.userAgent;
-  const browser = /Firefox\//.test(ua)
-    ? "Firefox"
-    : /Edg\//.test(ua)
-      ? "Edge"
-      : /Chrome\//.test(ua)
-        ? "Chrome"
-        : /Safari\//.test(ua)
-          ? "Safari"
-          : "Browser";
+  return deviceNameFrom({
+    userAgent: navigator.userAgent,
+    maxTouchPoints: navigator.maxTouchPoints,
+    inShell: isTauriShell(),
+  });
+}
+
+/** `defaultDeviceName`'s decision, from what it reads. */
+export function deviceNameFrom(input: {
+  userAgent: string;
+  maxTouchPoints: number;
+  inShell: boolean;
+}): string {
+  const ua = input.userAgent;
+  // Inside a Tauri shell the webview's user agent names no browser (iOS's
+  // WKWebView carries no "Safari/"), so the installed iPhone app registered
+  // as "Browser on iPhone" (2026-09-28). The app is the thing to name there;
+  // the platform still comes from the user agent below.
+  const browser = input.inShell
+    ? "Wherry"
+    : /Firefox\//.test(ua)
+      ? "Firefox"
+      : /Edg\//.test(ua)
+        ? "Edge"
+        : /Chrome\//.test(ua)
+          ? "Chrome"
+          : /Safari\//.test(ua)
+            ? "Safari"
+            : "Browser";
   // Phones first, and the order is the whole point. An iPhone's user agent
   // contains "Mac OS X" and an Android's contains "Linux", so testing desktop
   // platforms first labels every phone as a computer -- which is how a live
@@ -347,7 +367,7 @@ export function defaultDeviceName(): string {
     : // An iPad in desktop mode claims to be a Mac and only the touch count
       // gives it away, same trick as sync/push.ts.
       /iPad/.test(ua) ||
-        (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+        (/Macintosh/.test(ua) && input.maxTouchPoints > 1)
       ? "iPad"
       : /Android/.test(ua)
         ? "Android"
