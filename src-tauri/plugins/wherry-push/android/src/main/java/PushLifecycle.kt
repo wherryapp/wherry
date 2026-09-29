@@ -81,9 +81,9 @@ internal object PushLifecycle : Application.ActivityLifecycleCallbacks {
     PushState.resumed = true
     // Coming to the front is an unlock signal that is never late, where
     // ACTION_USER_PRESENT can be: a notification posted nameless behind the
-    // lock screen is named now (PushRenderer.renameHeld; a no-op while still
-    // locked, or when nothing is held).
-    PushRenderer.renameHeld(activity.applicationContext)
+    // lock screen is named now (PushRenderer.refresh; a no-op while still
+    // locked, or when nothing is tracked).
+    PushRenderer.refresh(activity.applicationContext, "resumed")
   }
 
   @Synchronized
