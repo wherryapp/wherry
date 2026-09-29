@@ -165,8 +165,9 @@ internal object RingLaunch {
         }
     }
 
-    /** The call is over (setActive(false)): nothing is shown over the lock
-     *  screen any more. Any thread. */
+    /** The call is over (a setActive(false) that ended a call the page had
+     *  reported, never a report of no call: PageCall): nothing is shown over
+     *  the lock screen any more. Any thread. */
     fun callEnded() {
         main.post { if (overLock != null) release("the call ended") }
     }

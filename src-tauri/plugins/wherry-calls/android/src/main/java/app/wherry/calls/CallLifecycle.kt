@@ -73,7 +73,7 @@ object CallLifecycle {
     private data class Wanted(val callId: String?, val label: String?, val audioOnly: Boolean)
 
     private val lock = Any()
-    private var wanted: Wanted? = null // under lock
+    private val page = PageCall<Wanted>() // under lock
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -183,30 +183,34 @@ object CallLifecycle {
     /** setActive(true): remember the call, and start or update the service. */
     fun active(context: Context, callId: String?, label: String?, audioOnly: Boolean) {
         synchronized(lock) {
-            wanted = Wanted(callId, label, audioOnly)
+            page.active(Wanted(callId, label, audioOnly))
             CallService.update(context, callId, label, audioOnly)
         }
     }
 
     /** The page has a call up (its last setActive was true). */
-    fun hasCall(): Boolean = synchronized(lock) { wanted != null }
+    fun hasCall(): Boolean = synchronized(lock) { page.current != null }
 
     /** setActive(false): forget it, stop the service, and put the WebView
-     *  back where WryActivity left it if the call ended in the background. */
+     *  back where WryActivity left it if the call ended in the background.
+     *  The show over the lock screen goes only when this ends a call the page
+     *  had reported: a report of no call with none up (the ring's page coming
+     *  to the front) leaves a ring's show to RingLaunch's own ends (PageCall). */
     fun inactive(context: Context) {
-        synchronized(lock) {
-            wanted = null
+        val ended = synchronized(lock) {
+            val ended = page.inactive()
             CallService.stop(context)
+            ended
         }
         main.post { releaseKeptResumed() }
-        RingLaunch.callEnded()
+        if (ended) RingLaunch.callEnded()
     }
 
     // -- 1. the retry -----------------------------------------------------
 
     private fun retryWanted(context: Context) {
         synchronized(lock) {
-            val call = wanted ?: return
+            val call = page.current ?: return
             // Running, or a start already on its way (setActive a moment
             // before this resume): nothing to retry.
             if (CallService.running || CallService.starting) return
