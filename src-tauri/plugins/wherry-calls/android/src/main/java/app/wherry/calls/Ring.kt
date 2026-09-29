@@ -60,6 +60,19 @@ internal data class Ring(
     }
 }
 
+/**
+ * The ring's caller line. While the phone is locked behind a PIN, pattern or
+ * password ([hidden]) it is [unnamed] whatever is known (decision 7); else
+ * the page's label, then the cache's ([cached], read only when needed), then
+ * [unnamed]. A blank name counts as none.
+ */
+internal fun ringTitle(hidden: Boolean, label: String?, cached: () -> String?, unnamed: String): String {
+    if (hidden) return unnamed
+    return label?.takeIf { it.isNotBlank() }
+        ?: cached()?.takeIf { it.isNotBlank() }
+        ?: unnamed
+}
+
 /** The shapes of the ids that reach a URL path or a request body. */
 internal object Ids {
     /** A UUID (calls, conversations and devices are UUIDv7). */

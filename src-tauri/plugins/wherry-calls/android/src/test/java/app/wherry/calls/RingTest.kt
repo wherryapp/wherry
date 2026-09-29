@@ -78,4 +78,27 @@ class RingTest {
         assertFalse(token.expired(1_790_000_044_999))
         assertTrue(token.expired(1_790_000_045_000))
     }
+
+    // ringTitle: decision 7, a locked phone's ring names nobody.
+
+    private val unnamed = "Wherry call"
+
+    @Test fun aLockedPhoneNamesNobodyWhateverIsKnown() {
+        var looked = false
+        val title = ringTitle(hidden = true, label = "Garden group", cached = { looked = true; "Garden" }, unnamed = unnamed)
+        assertEquals(unnamed, title)
+        assertFalse(looked)
+    }
+
+    @Test fun anUnlockedPhoneTakesThePageLabelFirst() {
+        assertEquals("Garden group", ringTitle(hidden = false, label = "Garden group", cached = { "Garden" }, unnamed = unnamed))
+    }
+
+    @Test fun anUnlockedPhoneFallsBackToTheCacheThenTheFixedText() {
+        assertEquals("Garden", ringTitle(hidden = false, label = null, cached = { "Garden" }, unnamed = unnamed))
+        assertEquals("Garden", ringTitle(hidden = false, label = " ", cached = { "Garden" }, unnamed = unnamed))
+        assertEquals(unnamed, ringTitle(hidden = false, label = null, cached = { null }, unnamed = unnamed))
+        // The names setting off empties the cache: the fixed text.
+        assertEquals(unnamed, ringTitle(hidden = false, label = null, cached = { "" }, unnamed = unnamed))
+    }
 }
