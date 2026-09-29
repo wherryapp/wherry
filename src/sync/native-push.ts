@@ -30,6 +30,7 @@ import {
 } from "../api/client";
 import { loadSession } from "../api/session";
 import {
+  EMPTY_PUSH_LABELS,
   NATIVE_PUSH_STORAGE_KEY,
   afterAlertRegistration,
   alertsToSend,
@@ -52,11 +53,12 @@ import {
   type NativePushState,
   type PluginStatus,
   type PushKeys,
+  type PushLabels,
   type ServerProviders,
   type StoredNative,
 } from "./native-push-rules";
 
-export type { NativeOpen, NativePushState };
+export type { NativeOpen, NativePushState, PushLabels };
 
 const PLUGIN = "wherry-push";
 
@@ -201,6 +203,35 @@ export function noteSignOut(): void {
   } catch {
     // The next sign-in on this device re-registers instead, which is the
     // lesser failure (push stays on, and nothing is shown twice).
+  }
+  // The label map names this account's conversations and contacts; nothing
+  // of it may outlive the sign-out. The phone bridge's run end empties it
+  // too (it sees a 401 and an account switch, which do not come through
+  // here); this is the explicit sign-out's own copy.
+  void setLabels(EMPTY_PUSH_LABELS);
+}
+
+/**
+ * Replaces the push plugin's label map (`set_labels`,
+ * docs/prompts/notification-names-plan.md §4): conversation id to label and
+ * group flag, user id to display name. The phone opens a message push's
+ * sealed ids and names the notification from it; an empty map means every
+ * notification reads the fixed text. Called by voice/phone-bridge.ts (the
+ * one computation both plugins' maps come from, gated by "Names in
+ * notifications") and at sign-out. Never throws; an older plugin without the
+ * command is a shrug, and its notifications stay nameless.
+ */
+export async function setLabels(labels: PushLabels): Promise<void> {
+  try {
+    await invokePlugin("set_labels", {
+      conversations: labels.conversations,
+      users: labels.users,
+    });
+    console.info(
+      `native-push labels set (${Object.keys(labels.conversations).length} conversations, ${Object.keys(labels.users).length} users)`,
+    );
+  } catch {
+    // No plugin, or one that predates the command.
   }
 }
 

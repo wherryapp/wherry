@@ -7,7 +7,10 @@
 // Told to the native side:
 //   - `configure` (where `decline-signed` goes, and this device's id) and
 //     the label cache (`setLabels`), when an account's run starts and
-//     whenever the conversation list changes; `resetAccount` when it ends;
+//     whenever the conversation list, the hubs or "Names in notifications"
+//     change; `resetAccount` when it ends. The push plugin's label map
+//     (notification-names-plan.md) comes from the same computation and is
+//     emptied at the same moments, through the PushContract;
 //   - every ring the page holds (`reportIncoming`, whose answer says whether
 //     the native side took it) and why it went (`reportEnded`);
 //   - the call's lifetime (`setActive`), and an outgoing call's start.
@@ -51,9 +54,17 @@ import { API_BASE } from "../api/base";
 import { declineCall } from "../api/client";
 import { loadSession, storedDeviceId } from "../api/session";
 import { isTauriShell } from "../api/shell";
+import type { HubSummary } from "../api/types";
 import { store } from "../store";
-import type { StoredConversation } from "../store/types";
+import { META_HUBS, type StoredConversation } from "../store/types";
 import { sync, type SyncEvent, type SyncState } from "../sync/engine";
+import { loadNotificationPrefs, subscribeNotificationPrefs } from "../sync/native-push-prefs";
+import {
+  EMPTY_PUSH_LABELS,
+  pushLabels,
+  pushLabelsKey,
+  type PushLabels,
+} from "../sync/native-push-rules";
 import { withNativePush } from "../sync/push";
 import { requestOpen } from "../ui/open-request";
 import {
@@ -66,11 +77,13 @@ import {
 import {
   ACTION_TTL_MS,
   bridgeRunStep,
+  FALLBACK_LABEL,
   labelsKey,
   nativeActiveCall,
   nativeApiBase,
   nativeEndReason,
   nativeRingOf,
+  notificationLabels,
   PAGE_ALIVE_EVERY_MS,
   PAGE_ONLY,
   pageAliveWanted,
@@ -80,7 +93,6 @@ import {
   ringDisplay,
   ringExpiry,
   ringGoneReason,
-  ringLabels,
   ringsDiff,
   type CallFrame,
   type NativeRing,
@@ -99,6 +111,10 @@ export type PushContract = {
   /** Fire-and-forget: a failure is logged, never thrown into the run. */
   registerNativeToken(provider: "apns_voip", voip: VoipToken): void;
   requestOpen(request: { kind: "call"; conversationId: string }): void;
+  /** Fire-and-forget: the push plugin's label map
+   *  (notification-names-plan.md §4), from the same computation as the
+   *  calls plugin's, so the two never disagree about a conversation. */
+  setLabels(labels: PushLabels): void;
 };
 
 const NATIVE_PUSH: PushContract = {
@@ -130,6 +146,9 @@ const NATIVE_PUSH: PushContract = {
     );
   },
   requestOpen: (request) => requestOpen(request),
+  // The same one way in; a no-op in any process that is not a phone shell,
+  // which is every browser (row W-107).
+  setLabels: (labels) => withNativePush((native) => native.setLabels(labels)),
 };
 
 /** How many recent `call_state` frames are kept for the end reason. */
@@ -193,6 +212,11 @@ class PhoneBridge {
   #conversations: StoredConversation[] = [];
   #labels: Record<string, string> = {};
   #labelsKey = "";
+  /** What the push plugin was last given (`pushLabelsKey`). */
+  #pushLabelsKey = "";
+  /** "Names in notifications", as the labels were last computed: off, both
+   *  plugins hold empty maps and a page-reported ring says FALLBACK_LABEL. */
+  #namesOn = true;
   #frames = new Map<string, CallFrame>();
   /** Rings reported to the native side and when this device learned of them. */
   #reported = new Map<string, number>();
@@ -215,6 +239,11 @@ class PhoneBridge {
     void this.#probeCapabilities();
     const offSync = sync.subscribe((event) => this.#onSyncEvent(event));
     const offVoice = voice.subscribe(() => this.#onVoice());
+    // "Names in notifications" changed in Settings: both label maps again.
+    const offPrefs = subscribeNotificationPrefs(() => {
+      const run = this.#run;
+      if (run) void this.#refreshLabels(run);
+    });
     // Coming to the front is when a CallKit call must give way to the
     // page's (`pageOwnsAudio`, branch B of I-58), whether or not the voice
     // state moved.
@@ -223,6 +252,7 @@ class PhoneBridge {
     this.#uninstall = () => {
       offSync();
       offVoice();
+      offPrefs();
       document.removeEventListener("visibilitychange", onVisibility);
       this.#cancelStop();
       this.#stopRun();
@@ -409,6 +439,11 @@ class PhoneBridge {
     this.#conversations = [];
     this.#labels = {};
     this.#labelsKey = "";
+    // The push plugin's map names this account's conversations and
+    // contacts too; emptied whatever the calls plugin's presence (an
+    // install may carry one plugin without the other).
+    this.#pushLabelsKey = "";
+    this.#push.setLabels(EMPTY_PUSH_LABELS);
     if (this.#present) {
       // The label cache names this account's conversations, and nothing of
       // it may outlive the sign-out -- store.clear()'s reasoning, on the
@@ -422,6 +457,13 @@ class PhoneBridge {
 
   // -- labels ---------------------------------------------------------------
 
+  /**
+   * Both plugins' label maps, from one computation
+   * (notification-names-plan.md §1.2, §1.5): the calls plugin's names a
+   * ring, the push plugin's names a message. With "Names in notifications"
+   * off both are empty, so a ring reads "Wherry call" and a message "New
+   * message" everywhere. Each is written only when it changed.
+   */
   async #refreshLabels(run: Run): Promise<void> {
     let list: StoredConversation[];
     try {
@@ -429,15 +471,35 @@ class PhoneBridge {
     } catch {
       return;
     }
+    let hubs: HubSummary[] = [];
+    try {
+      hubs = (await store.getMeta<HubSummary[]>(META_HUBS)) ?? [];
+    } catch {
+      // A channel is then "#name" rather than "Hub › #name".
+    }
     if (!run.alive) return;
     // Newest first, as the sidebar's hook orders them: ids are UUIDv7.
     this.#conversations = [...list].sort((a, b) => b.id.localeCompare(a.id));
     this.#retryWaiting();
-    const labels = ringLabels(this.#conversations, run.userId);
-    const key = labelsKey(labels);
+    this.#namesOn = loadNotificationPrefs().names;
+    const hubNames = new Map(hubs.map((hub) => [hub.id, hub.name] as const));
+    const labels = this.#namesOn
+      ? notificationLabels(this.#conversations, run.userId, hubNames)
+      : {};
+    const push = this.#namesOn
+      ? pushLabels(this.#conversations, run.userId, labels)
+      : EMPTY_PUSH_LABELS;
     this.#labels = labels;
+    const pushKey = pushLabelsKey(push);
+    if (pushKey !== this.#pushLabelsKey) {
+      this.#pushLabelsKey = pushKey;
+      this.#push.setLabels(push);
+    }
+    const key = labelsKey(labels);
     if (key === this.#labelsKey) return;
     this.#labelsKey = key;
+    // A call that is up takes its new label (or loses it) at once.
+    this.#onVoice();
     await this.#native.setLabels(labels);
   }
 
@@ -451,7 +513,7 @@ class PhoneBridge {
       }
       const run = this.#run;
       if (!run) return;
-      if (event.type === "conversations") {
+      if (event.type === "conversations" || event.type === "hubs") {
         void this.#refreshLabels(run);
       } else if (event.type === "call_state") {
         this.#frames.delete(event.callId);
@@ -624,7 +686,13 @@ class PhoneBridge {
       // sent, and a report now would ring a dead call until `exp`.
       if (!this.#reported.has(ring.callId)) return;
       const conversation = this.#conversations.find((c) => c.id === ring.conversationId);
-      const { label, group } = ringDisplay(conversation, run.userId);
+      const display = ringDisplay(conversation, run.userId);
+      const group = display.group;
+      // The same label the calls plugin's cache holds (a hub channel as
+      // "Hub › #channel"), and none at all with names off.
+      const label = this.#namesOn
+        ? (this.#labels[ring.conversationId] ?? display.label)
+        : FALLBACK_LABEL;
       const answer = await this.#native.reportIncoming({
         callId: ring.callId,
         conversationId: ring.conversationId,

@@ -32,6 +32,12 @@ import {
   type ServerProviders,
   type StoredNative,
 } from "./native-push-rules.ts";
+import {
+  EMPTY_PUSH_LABELS,
+  parseNotificationPrefs,
+  pushLabels,
+  pushLabelsKey,
+} from "./native-push-rules.ts";
 
 const OWNER = "0199aaaa-0000-7000-8000-000000000001:fingerprint";
 const OTHER_OWNER = "0199aaaa-0000-7000-8000-000000000001:another-sign-in";
@@ -582,4 +588,61 @@ test("a sign-out forgets a kept row too, and queues it for the server to forget"
   const out = signedOut(alertsOff());
   assert.deepEqual(out?.entries, {});
   assert.deepEqual(out?.pendingUnregister, ["fcm"]);
+});
+
+// -- names in notifications ---------------------------------------------------
+
+const SELF = "u-self";
+function member(userId: string, displayName: string, username = displayName.toLowerCase()) {
+  return { userId, username, displayName };
+}
+const NAMED_LIST = [
+  { id: "d1", kind: "direct" as const, members: [member(SELF, "Me"), member("u-alice", "Alice")] },
+  {
+    id: "g1",
+    kind: "group" as const,
+    members: [member(SELF, "Me"), member("u-alice", "Alice (in the group)"), member("u-bob", "", "bob")],
+  },
+  { id: "v1", kind: "channel" as const, members: [member("u-carol", "Carol")] },
+  { id: "t1", kind: "channel" as const, members: [member("u-dan", "Dan")] },
+];
+const SHARED_LABELS = { d1: "Alice", g1: "Hiking", t1: "Climbers › #general" };
+
+test("push labels: the shared conversation labels, a group flag, and other members' names", () => {
+  assert.deepEqual(pushLabels(NAMED_LIST, SELF, SHARED_LABELS), {
+    conversations: {
+      d1: { label: "Alice", group: false },
+      g1: { label: "Hiking", group: true },
+      t1: { label: "Climbers › #general", group: true },
+    },
+    // Self left out; the first (newest) name wins; a blank display name
+    // falls back to the username; a conversation with no label (v1, a voice
+    // channel) contributes nobody.
+    users: { "u-alice": "Alice", "u-bob": "bob", "u-dan": "Dan" },
+  });
+});
+
+test("push labels cap the users, and an empty label is no label", () => {
+  const capped = pushLabels(NAMED_LIST, SELF, SHARED_LABELS, 2);
+  assert.deepEqual(Object.keys(capped.users), ["u-alice", "u-bob"]);
+  const blank = pushLabels(NAMED_LIST, SELF, { d1: "  " });
+  assert.deepEqual(blank, EMPTY_PUSH_LABELS);
+});
+
+test("push labels key ignores order and changes with any name or flag", () => {
+  const a = pushLabels(NAMED_LIST, SELF, SHARED_LABELS);
+  const reordered = pushLabels([...NAMED_LIST].reverse(), SELF, SHARED_LABELS);
+  assert.equal(pushLabelsKey(a), pushLabelsKey({ ...reordered, users: a.users }));
+  assert.notEqual(pushLabelsKey(a), pushLabelsKey(EMPTY_PUSH_LABELS));
+  const renamed = { ...a, users: { ...a.users, "u-dan": "Daniel" } };
+  assert.notEqual(pushLabelsKey(a), pushLabelsKey(renamed));
+});
+
+test("names in notifications default on; only an explicit false turns them off", () => {
+  assert.deepEqual(parseNotificationPrefs(null), { names: true });
+  assert.deepEqual(parseNotificationPrefs("not json"), { names: true });
+  assert.deepEqual(parseNotificationPrefs("null"), { names: true });
+  assert.deepEqual(parseNotificationPrefs('{"names":"false"}'), { names: true });
+  assert.deepEqual(parseNotificationPrefs('{"names":false}'), { names: false });
+  assert.deepEqual(parseNotificationPrefs('{"names":true}'), { names: true });
 });

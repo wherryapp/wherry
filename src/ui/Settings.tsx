@@ -5,7 +5,14 @@
 // also happens to be the right shape on a phone, where a settings *page* is
 // what people expect anyway.
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+  type ReactElement,
+} from "react";
 import {
   ApiError,
   changeAvatarColor,
@@ -40,6 +47,11 @@ import {
   type PushState,
 } from "../sync/push";
 import type { NativePushState } from "../sync/native-push-rules";
+import {
+  loadNotificationPrefs,
+  saveNotificationPrefs,
+  subscribeNotificationPrefs,
+} from "../sync/native-push-prefs";
 import { useAnnouncements, useAvatarUrl, useFeatures } from "./hooks";
 import { prepareAvatar } from "./media";
 import { HuePicker } from "./HuePicker";
@@ -910,65 +922,111 @@ function NativeNotificationSetting() {
     return <p className={muted}>This device cannot show notifications.</p>;
   }
 
-  if (state === "unconfigured") {
-    return <p className={muted}>This build has no push support.</p>;
-  }
+  const pushRow = (): ReactElement => {
+    if (state === "unconfigured") {
+      return <p className={muted}>This build has no push support.</p>;
+    }
 
-  if (state === "server-disabled") {
-    return <p className={muted}>Notifications are not set up on this server.</p>;
-  }
+    if (state === "server-disabled") {
+      return <p className={muted}>Notifications are not set up on this server.</p>;
+    }
 
-  if (state === "blocked") {
+    if (state === "blocked") {
+      return (
+        <div className="space-y-2">
+          <p className={muted}>Notifications are blocked in this phone&apos;s settings.</p>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => withNativePush((native) => native.openNativeSettings())}
+          >
+            Open settings
+          </Button>
+        </div>
+      );
+    }
+
+    const on = state === "on";
+
     return (
-      <div className="space-y-2">
-        <p className={muted}>Notifications are blocked in this phone&apos;s settings.</p>
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => withNativePush((native) => native.openNativeSettings())}
-        >
-          Open settings
-        </Button>
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={busy}
+            onChange={() => {
+              setBusy(true);
+              setNotTurnedOn(false);
+              // The permission prompt answers this press and nothing else, as
+              // on the web. The OS prompt is native, so unlike a browser's it
+              // does not need the gesture to survive the module load.
+              withNativePush(async (native) => {
+                try {
+                  const next = await (on ? native.disableNative() : native.enableNative());
+                  setState(next);
+                  // Turn on that lands back on "ready" did not work: a failed
+                  // registration (the reason is in the console), or a prompt
+                  // dismissed without an answer. Without this line the box
+                  // just springs back.
+                  setNotTurnedOn(!on && next === "ready");
+                } finally {
+                  setBusy(false);
+                }
+              });
+            }}
+            className="h-4 w-4"
+          />
+          Notify me about new messages on this device
+        </label>
+        {notTurnedOn && (
+          <p className={muted}>Notifications could not be turned on. Try again later.</p>
+        )}
       </div>
     );
-  }
+  };
 
-  const on = state === "on";
+  return (
+    <div className="space-y-3">
+      {pushRow()}
+      <NotificationNamesSetting />
+    </div>
+  );
+}
 
+/**
+ * "Names in notifications" (docs/prompts/notification-names-plan.md §1.5): a
+ * per-device switch, default on, shown only in a phone shell (this sits in
+ * the native branch). On, a phone names a notification from the page's own
+ * labels -- who, and which chat -- never what was said; off, both plugins
+ * are given an empty map, so messages read "New message" and calls "Wherry
+ * call". The phone bridge hears the change and rewrites both maps.
+ *
+ * Shown in every state but `unsupported`: the calls plugin names rings
+ * whether or not message notifications are on.
+ */
+function NotificationNamesSetting() {
+  const names = useSyncExternalStore(
+    subscribeNotificationPrefs,
+    () => loadNotificationPrefs().names,
+    () => true,
+  );
   return (
     <div className="space-y-1">
       <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-200">
         <input
           type="checkbox"
-          checked={on}
-          disabled={busy}
-          onChange={() => {
-            setBusy(true);
-            setNotTurnedOn(false);
-            // The permission prompt answers this press and nothing else, as
-            // on the web. The OS prompt is native, so unlike a browser's it
-            // does not need the gesture to survive the module load.
-            withNativePush(async (native) => {
-              try {
-                const next = await (on ? native.disableNative() : native.enableNative());
-                setState(next);
-                // Turn on that lands back on "ready" did not work: a failed
-                // registration (the reason is in the console), or a prompt
-                // dismissed without an answer. Without this line the box
-                // just springs back.
-                setNotTurnedOn(!on && next === "ready");
-              } finally {
-                setBusy(false);
-              }
-            });
-          }}
+          checked={names}
+          onChange={() => saveNotificationPrefs({ names: !names })}
           className="h-4 w-4"
         />
-        Notify me about new messages on this device
+        Names in notifications
       </label>
-      {notTurnedOn && (
-        <p className={muted}>Notifications could not be turned on. Try again later.</p>
-      )}
+      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        Show who a message or call is from and which chat it is in, never what
+        was said. Names come from this phone, not from the server, and are
+        hidden while the phone is locked.
+      </p>
     </div>
   );
 }

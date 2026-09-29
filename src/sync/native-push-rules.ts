@@ -684,3 +684,103 @@ function keyBytes(value: unknown): Uint8Array | null {
     .replace(/\//g, "_");
   return urlSafe.length === 0 ? null : decodeBase64Url(urlSafe);
 }
+
+// ---------------------------------------------------------------------------
+// Names in notifications (docs/prompts/notification-names-plan.md)
+// ---------------------------------------------------------------------------
+//
+// The server seals a conversation id and a sender id to the device (`e`);
+// the phone turns them into names from this map, which the page writes to
+// the plugin (`set_labels`). Names only -- what the app already shows in its
+// list -- never content (rule 1), and no name ever leaves the phone.
+
+/** What the push plugin's `set_labels` takes: conversation id to its label
+ *  and whether it is a group (a group names the sender in the text), and
+ *  user id to display name. */
+export type PushLabels = {
+  conversations: Record<string, { label: string; group: boolean }>;
+  users: Record<string, string>;
+};
+
+/** What the push plugin is given with the setting off, and at sign-out. */
+export const EMPTY_PUSH_LABELS: PushLabels = { conversations: {}, users: {} };
+
+/** The user map's cap (plan §4); the conversation map is already capped by
+ *  the labels it is built from (phone-rules.ts's MAX_LABELS, 500). The
+ *  plugin enforces both again. */
+export const MAX_LABEL_USERS = 1000;
+
+type LabelSource = {
+  id: string;
+  kind: "direct" | "group" | "channel";
+  members: readonly { userId: string; username: string; displayName: string }[];
+};
+
+/**
+ * The push plugin's label map, from the conversation labels both plugins
+ * share (`labels`, phone-rules.ts's `notificationLabels`), so the ring and
+ * the message cannot disagree about what a conversation is called. A
+ * conversation without a label there (a voice channel, one past the cap) is
+ * left out and falls back to the fixed text on the phone. Users are every
+ * other member of those conversations, in the list's order (newest first),
+ * the first name seen winning, up to `maxUsers`; the signed-in user is left
+ * out (nobody is notified of their own message).
+ */
+export function pushLabels(
+  conversations: readonly LabelSource[],
+  selfUserId: string,
+  labels: Readonly<Record<string, string>>,
+  maxUsers: number = MAX_LABEL_USERS,
+): PushLabels {
+  const out: PushLabels = { conversations: {}, users: {} };
+  let users = 0;
+  for (const conversation of conversations) {
+    const label = labels[conversation.id];
+    if (label === undefined || label.trim() === "") continue;
+    out.conversations[conversation.id] = { label, group: conversation.kind !== "direct" };
+    for (const member of conversation.members) {
+      if (users >= maxUsers) break;
+      if (member.userId === selfUserId || Object.hasOwn(out.users, member.userId)) continue;
+      const name = member.displayName || member.username;
+      if (!name) continue;
+      out.users[member.userId] = name;
+      users += 1;
+    }
+  }
+  return out;
+}
+
+/** A stable key for "did the push labels change", as phone-rules.ts's
+ *  `labelsKey` is for the calls plugin's. */
+export function pushLabelsKey(labels: PushLabels): string {
+  const sorted = <T>(record: Record<string, T>): [string, T][] =>
+    Object.entries(record).sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify([sorted(labels.conversations), sorted(labels.users)]);
+}
+
+/** Where this device keeps its notification preferences: localStorage, a
+ *  per-device choice never synced, like the voice preferences. */
+export const NOTIFICATION_PREFS_KEY = "wherry.notificationPrefs.v1";
+
+/** The per-device notification preferences. */
+export type NotificationPrefs = {
+  /** Names in notifications: who and which chat, never what. Default on.
+   *  Off, both plugins are given an empty map, so a message reads "New
+   *  message" and a ring "Wherry call" everywhere. */
+  names: boolean;
+};
+
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = { names: true };
+
+/** The stored preferences; anything unreadable is the default (on). Only an
+ *  explicit `false` turns names off. */
+export function parseNotificationPrefs(raw: string | null): NotificationPrefs {
+  if (raw === null) return { ...DEFAULT_NOTIFICATION_PREFS };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return { ...DEFAULT_NOTIFICATION_PREFS };
+    return { names: (parsed as { names?: unknown }).names !== false };
+  } catch {
+    return { ...DEFAULT_NOTIFICATION_PREFS };
+  }
+}
