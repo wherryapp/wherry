@@ -135,7 +135,7 @@ internal object PushDispatch {
    * (notification-names-plan.md §1): `e` opened with the same key pair as a
    * ring, then checked by NamesGate. Null -- the fixed text -- when there is
    * no `e` (an older server), or it does not open, or it is not what the
-   * outer kind says. Rows A-65 to A-68 read these lines: the outcome and the
+   * outer kind says. Rows A-78 to A-81 read these lines: the outcome and the
    * field names, never an id.
    */
   private fun names(context: Context, kind: String, encoded: String?): NamedIds? {

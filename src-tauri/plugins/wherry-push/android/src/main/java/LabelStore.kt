@@ -7,12 +7,12 @@
 // Where it lives, and why: one small JSON file under `noBackupFilesDir`,
 // which Android's Auto Backup and device-to-device transfer never copy (the
 // calls plugin's CallsStore.kt keeps its ring labels the same way, for the
-// same reason). The manifest leaves `allowBackup` at its default, so anything
-// in SharedPreferences or `filesDir` would travel into a Google cloud backup
-// and come back on a restore before anyone signs in; these are names of
-// people and chats, which is what D1 keeps away from Google in the first
-// place. Plaintext on the phone is the same exposure as the notification
-// shade itself (plan §5).
+// same reason). The app itself is now out of Auto Backup and device transfer
+// (hand edit 15, decision 10), but that is a hand edit `tauri android init`
+// would erase; this file does not depend on it. These are names of people
+// and chats, which is what D1 keeps away from Google in the first place.
+// Plaintext on the phone is the same exposure as the notification shade
+// itself (plan §5).
 //
 // Names only, never content (rule 1). The page empties it at sign-out, at the
 // end of an account's run, and whenever "Names in notifications" is off.
