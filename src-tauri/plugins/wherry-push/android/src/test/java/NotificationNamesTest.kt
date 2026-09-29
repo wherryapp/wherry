@@ -1,6 +1,6 @@
 // NotificationNames on the JVM: what an opened `e` may name, what the
 // label map keeps, and the title and text a notification gets
-// (docs/prompts/notification-names-plan.md §1.3, §1.4).
+// (docs/prompts/notification-names-plan.md §1.3).
 
 package app.wherry.push
 
@@ -58,50 +58,43 @@ class NotificationNamesTest {
   // -- the text ---------------------------------------------------------------
 
   @Test fun aDirectMessageIsTitledWithTheConversation() {
-    val text = NamedText.compose("message", "New message", NamedIds(direct, alice), labels, locked = false)
+    val text = NamedText.compose("message", "New message", NamedIds(direct, alice), labels)
     assertEquals("Alice", text.title)
     assertEquals("New message", text.text)
     assertTrue(text.named)
   }
 
   @Test fun aGroupMessageNamesTheSenderInTheText() {
-    val text = NamedText.compose("mention", "New mention", NamedIds(group, alice), labels, locked = false)
+    val text = NamedText.compose("mention", "New mention", NamedIds(group, alice), labels)
     assertEquals("Hiking", text.title)
     assertEquals("Alice: New mention", text.text)
   }
 
   @Test fun anUnknownSenderIsOmitted() {
-    val text = NamedText.compose("message", "New message", NamedIds(group, bob), labels, locked = false)
+    val text = NamedText.compose("message", "New message", NamedIds(group, bob), labels)
     assertEquals("Hiking", text.title)
     assertEquals("New message", text.text)
   }
 
   @Test fun anUnknownConversationFallsBackToTheFixedText() {
     val text = NamedText.compose(
-      "message", "New message", NamedIds("0192f3a0-0000-7000-8000-00000000ffff", alice), labels, locked = false,
+      "message", "New message", NamedIds("0192f3a0-0000-7000-8000-00000000ffff", alice), labels,
     )
     assertNull(text.title)
     assertEquals("New message", text.text)
     assertEquals("no label", text.why)
   }
 
-  @Test fun lockedIsNamelessWhateverTheLabels() {
-    val text = NamedText.compose("message", "New message", NamedIds(group, alice), labels, locked = true)
-    assertNull(text.title)
-    assertEquals("New message", text.text)
-    assertEquals("locked", text.why)
-  }
-
   @Test fun noIdsOrAnUnnamedKindIsTheFixedText() {
-    assertEquals(NamedText.Text(null, "New message", "no ids"), NamedText.compose("message", "New message", null, labels, false))
+    assertEquals(NamedText.Text(null, "New message", "no ids"), NamedText.compose("message", "New message", null, labels))
     assertEquals(
       NamedText.Text(null, "New contact request", "kind"),
-      NamedText.compose("contact_request", "New contact request", NamedIds(direct, alice), labels, false),
+      NamedText.compose("contact_request", "New contact request", NamedIds(direct, alice), labels),
     )
   }
 
   @Test fun theEmptyMapNamesNothing() {
-    val text = NamedText.compose("message", "New message", NamedIds(direct, alice), Labels.EMPTY, locked = false)
+    val text = NamedText.compose("message", "New message", NamedIds(direct, alice), Labels.EMPTY)
     assertEquals(NamedText.Text(null, "New message", "no label"), text)
   }
 

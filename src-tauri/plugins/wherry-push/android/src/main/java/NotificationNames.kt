@@ -14,9 +14,7 @@
 //
 // Anything missing -- no `e`, an `e` that did not open or whose inner kind is
 // not the outer one, no label for the conversation -- falls back to the fixed
-// text of the §2 table, silently. And while the device is locked behind a
-// PIN, pattern or password the text is the fixed one whatever the labels
-// say (plan §1.4); see PushRenderer for why that is decided at post time.
+// text of the §2 table, silently.
 
 package app.wherry.push
 
@@ -102,16 +100,15 @@ internal object NamedText {
 
   /**
    * What one notification says. `why` is for the log line only: `named`,
-   * `locked`, `no ids`, `no label` or `kind`; it never carries a name.
+   * `no ids`, `no label` or `kind`; it never carries a name.
    */
   data class Text(val title: String?, val text: String, val why: String) {
     val named: Boolean get() = why == "named"
   }
 
-  fun compose(kind: String, fixed: String, ids: NamedIds?, labels: Labels, locked: Boolean): Text {
+  fun compose(kind: String, fixed: String, ids: NamedIds?, labels: Labels): Text {
     if (kind !in NAMED_KINDS) return Text(null, fixed, "kind")
     if (ids == null) return Text(null, fixed, "no ids")
-    if (locked) return Text(null, fixed, "locked")
     val conversation = labels.conversations[ids.conversation] ?: return Text(null, fixed, "no label")
     if (!conversation.group) return Text(conversation.label, fixed, "named")
     val sender = ids.sender?.let { labels.users[it] }
