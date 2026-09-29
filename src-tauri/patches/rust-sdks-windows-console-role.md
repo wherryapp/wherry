@@ -9,6 +9,8 @@ day** as `wherry/windows-console-role` (commit `6a32ecc`, a new branch, so
 `wherry/stage-3n` and #1408's `wherry/frame-cryptor-detach` are untouched);
 `Cargo.toml`'s `rev` pins it and `LIVEKIT_REV` names it. Like the others it is
 meant to go upstream as its own pull request once the CLA for #1408 is signed.
+**Since 2026-09-29 the same branch carries a sixth commit on top of this one**
+(`06f0a5d`, `rust-sdks-room-session-release.md`), and that is what `rev` pins.
 
 ## What was wrong
 

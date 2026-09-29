@@ -1,20 +1,28 @@
-# rust-sdks-room-session-release (proposed, not applied, not built)
+# rust-sdks-room-session-release.patch
 
-A fork change on `wherryapp/rust-sdks`, written 2026-09-27. It would go on top
-of `wherry/windows-console-role` at `6a32ecc`, which is the revision
-`Cargo.toml` pins. It is for spike row 6: one `FrameCryptorTransformer` thread
-is kept per received video subscription on the native engine. The diff below
-exists only as text. **No fork branch was made, nothing was compiled, and
-nothing was measured.** `rustfmt --check` parses the three edited files; that
-is the only check that has run on the fork diff. One shell change goes with it
-and is already in the tree: `voice_connect` retries a failed `MEDIA_ENGINE`
-hold after the connect (see *What else changes*). That one is compile-checked
-on macOS and not yet verified on Windows.
+One commit on `wherryapp/rust-sdks`, on top of `wherry/windows-console-role`
+at `6a32ecc` (the revision `Cargo.toml` pinned before it), for spike row 6:
+on the native engine each received video subscription kept one
+`FrameCryptorTransformer` thread for the life of the process. `Room::close`
+now releases the room session and, with it, the call's `PeerConnection`.
 
-Once it is pushed:
-1. Pin it with `rev` in `client/src-tauri/Cargo.toml`.
-2. Name it in `LIVEKIT_REV` (`src/voice/mod.rs`).
-3. Give the next rig pass the reading under *How to verify*.
+- **Written 2026-09-27** as a text-only proposal, reviewed the same day (the
+  review moved part (b) and added part (c), below).
+- **Read on the rig 2026-09-27** from a vendored copy of the crate through a
+  `[patch]`, on a rig-only branch that was never merged (block I in
+  `docs/regression/desktop.md`).
+- **Pushed 2026-09-29** at the maintainer's decision (11 of that day) as
+  commit `06f0a5d0c59e41fb94c5f84658ca5207103a1647`, a sixth commit on the
+  existing branch `wherry/windows-console-role`, so the five before it are
+  untouched: <https://github.com/wherryapp/rust-sdks/commit/06f0a5d0c59e41fb94c5f84658ca5207103a1647>.
+  `Cargo.toml`'s `rev` pins it and `LIVEKIT_REV` names it. The pushed files
+  are byte-identical to the vendored copy block I measured, less its two
+  rig-only `Drop` log lines.
+- **Read again from the pinned revision 2026-09-29** (*Verification*, below).
+
+`rust-sdks-room-session-release.patch` beside this note is the commit as
+`git format-patch` writes it. Like the other fork commits it is meant to go
+upstream, as its own pull request (*Upstream*, below).
 
 ## What was seen
 
@@ -128,106 +136,66 @@ The shell already drops everything it holds at hang-up:
 - A tile's `NativeVideoStream` holds the `VideoTrack`, not the receiver.
 
 So the fix belongs in the fork.
-
 ## The change
 
-There are two parts:
+There are three parts:
 - **Part (a)** is #1405's two functional hunks, cherry-picked. The test hunk
   is left out because it needs the `__lk-e2e-test` harness.
 - **Part (b)** is new: `RoomSession::close()` releases the remote participants
-  the same way `handle_restarting` already does.
+  the same way `handle_restarting` already does. It does so **after**
+  `room_task` has been joined, and before `dispatcher.clear()`.
+  - Why after: until `room_handle` is joined, `room_task` is still live. Its
+    `tokio::select!` is unbiased, so even after `close_tx` fires it can take
+    an engine event that was already queued. It also awaits a handler task
+    already in flight. A `ParticipantUpdate` handled after the loop would
+    re-create the participant (`create_participant`). A `MediaTrack` or
+    subscribe event would re-create a publication. Either one re-forms the
+    cycle this part exists to break. That happens when the peer is changing
+    something at the moment of hang-up, such as a camera flip or a
+    permission update, and it would make the fix look flaky rather than
+    plainly working or plainly failing.
+  - Why before `dispatcher.clear()`: the events it emits still reach the
+    shell's pump.
+  - One consequence: `incoming_stream_task` has already ended, so the loop's
+    `AbortStreamsFrom` send to it fails silently. Ending the task already
+    drops every incoming data stream, and Wherry opens none.
+  - The first version of this note, written 2026-09-27, ran the loop before
+    `close_tx`. Review moved it the same day.
+- **Part (c)** is new too, added by the same review: a publisher negotiation
+  still waiting for its answer stops when the session closes.
+  - The problem: hang-up itself starts negotiations. `voice_disconnect`
+    unpublishes the microphone, and `close()` unpublishes the camera, the
+    share and the share's sound. Each one calls
+    `publisher_negotiation_needed`.
+  - In fast-publish mode (`join_response.fast_publish`), that spawns
+    `execute_negotiation_with_retry`. The task holds an `Arc<SessionInner>`,
+    and through it the publisher `PeerTransport` and the
+    `webrtc::PeerConnection`. If its offer went out before the
+    PeerConnection closed, it waits up to 10 s for an answer. That answer
+    can never come, because the signal task has already been closed. On
+    `PendingRetry` it then loops once more.
+  - So without (c), the PeerConnection, and with it the video receiver's
+    transformer thread, could outlive hang-up by about 10 to 20 s. A redial
+    inside that window would run the old `~PeerConnection` during the next
+    call.
+  - The fix: `SessionInner::close` clears `waiting_for_answer` and calls
+    `notify_one` on the negotiation waker. `notify_one` keeps a permit if
+    the loop is not waiting yet, so the wake cannot be missed. The loop
+    checks `closed` at the top of each pass and after it is woken, then
+    goes back to `Idle` and stops.
+  - The debounced (non-fast) path already ends within 150 ms. By then its
+    offer fails against the closed PeerConnection. The 2026-09-26 rig log
+    shows one such failure per hang-up, at the second the call closed:
+    `failed to negotiate the publisher: ... Called in wrong state: closed`
+    (block A, the spike leg). That log does not show which mode the rig's
+    SFU chose, so (c) is believed from the source, not seen.
 
-```diff
---- a/livekit/src/room/mod.rs
-+++ b/livekit/src/room/mod.rs
-@@ -759,8 +759,14 @@
- 
-         e2ee_manager.on_state_changed({
-             let dispatcher = dispatcher.clone();
--            let inner = inner.clone();
-+            // Weak: the manager is a field of `RoomSession`, so a strong capture
-+            // here is a cycle that keeps the session -- and through the engine
-+            // every PeerConnection it ever created -- alive after `close()`.
-+            let weak_inner = Arc::downgrade(&inner);
-             move |participant_identity, state| {
-+                let Some(inner) = weak_inner.upgrade() else {
-+                    return;
-+                };
-                 // Forward e2ee events to the room
-                 // (Ignore if the participant is not in the room anymore)
- 
-@@ -1164,7 +1170,7 @@
-         Ok(())
-     }
- 
--    async fn close(&self, reason: DisconnectReason) -> RoomResult<()> {
-+    async fn close(self: &Arc<Self>, reason: DisconnectReason) -> RoomResult<()> {
-         let Some(handle) = self.handle.lock().await.take() else { Err(RoomError::AlreadyClosed)? };
- 
-         // remove published tracks
-@@ -1174,6 +1180,20 @@
- 
-         self.rtc_engine.close(reason).await;
-         self.e2ee_manager.cleanup();
-+
-+        // Release every remote participant still in the room, the way a full
-+        // reconnect does (`handle_restarting`). Each remote publication holds
-+        // callbacks that capture its participant, and the participant holds
-+        // the publication and the `RtcEngine`: a cycle that `remove_publication`
-+        // is the only thing to break. Left in place, it keeps the engine's
-+        // session -- its PeerConnection(s), every transceiver, and each subscribed
-+        // track's `RtpReceiver` -- alive for the life of the process, which is
-+        // where a video receiver's frame transformer (and its thread) lives.
-+        let participants: Vec<RemoteParticipant> =
-+            self.remote_participants.read().values().cloned().collect();
-+        for participant in participants {
-+            self.clone().handle_participant_disconnect(participant);
-+        }
- 
-         let _ = handle.close_tx.send(());
-         let _ = handle.incoming_forward_task.await;
---- a/livekit/src/rtc_engine/rtc_events.rs
-+++ b/livekit/src/rtc_engine/rtc_events.rs
-@@ -60,7 +60,6 @@
-     },
-     DataChannelBufferedAmountChange {
-         sent: u64,
--        amount: u64,
-         kind: DataPacketKind,
-     },
- }
-@@ -166,16 +165,15 @@
- 
- fn on_buffered_amount_change(
-     emitter: RtcEmitter,
--    dc: DataChannel,
-     kind: DataPacketKind,
- ) -> rtc::data_channel::OnBufferedAmountChange {
-+    // Never capture the DataChannel here: the callback is stored on it.
-     Box::new(move |sent| {
--        let amount = dc.buffered_amount();
--        let _ = emitter.send(RtcEvent::DataChannelBufferedAmountChange { sent, amount, kind });
-+        let _ = emitter.send(RtcEvent::DataChannelBufferedAmountChange { sent, kind });
-     })
- }
- 
- pub fn forward_dc_events(dc: &mut DataChannel, kind: DataPacketKind, rtc_emitter: RtcEmitter) {
-     dc.on_message(Some(on_message(rtc_emitter.clone(), kind)));
--    dc.on_buffered_amount_change(Some(on_buffered_amount_change(rtc_emitter, dc.clone(), kind)));
-+    dc.on_buffered_amount_change(Some(on_buffered_amount_change(rtc_emitter, kind)));
- }
---- a/livekit/src/rtc_engine/rtc_session.rs
-+++ b/livekit/src/rtc_engine/rtc_session.rs
-@@ -1675,7 +1675,7 @@
-                     );
-                 }
-             }
--            RtcEvent::DataChannelBufferedAmountChange { sent, amount: _, kind } => {
-+            RtcEvent::DataChannelBufferedAmountChange { sent, kind } => {
-                 let ev = DataChannelEvent {
-                     kind,
-                     detail: DataChannelEventDetail::BufferedAmountChange(sent),
-```
+The diff is `rust-sdks-room-session-release.patch`: `livekit/src/room/mod.rs`
+(parts (a) and (b)), `livekit/src/rtc_engine/rtc_events.rs` and
+`rtc_session.rs` (part (a)'s `DataChannel` hunk, and part (c)). Nothing in
+`webrtc-sys` or `libwebrtc` changes, so the fork's cryptor detach (a video
+receiver keeps its transformer) and the console-role change are exactly as
+they were.
 
 The change to `close()`'s receiver type compiles against every caller in the
 crate:
@@ -235,9 +203,11 @@ crate:
   which is an `Arc`.
 - `handle_disconnected` calls it through its own `Arc` clone.
 
-This is read from the source, not compiled.
+Compiled on Windows from the pinned revision (the rig build, 2026-09-29), and
+on macOS from the vendored copy (`cargo check`, 2026-09-27). `rustfmt --check`
+passes the three files with the fork's own `rustfmt.toml`.
 
-## Is it safe against the video segfault? (believed)
+## Is it safe against the video segfault? (read on the rig; the reasoning is believed)
 
 The segfault needed a **null** handed to
 `SetDepacketizerToDecoderFrameTransformer` on a live video receive stream. This
@@ -258,8 +228,10 @@ PeerConnection lives.
 The one ordering this cannot rule out without a run: the last reference being
 dropped **on the transformer's own thread**, which would make it join itself.
 Nothing found in the headers posts work that holds a reference past the
-stream's `Reset()`, so this is believed not to happen.
-
+stream's `Reset()`, so this is believed not to happen. The rig has not seen
+it. The vendored copy (block I) destroyed 28 PeerConnections, at least ten of
+them with a received video track. The pinned revision destroyed 18, eleven of
+them with one. Neither crashed or hung at close (*Verification*).
 ## What else changes once PeerConnections are destroyed
 
 - **The media engine can now be terminated.** Until now,
@@ -288,8 +260,8 @@ stream's `Reset()`, so this is believed not to happen.
       again once the call is connected. The call's PeerConnection is alive
       and has already initialised the engine, so creating the hold only adds
       a reference and runs no `Init`. The defect stays with that one call, as
-      before, and hang-up no longer releases the last reference. This does
-      nothing on today's fork, which never releases a PeerConnection.
+      before, and hang-up no longer releases the last reference. Before this
+      commit it did nothing, because no PeerConnection was ever released.
     - **The remaining risk** is two failures in a row: the hold fails before
       the connect **and** after it. The log says so at warn level (`could
       not hold the media engine after connect either`), and that call's
@@ -302,12 +274,14 @@ stream's `Reset()`, so this is believed not to happen.
   - Row: `~PeerConnection` should appear once per call, and
     `WebRtcVoiceEngine::Terminate` should still read 0. The log should show
     `media engine initialised and held` on the first call and `already
-    held` on every later one, and never `could not hold`. The fallback
-    cannot be forced on the rig without a fault injection, so it is
-    believed from the source, not verified.
+    held` on every later one, and never `could not hold`. **Read so on the
+    rig from the pinned revision** (2026-09-29, 18 sessions; *Verification*).
+    The fallback cannot be forced on the rig without a fault injection, so
+    it is believed from the source, not verified.
 - **Events at close.** `handle_participant_disconnect` emits
   `TrackUnsubscribed`, `TrackUnpublished` and `ParticipantDisconnected` for
-  each participant still in the room. It does so inside `room.close()`, while
+  each participant still in the room. It does so inside `room.close()`,
+  after `room_task` has stopped and before the dispatcher is cleared, while
   the shell's pump is still running. livekit-client in the browser does the
   same on disconnect.
   - The pump handles these events as it would mid-call: the roster, and
@@ -327,34 +301,137 @@ stream's `Reset()`, so this is believed not to happen.
   holds is bounded by what that call subscribed to, and hang-up releases
   them all.
 
-## How to verify (rig, a `--debug` bundle)
+## Verification
 
-These values should be read on the Windows rig.
+**Verified on the Windows rig, twice.** Both readings are on Windows 11 Pro
+26200 under WARP, a `--debug` bundle with `WHERRY_WEBRTC_LOG=1`, one fresh
+shell process, the in-guest Edge peer, and both cameras on: the peer's is
+Chromium's fake one, the shell's the guest's virtual camera. Threads are
+counted by name with `scripts/rig/guest/thread-names.ps1`. `~PeerConnection`
+is libwebrtc's own `PeerConnection::~PeerConnection()` line.
 
-1. Make a debug bundle with `WHERRY_WEBRTC_LOG=1`, so the LS_VERBOSE
-   `PeerConnection::~PeerConnection()` line is written.
-2. Run a fresh process. Count threads with
-   `C:\rig\scripts\thread-names.ps1` (a by-name count of
-   `FrameCryptorTransformer`).
-3. Run six calls against `peer`. In each call, the peer answers and turns its
-   camera on, and the shell turns its camera on. Wait 20 s, take a census,
-   hang up **the shell first**, wait 5 s, take a census.
-4. Expect:
-   - 4 cryptor threads during each call, and **0** after each hang-up
-     (was 1, 2, … 6);
-   - one `~PeerConnection` per call. `single_peer_connection` defaults to on, and block B read one `PeerConnection()` per call. The shell's idle `MEDIA_ENGINE` PeerConnection is the one constructor per process that should never be matched by a destructor;
-   - `WebRtcVoiceEngine::Terminate` 0 times;
-   - no crash.
-5. Repeat with **the peer hanging up first**, and with a camera off/on flip
-   inside one call. The thread count should still return to 0 after
-   hang-up.
-6. Run S-18 and D-74 again. The PeerConnection's destruction is new, and
-   those rows live near it.
+**Before the change** (block H, 2026-09-27, `rig/candidate-plus`, the fork at
+`6a32ecc`), five video calls in one process:
 
-## Upstream
+| | Cryptor threads during / after |
+|---|---|
+| Shell hangs up first | 4 / 1, 5 / 2, 6 / 3 |
+| Peer hangs up first | 7 / 4, 8 / 5 |
+| `~PeerConnection` | 0 in 5 calls |
 
-Part (a) is already upstream (#1405). Part (b) should go upstream as its own
-PR alongside #1408: *"Room::close leaves remote participants' publication
-callbacks in a cycle that keeps the RtcEngine alive"*, with the rig's reading
-as its evidence once it exists. Rebasing the fork onto an upstream that
-contains #1405 would drop part (a) from this commit.
+**Vendored copy** (block I, 2026-09-27, `rig/batch4`). The change was applied
+to a copy of the crate through a `[patch]`, plus two `Drop` log lines, in
+27 calls:
+
+| | Cryptor threads during / after | After `voice: session closed` |
+|---|---|---|
+| Shell hangs up first, 6 calls | 4 / **0** each | `RoomSession dropped` +1 to +4 ms, `PeerTransport Publisher dropped` +1 to +5 ms, `~PeerConnection` +3 to +20 ms |
+| Peer hangs up first, 2 calls | 4 / 0 | `PeerTransport` +1 ms, `~PeerConnection` +2 ms |
+| Peer flips its camera before the shell hangs up, 2 calls | 4 / 0 | `~PeerConnection` +38 / +4 ms |
+
+Over the whole process: `PeerConnection()` 29, `~PeerConnection` 28 (only
+the idle media-engine one survives). `WebRtcVoiceEngine::Terminate` 0.
+
+**Pinned revision** (2026-09-29, 15:54 to 16:28 UTC):
+- **The build.** The pin commit on `rig/fork-pin-0929`, built as `2b43602`
+  on `c2a93d0`. `main`'s tip `28b1fa7` adds one docs file to that, so the
+  application tree is `main` plus the pin. `WherryBuild`: typecheck, the client tests and
+  tauri all rc 0. Cargo fetched `06f0a5d` from GitHub and compiled
+  `webrtc-sys`, `libwebrtc` and `livekit` from it. The guest's checkout of
+  the three changed files hashes equal to the pushed ones (SHA-256
+  `8a5410e2…` `room/mod.rs`, `8d05fc8f…` `rtc_events.rs`, `3773f4bf…`
+  `rtc_session.rs`). Installed `wherry-desktop.exe`: 53,056,512 bytes,
+  SHA-256 `DB455388B4871B951D11D27B2B07CB9A79A497357D9C3C6FB866DF6D1DFA0687`.
+- **Idle, before any call:** 19 threads, 0 `FrameCryptorTransformer`.
+- **The census.** In each call both cameras were on for 20 s, then a
+  census; then the hang-up. The log was then polled for `voice: session
+  closed` and `~PeerConnection`, and a second census taken.
+
+  | Leg | Cryptor threads during / after | Threads during / after |
+  |---|---|---|
+  | Shell hangs up first, 7 calls (the seventh after the D-84 leg) | **4 / 0** in every call | 38–42 / 21–24 |
+  | Peer hangs up first, 2 calls (the shell 3 s later) | 4 / 0, 4 / 0 | 39–40 / 21–22 |
+  | Peer turns its camera off and on just before the shell hangs up, 2 calls | 4 / 0, 4 / 0 | 38–40 / 20–22 |
+
+- **`~PeerConnection`** was logged once per call, as the very next line after
+  `voice: session closed`, in the same logged second. Nothing near 10 or
+  20 s, so part (c) held.
+  - The log's timestamps have a resolution of one second. The pinned build
+    has no `livekit[rig]` lines, so block I's millisecond delays are not
+    re-read here, only their order.
+- **S-18's shape, twice.** A call shares a screen with sound and stops it
+  (`screen audio muted after … kept published`), then hangs up. The next
+  call connected, and the shell was still answering 12 s into it. This
+  matters because the call's PeerConnection is now destroyed between the
+  two calls.
+- **The whole process, 18 sessions.** These are the eleven census calls,
+  S-18's four, and the D-84 leg's three (`turn-relay-plan.md`, T4 stage log),
+  run in the same process:
+  - `PeerConnection()` 19 and `~PeerConnection` **18**: only the idle
+    `MEDIA_ENGINE` hold survives.
+  - `WebRtcVoiceEngine::Terminate` **0**.
+  - `media engine initialised and held` once, then `already held` 17 times;
+    `could not hold` 0.
+  - `panicked` 0, no access violation, `OperationFailed` 0 and `last start
+    failed` 0 (D-74).
+  - Final census: 21 threads, 0 `FrameCryptorTransformer`.
+- **One reading, recorded, not judged.** `voice: session closed in N ms`
+  read 23 to 241 ms on the calls with cameras and 40 to 92 ms on those
+  without.
+  - Block I's vendored build read 2 to 361 ms over 27 sessions.
+  - Earlier builds' rig logs, 2026-09-26 and the morning of 2026-09-27, read
+    0 to 135 ms.
+  - Close now includes releasing the participants, and the PeerConnection is
+    destroyed on the line after it.
+  - Row D-21 asks for under 100 ms, a bar written for audio-only calls on
+    macOS. The rig cannot settle a timing (`docs/windows-rig.md` §8).
+
+**Not read:**
+- a redial inside the old 10 s window (nothing lags now, so nothing to
+  catch);
+- the hold's retry after a failed hold (it needs a fault injection);
+- macOS, from the pinned revision. The Mac's scratch disk had 3.6 GB free,
+  below the 5 GB this build needs. The vendored copy passed `cargo check`
+  there on 2026-09-27.
+
+## Upstream — drafted, not filed
+
+Part (a) is already upstream (#1405), so rebasing the fork onto an upstream
+that contains it drops part (a) from this commit. Parts (b) and (c) are not
+upstream. They go as their own pull request beside #1408, carried with the
+other fork commits (CLAUDE.md, *Carry all fork commits upstream together*),
+once the CLA for #1408 is signed. Filing is the maintainer's.
+
+**Title:** Room::close leaves remote participants, and a waiting fast-publish
+negotiation, holding the RtcEngine and its PeerConnection
+
+After `Room::close()`, the session's `PeerConnection` is never destroyed
+while a remote participant is still in the room at hang-up. Two things keep
+it alive:
+- Each `RemoteTrackPublication`'s `on_subscribed` / `on_unsubscribed`
+  closures (`RemoteParticipant::add_publication`) capture the participant,
+  and the participant holds the publication and an `Arc<RtcEngine>`. Only
+  `remove_publication` breaks that cycle. It runs when a participant leaves
+  or unpublishes, and on a full reconnect (`handle_restarting`), but not in
+  `RoomSession::close()`.
+- In fast-publish mode, the unpublishes that `close()` itself performs start
+  `execute_negotiation_with_retry`. That task holds `Arc<SessionInner>` for
+  up to its 10 s answer timeout (and one retry), and the answer cannot
+  arrive once the signal client is closed.
+
+Where frame encryption is on, every received video track's
+`FrameCryptorTransformer` and its thread live as long as that
+`PeerConnection`, so they are never reclaimed. Reproduction (Windows 11,
+E2EE, a remote peer publishing a camera): connect, subscribe, `close()` while
+the peer is still in the room, and drop the `Room`. Repeat N times, then
+count threads by name (`GetThreadDescription`). `PeerConnection::~PeerConnection`
+never logs.
+
+The fix in this commit:
+- `close()` calls `handle_participant_disconnect` for each remaining
+  participant after `room_task` is joined and before `dispatcher.clear()`.
+- `SessionInner::close` wakes and ends a waiting negotiation.
+
+With it, over 18 calls the thread count returns to the pre-call number after
+every hang-up, and `~PeerConnection` runs once per call (numbers above).
+Happy to open a PR.
