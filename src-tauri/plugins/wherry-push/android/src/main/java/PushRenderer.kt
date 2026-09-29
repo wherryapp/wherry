@@ -2,6 +2,10 @@
 // §2, point 1, and §6.2). The server sends a kind and a per-device reference,
 // never a name or a sentence, so what the lock screen says is decided here,
 // by kind, from the same table the APNs builder uses (server/src/push/payload.ts).
+// Since 2026-09-29 a message may be named -- who and which chat, from the
+// page's own labels and ids sealed to this device, never what was said
+// (NotificationNames.kt, docs/prompts/notification-names-plan.md) -- and the
+// fixed text stays the fallback and the lock screen's version.
 //
 // Channels: this plugin owns `messages`, `calls` (missed calls, and the
 // generic incoming call when no calls plugin takes a ring) and `other`
@@ -10,15 +14,20 @@
 
 package app.wherry.push
 
+import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 
 internal object PushRenderer {
   private const val TAG = "wherry-push"
@@ -104,8 +113,37 @@ internal object PushRenderer {
   /**
    * Posts the notification for one kind. Returns false when nothing was
    * posted (notifications off, or the permission refused).
+   *
+   * [ids] are what `e` named (PushDispatch): with a label for the
+   * conversation, the notification is named (NamedText,
+   * notification-names-plan.md §1.3). **Never on a secure lock screen**
+   * (§1.4), by three layers, because Android gives an app no way to make the
+   * lock screen show a public version while the person's "sensitive content"
+   * setting says show all (an app-created channel's lockscreen visibility is
+   * overwritten by the system, `PreferencesHelper.createNotificationChannel`;
+   * batch 0929's lockscreen finding):
+   *
+   * 1. At post: while [nameHidden] the notification is posted nameless.
+   * 2. On a lock-state change the process hears (screen off, screen on,
+   *    unlock, the activity coming to the front: [refresh]) every tracked
+   *    notification still showing is posted again, quietly, named or not
+   *    as the new state says.
+   * 3. A named notification is VISIBILITY_SECRET where a lock is set
+   *    (measured on API 36: SystemUI then hides it on the lock screen even
+   *    with "show all content" on; SECRET would hide it on a swipe keyguard
+   *    too, so a phone with no lock keeps PRIVATE): should (2) miss the screen
+   *    going off -- the process dead, or cached and its broadcast deferred
+   *    (Android 14+) -- the secure lock screen hides it rather than show a
+   *    name. A nameless one is VISIBILITY_PRIVATE with the fixed-text public
+   *    version, so the lock screen still says "New message".
+   *
+   * A swipe keyguard is no privacy boundary (anyone can swipe it), so it
+   * counts as unlocked, as the OS's own public mode does.
+   *
+   * [quiet] re-posts without sound or heads-up (a message is not insistent,
+   * so setOnlyAlertOnce is right here; a ring's re-post must not use it).
    */
-  fun show(context: Context, kind: String, ref: String?): Boolean {
+  fun show(context: Context, kind: String, ref: String?, ids: NamedIds? = null, quiet: Boolean = false): Boolean {
     ensureChannels(context)
     val compat = NotificationManagerCompat.from(context)
     if (!compat.areNotificationsEnabled()) {
@@ -114,10 +152,32 @@ internal object PushRenderer {
     }
     val group = groupFor(kind)
     val tag = tagFor(group, ref)
+    val fixed = textFor(kind)
+    val labels = if (ids != null) LabelStore.get(context) else Labels.EMPTY
+    val hidden = if (ids != null) nameHidden(context) else false
+    val text = NamedText.compose(kind, fixed, ids, labels, hidden)
+    if (ids != null) ensureLockReceiver(context)
     val builder = NotificationCompat.Builder(context, channelFor(group))
       .setSmallIcon(R.drawable.ic_stat_wherry)
-      .setContentText(textFor(kind))
+      .setContentText(text.text)
       .setAutoCancel(true)
+      .setOnlyAlertOnce(quiet)
+      .setVisibility(
+        // SECRET hides a notification on a swipe keyguard too (measured on
+        // API 36), so it is used only where a lock is set: a phone with no
+        // secure lock keeps its named notification on the lock screen.
+        if (text.named && keyguardSecure(context)) {
+          NotificationCompat.VISIBILITY_SECRET
+        } else {
+          NotificationCompat.VISIBILITY_PRIVATE
+        },
+      )
+      .setPublicVersion(
+        NotificationCompat.Builder(context, channelFor(group))
+          .setSmallIcon(R.drawable.ic_stat_wherry)
+          .setContentText(fixed)
+          .build(),
+      )
       .setCategory(
         when (group) {
           Group.CALL -> NotificationCompat.CATEGORY_MISSED_CALL
@@ -128,6 +188,7 @@ internal object PushRenderer {
       .setPriority(
         if (group == Group.CONTACT) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH,
       )
+    text.title?.let { builder.setContentTitle(it) }
     // A ring shown here is the generic fallback: nothing will cancel it, so
     // it goes away by itself when the ring would have.
     if (kind == "call") {
@@ -136,13 +197,127 @@ internal object PushRenderer {
     contentIntent(context, kind, ref, tag)?.let { builder.setContentIntent(it) }
     return try {
       compat.notify(tag, idFor(group), builder.build())
-      Log.i(TAG, "posted $kind on ${channelFor(group)}")
+      // Rows A-44 onward read this line. `why` never carries a name.
+      Log.i(TAG, "posted $kind on ${channelFor(group)} (${text.why}${if (quiet) ", renamed" else ""})")
+      // Tracked for [refresh] only while the newest post under this tag is
+      // one the lock state decides; any other post replaced it, and a late
+      // refresh must not bring the older ids back over it.
+      if (ids != null && (text.why == "named" || text.why == "locked")) {
+        track(Tracked(kind, ref, ids, tag, idFor(group), text.named))
+      } else {
+        untrack(tag)
+      }
       true
     } catch (e: SecurityException) {
       // POST_NOTIFICATIONS refused between the check and the post.
       Log.i(TAG, "not posted: ${e.javaClass.simpleName}")
       false
     }
+  }
+
+  /**
+   * Whether a name must not be shown now: the device is locked behind a
+   * PIN, pattern or password (API 22's `isDeviceLocked`), or the screen is
+   * off with such a lock set, since the next thing shown is the lock screen
+   * and `isDeviceLocked` lags the screen going off (the calls plugin's rule,
+   * measured on API 36 in batch 0929's lockscreen finding). A swipe keyguard
+   * and an unlocked phone are false.
+   */
+  private fun nameHidden(context: Context): Boolean {
+    val keyguard = context.getSystemService(KeyguardManager::class.java) ?: return true
+    if (keyguard.isDeviceLocked) return true
+    val power = context.getSystemService(PowerManager::class.java) ?: return keyguard.isKeyguardSecure
+    return keyguard.isKeyguardSecure && !power.isInteractive
+  }
+
+  /** A PIN, pattern or password is set (whether or not locked now). */
+  private fun keyguardSecure(context: Context): Boolean =
+    context.getSystemService(KeyguardManager::class.java)?.isKeyguardSecure ?: true
+
+  // MARK: - Named or not as the lock state changes
+
+  /** A notification whose name depends on the lock state: posted named, or
+   *  nameless only because the phone was locked. Process memory only: a
+   *  process that dies leaves the notification as last posted, which layer
+   *  3 of [show] (VISIBILITY_SECRET on a named one) keeps off the lock
+   *  screen. */
+  private data class Tracked(
+    val kind: String,
+    val ref: String?,
+    val ids: NamedIds,
+    val tag: String,
+    val id: Int,
+    val named: Boolean,
+  )
+
+  private val tracked = LinkedHashMap<String, Tracked>()
+  private var lockReceiver: BroadcastReceiver? = null
+
+  @Synchronized
+  private fun track(entry: Tracked) {
+    tracked[entry.tag] = entry
+  }
+
+  @Synchronized
+  private fun untrack(tag: String) {
+    tracked.remove(tag)
+  }
+
+  /**
+   * Listens, for the life of the process, for the three broadcasts a lock
+   * state change sends. **Exported on purpose** (batch 0929's lockscreen
+   * finding): USER_PRESENT is sent by SystemUI's uid, and a not-exported
+   * runtime receiver never gets it; all three are protected broadcasts, so
+   * no app can send them. Best effort: Android 14+ defers broadcasts to a
+   * cached process, which is what layer 3 is for.
+   */
+  @Synchronized
+  fun ensureLockReceiver(context: Context) {
+    if (lockReceiver != null) return
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context, intent: Intent) {
+        refresh(context, intent.action ?: "?")
+      }
+    }
+    val filter = IntentFilter().apply {
+      addAction(Intent.ACTION_USER_PRESENT)
+      addAction(Intent.ACTION_SCREEN_ON)
+      addAction(Intent.ACTION_SCREEN_OFF)
+    }
+    try {
+      ContextCompat.registerReceiver(context.applicationContext, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+      lockReceiver = receiver
+    } catch (e: Exception) {
+      Log.w(TAG, "lock receiver not registered: ${e.javaClass.simpleName}")
+    }
+  }
+
+  /**
+   * Posts again, quietly, every tracked notification still showing whose
+   * name the lock state now says otherwise: named ones nameless when the
+   * screen goes off behind a secure lock, nameless ones named at the unlock.
+   * [why] is for the log line.
+   */
+  fun refresh(context: Context, why: String) {
+    val hidden = nameHidden(context)
+    val stale: List<Tracked>
+    synchronized(this) {
+      stale = tracked.values.filter { it.named == hidden }
+    }
+    if (stale.isEmpty()) return
+    val manager = context.getSystemService(NotificationManager::class.java) ?: return
+    val showing = manager.activeNotifications.map { it.tag to it.id }.toSet()
+    var count = 0
+    for (entry in stale) {
+      if ((entry.tag to entry.id) !in showing) {
+        untrack(entry.tag)
+        continue
+      }
+      show(context, entry.kind, entry.ref, entry.ids, quiet = true)
+      count += 1
+    }
+    // Rows read this line: how many, and which way, never a name.
+    Log.i(TAG, "posted again ${if (hidden) "nameless" else "named"}: $count ($why)")
   }
 
   /** Removes delivered notifications for a conversation: its messages and

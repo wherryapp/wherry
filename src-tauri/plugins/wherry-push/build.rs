@@ -12,6 +12,9 @@ const COMMANDS: &[&str] = &[
   "clear",
   "set_badge",
   "open_settings",
+  // docs/prompts/notification-names-plan.md §4: the label map a push is
+  // named from. Android only for now; iOS answers it once N-ios exists.
+  "set_labels",
   "register_listener",
   "remove_listener",
 ];

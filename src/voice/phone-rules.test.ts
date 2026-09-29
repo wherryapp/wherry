@@ -12,6 +12,7 @@ import {
   nativeApiBase,
   nativeEndReason,
   nativeRingOf,
+  notificationLabels,
   PAGE_ONLY,
   pageAliveWanted,
   pageRingDuties,
@@ -560,6 +561,28 @@ test("labels are names only: the title, or the other members' display names", ()
 test("the label cache keeps the first (newest) conversations up to its cap", () => {
   const list = Array.from({ length: 5 }, (_, i) => conversation({ id: `c${i}` }));
   assert.deepEqual(Object.keys(ringLabels(list, SELF, 3)), ["c0", "c1", "c2"]);
+});
+
+test("notification labels are ringLabels, with a hub channel as Hub › #channel", () => {
+  const list = [
+    conversation({ id: "a" }),
+    conversation({ id: "b", kind: "group", title: "Hiking" }),
+    conversation({ id: "v", kind: "channel", channelKind: "voice", title: "Lounge", hubId: "h1" }),
+    conversation({ id: "t", kind: "channel", channelKind: "text", title: "general", hubId: "h1" }),
+    conversation({ id: "o", kind: "channel", title: "orphan", hubId: "h-unknown" }),
+  ];
+  const labels = notificationLabels(list, SELF, new Map([["h1", "Climbers"]]));
+  assert.deepEqual(labels, {
+    a: "Alice",
+    b: "Hiking",
+    t: "Climbers › #general",
+    o: "#orphan",
+  });
+  // Everything that is not a channel is exactly the ring's label.
+  const rings = ringLabels(list, SELF);
+  for (const id of ["a", "b"] as const) assert.equal(labels[id], rings[id]);
+  // The same cap.
+  assert.deepEqual(Object.keys(notificationLabels(list, SELF, new Map(), 2)), ["a", "b"]);
 });
 
 test("the labels key ignores insertion order and changes with any name", () => {

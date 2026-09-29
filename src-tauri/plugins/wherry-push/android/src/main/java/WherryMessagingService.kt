@@ -58,7 +58,7 @@ internal object PushDispatch {
         // its ring.
         Log.i(TAG, "in front: $kind not posted")
       } else {
-        PushRenderer.show(context, kind, ref)
+        PushRenderer.show(context, kind, ref, names(context, kind, data["e"]))
       }
     }
     PushState.plugin?.emitReceived(kind)
@@ -117,9 +117,47 @@ internal object PushDispatch {
   /** The plaintext fields of an encrypted ring, or null when it cannot be
    *  opened. Values are strings, as FCM's own data map is. */
   private fun open(context: Context, kind: String, encoded: String): Map<String, String>? {
+    val out = openEnvelope(context, encoded, "ring") ?: return null
+    // The outer kind is what the service dispatched on; the inner one is
+    // what the server signed into the ciphertext. They must agree.
+    if (out["k"] != kind) {
+      Log.w(TAG, "ring not opened: inner kind differs from outer")
+      return null
+    }
+    // Row A-53 reads this line: the field names only, never the values
+    // (the call id and the decline token are what the envelope hides).
+    Log.i(TAG, "ring opened: $kind (${out.keys.sorted().joinToString(",")})")
+    return out
+  }
+
+  /**
+   * The ids a message, mention or missed-call push names itself from
+   * (notification-names-plan.md §1): `e` opened with the same key pair as a
+   * ring, then checked by NamesGate. Null -- the fixed text -- when there is
+   * no `e` (an older server), or it does not open, or it is not what the
+   * outer kind says. Rows A-65 to A-68 read these lines: the outcome and the
+   * field names, never an id.
+   */
+  private fun names(context: Context, kind: String, encoded: String?): NamedIds? {
+    if (encoded == null) return null
+    return when (val decision = NamesGate.decide(kind, openEnvelope(context, encoded, "names"))) {
+      is NamesDecision.Named -> {
+        Log.i(TAG, "names opened: $kind (conv${if (decision.ids.sender != null) ",from" else ""})")
+        decision.ids
+      }
+      is NamesDecision.Refuse -> {
+        Log.w(TAG, "names not opened: $kind (${decision.reason})")
+        null
+      }
+    }
+  }
+
+  /** RFC 8291 body -> its JSON's fields as strings, or null (logged as
+   *  "[what] not opened: ..."). */
+  private fun openEnvelope(context: Context, encoded: String, what: String): Map<String, String>? {
     val keys = RingKeys.load(context)
     if (keys == null) {
-      Log.w(TAG, "ring not opened: no key")
+      Log.w(TAG, "$what not opened: no key")
       return null
     }
     return try {
@@ -131,21 +169,12 @@ internal object PushDispatch {
         val value = json.get(key)
         if (value != JSONObject.NULL) out[key] = value.toString()
       }
-      // The outer kind is what the service dispatched on; the inner one is
-      // what the server signed into the ciphertext. They must agree.
-      if (out["k"] != kind) {
-        Log.w(TAG, "ring not opened: inner kind differs from outer")
-        return null
-      }
-      // Row A-53 reads this line: the field names only, never the values
-      // (the call id and the decline token are what the envelope hides).
-      Log.i(TAG, "ring opened: $kind (${out.keys.sorted().joinToString(",")})")
       out
     } catch (e: EnvelopeException) {
-      Log.w(TAG, "ring not opened: ${e.message}")
+      Log.w(TAG, "$what not opened: ${e.message}")
       null
     } catch (e: Exception) {
-      Log.w(TAG, "ring not opened: ${e.javaClass.simpleName}")
+      Log.w(TAG, "$what not opened: ${e.javaClass.simpleName}")
       null
     }
   }

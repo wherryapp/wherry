@@ -78,6 +78,7 @@ async function invoke(command: string, args: Json = {}): Promise<unknown> {
       return { token: plugin.token, environment: plugin.environment, ...(plugin.keys ?? {}) };
     case "unregister":
     case "clear":
+    case "set_labels":
     case "set_badge":
     case "open_settings":
     case "remove_listener":
@@ -734,6 +735,25 @@ test("after a sign-out and back in, push is off until turned on again", async ()
   await quiet(settle);
   assert.equal(server.unregisters.length, 1);
   again.stop();
+});
+
+test("set_labels carries the two maps, and a sign-out empties them", async () => {
+  await native.setLabels({
+    conversations: { c1: { label: "Alice", group: false } },
+    users: { "u-alice": "Alice" },
+  });
+  assert.deepEqual(pluginCalls("set_labels"), [
+    { conversations: { c1: { label: "Alice", group: false } }, users: { "u-alice": "Alice" } },
+  ]);
+  native.noteSignOut();
+  await quiet(settle);
+  assert.deepEqual(pluginCalls("set_labels").at(-1), { conversations: {}, users: {} });
+});
+
+test("set_labels without a plugin is a shrug", async () => {
+  plugin.present = false;
+  await native.setLabels({ conversations: {}, users: {} });
+  assert.deepEqual(pluginCalls("set_labels"), []);
 });
 
 test("a sign-out whose logout never reached the server still stops the pushes", async () => {

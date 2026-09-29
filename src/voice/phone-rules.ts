@@ -532,6 +532,30 @@ export function ringLabels(
   return labels;
 }
 
+/**
+ * The conversation labels both plugins are given
+ * (docs/prompts/notification-names-plan.md §1.2): `ringLabels`, with a hub
+ * channel written the way the app names it outside its hub, `Hub › #channel`
+ * (`#channel` while the hub's summary is not known). One computation for the
+ * ring and the message, so the two cannot disagree about what a conversation
+ * is called. `hubNames` is hub id to name, from the engine's hubs summary.
+ */
+export function notificationLabels(
+  conversations: readonly StoredConversation[],
+  selfUserId: string,
+  hubNames: ReadonlyMap<string, string>,
+  max: number = MAX_LABELS,
+): Record<string, string> {
+  const labels = ringLabels(conversations, selfUserId, max);
+  for (const conversation of conversations) {
+    if (conversation.kind !== "channel" || !Object.hasOwn(labels, conversation.id)) continue;
+    const channel = `#${conversation.title ?? "channel"}`;
+    const hub = conversation.hubId ? hubNames.get(conversation.hubId) : undefined;
+    labels[conversation.id] = hub ? `${hub} › ${channel}` : channel;
+  }
+  return labels;
+}
+
 /** A stable key for "did the labels change", so the bridge writes the
  *  native store only when they did. */
 export function labelsKey(labels: Readonly<Record<string, string>>): string {
