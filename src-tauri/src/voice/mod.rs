@@ -119,7 +119,7 @@ pub mod playout;
 
 /// Which SDK revision this shell carries; shown by the probe so a call
 /// details readout can name it. Bump with the `rev` in Cargo.toml.
-pub const LIVEKIT_REV: &str = "rust-sdks dee418bb + wherryapp/rust-sdks wherry/windows-console-role 6a32ecc0 (2026-09-15)";
+pub const LIVEKIT_REV: &str = "rust-sdks dee418bb + wherryapp/rust-sdks wherry/windows-console-role 06f0a5d0 (2026-09-29)";
 
 /// The name every per-call event from this module is emitted under.
 const EVENT: &str = "voice";

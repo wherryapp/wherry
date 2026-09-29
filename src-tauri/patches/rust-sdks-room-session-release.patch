@@ -1,0 +1,206 @@
+From 06f0a5d0c59e41fb94c5f84658ca5207103a1647 Mon Sep 17 00:00:00 2001
+From: Connor Tarabocchia <318465412+ctarabocchia@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 11:44:46 -0400
+Subject: [PATCH] livekit: release the room session and its PeerConnection at
+ close
+
+With a subscribed video track under E2EE, every call left one
+FrameCryptorTransformer thread behind for the life of the process. The
+detach in e75845b deliberately keeps a video receiver's transformer
+attached (a null one segfaults in Init()), so that thread lives exactly as
+long as the webrtc::PeerConnection -- and after Room::close() the
+PeerConnection was never destroyed. Measured on Windows 11 with a by-name
+thread count: 1, 2, 3 ... threads left after successive video calls, and
+PeerConnection::~PeerConnection() never logged.
+
+Three references kept the session alive after close():
+
+- Room::connect registered e2ee_manager.on_state_changed with a closure
+  capturing a strong Arc<RoomSession>, stored inside that session's own
+  E2eeManager. The capture is now Arc::downgrade. With it goes the
+  DataChannel buffered-amount callback that captured its own channel. Both
+  hunks are livekit/rust-sdks#1405 (16530d2), which is newer than this
+  branch's base.
+- RoomSession::close() left the remote participants in place. Each remote
+  publication's on_subscribed/on_unsubscribed closures capture their
+  participant, which holds the publication and the RtcEngine, so a peer
+  still in the room at hang-up kept the engine, its session and the
+  PeerConnection alive. close() now releases every remaining participant
+  through handle_participant_disconnect, as handle_restarting already does.
+  It does so after room_task has been joined, so no queued engine event can
+  re-create a participant or publication behind it, and before
+  dispatcher.clear(), so the TrackUnsubscribed / TrackUnpublished /
+  ParticipantDisconnected events still reach listeners.
+- A fast-publish negotiation started by the unpublishes at hang-up held
+  Arc<SessionInner> while waiting up to 10 s (and a retry) for an answer the
+  closed signal task can never deliver. SessionInner::close now clears
+  waiting_for_answer and wakes the negotiation loop (notify_one keeps a
+  permit, so the wake cannot be missed), and the loop stops on a closed
+  session at the top of each pass and after it is woken.
+
+close() takes self: &Arc<Self> for the release; every caller already holds
+an Arc.
+
+Measured on Windows 11 (a debug build carrying exactly this change, plus two
+Drop log lines): six video calls with the local side hanging up first read 4
+cryptor threads during each call and 0 after each; the peer hanging up
+first, and a peer camera flip just before hang-up, also read 0 after.
+~PeerConnection logged 3 to 38 ms after the session closed, never near the
+10 s answer timeout. Over 27 calls in one process the only PeerConnection
+never destroyed was the application's own idle one, and
+WebRtcVoiceEngine::Terminate ran 0 times.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ livekit/src/room/mod.rs               | 31 +++++++++++++++++++++++++--
+ livekit/src/rtc_engine/rtc_events.rs  |  8 +++----
+ livekit/src/rtc_engine/rtc_session.rs | 23 +++++++++++++++++++-
+ 3 files changed, 54 insertions(+), 8 deletions(-)
+
+diff --git a/livekit/src/room/mod.rs b/livekit/src/room/mod.rs
+index 492e72b..9c8e546 100644
+--- a/livekit/src/room/mod.rs
++++ b/livekit/src/room/mod.rs
+@@ -759,8 +759,14 @@ impl Room {
+ 
+         e2ee_manager.on_state_changed({
+             let dispatcher = dispatcher.clone();
+-            let inner = inner.clone();
++            // Weak: the manager is a field of `RoomSession`, so a strong capture
++            // here is a cycle that keeps the session -- and through the engine
++            // every PeerConnection it ever created -- alive after `close()`.
++            let weak_inner = Arc::downgrade(&inner);
+             move |participant_identity, state| {
++                let Some(inner) = weak_inner.upgrade() else {
++                    return;
++                };
+                 // Forward e2ee events to the room
+                 // (Ignore if the participant is not in the room anymore)
+ 
+@@ -1164,7 +1170,7 @@ impl RoomSession {
+         Ok(())
+     }
+ 
+-    async fn close(&self, reason: DisconnectReason) -> RoomResult<()> {
++    async fn close(self: &Arc<Self>, reason: DisconnectReason) -> RoomResult<()> {
+         let Some(handle) = self.handle.lock().await.take() else { Err(RoomError::AlreadyClosed)? };
+ 
+         // remove published tracks
+@@ -1185,6 +1191,27 @@ impl RoomSession {
+         let _ = handle.remote_dt_task.await;
+         let _ = handle.room_handle.await;
+ 
++        // Release every remote participant still in the room, the way a full
++        // reconnect does (`handle_restarting`). Each remote publication holds
++        // callbacks that capture its participant, and the participant holds
++        // the publication and the `RtcEngine`: a cycle that `remove_publication`
++        // is the only thing to break. Left in place, it keeps the engine's
++        // session -- its PeerConnection(s), every transceiver, and each subscribed
++        // track's `RtpReceiver` -- alive for the life of the process, which is
++        // where a video receiver's frame transformer (and its thread) lives.
++        //
++        // Only after `room_task` has been joined: until then it can still
++        // handle an engine event queued before the close (its `select!` is
++        // unbiased, and it awaits a handler already in flight), and a
++        // `ParticipantUpdate` or track event handled after this loop would
++        // re-create a participant or publication and re-form the cycle. Before
++        // `dispatcher.clear()`, so the events it emits still reach listeners.
++        let participants: Vec<RemoteParticipant> =
++            self.remote_participants.read().values().cloned().collect();
++        for participant in participants {
++            self.clone().handle_participant_disconnect(participant);
++        }
++
+         self.dispatcher.clear();
+         Ok(())
+     }
+diff --git a/livekit/src/rtc_engine/rtc_events.rs b/livekit/src/rtc_engine/rtc_events.rs
+index a59aab5..6b93271 100644
+--- a/livekit/src/rtc_engine/rtc_events.rs
++++ b/livekit/src/rtc_engine/rtc_events.rs
+@@ -60,7 +60,6 @@ pub enum RtcEvent {
+     },
+     DataChannelBufferedAmountChange {
+         sent: u64,
+-        amount: u64,
+         kind: DataPacketKind,
+     },
+ }
+@@ -166,16 +165,15 @@ fn on_message(emitter: RtcEmitter, kind: DataPacketKind) -> rtc::data_channel::O
+ 
+ fn on_buffered_amount_change(
+     emitter: RtcEmitter,
+-    dc: DataChannel,
+     kind: DataPacketKind,
+ ) -> rtc::data_channel::OnBufferedAmountChange {
++    // Never capture the DataChannel here: the callback is stored on it.
+     Box::new(move |sent| {
+-        let amount = dc.buffered_amount();
+-        let _ = emitter.send(RtcEvent::DataChannelBufferedAmountChange { sent, amount, kind });
++        let _ = emitter.send(RtcEvent::DataChannelBufferedAmountChange { sent, kind });
+     })
+ }
+ 
+ pub fn forward_dc_events(dc: &mut DataChannel, kind: DataPacketKind, rtc_emitter: RtcEmitter) {
+     dc.on_message(Some(on_message(rtc_emitter.clone(), kind)));
+-    dc.on_buffered_amount_change(Some(on_buffered_amount_change(rtc_emitter, dc.clone(), kind)));
++    dc.on_buffered_amount_change(Some(on_buffered_amount_change(rtc_emitter, kind)));
+ }
+diff --git a/livekit/src/rtc_engine/rtc_session.rs b/livekit/src/rtc_engine/rtc_session.rs
+index f8c62f9..dac2672 100644
+--- a/livekit/src/rtc_engine/rtc_session.rs
++++ b/livekit/src/rtc_engine/rtc_session.rs
+@@ -1675,7 +1675,7 @@ impl SessionInner {
+                     );
+                 }
+             }
+-            RtcEvent::DataChannelBufferedAmountChange { sent, amount: _, kind } => {
++            RtcEvent::DataChannelBufferedAmountChange { sent, kind } => {
+                 let ev = DataChannelEvent {
+                     kind,
+                     detail: DataChannelEventDetail::BufferedAmountChange(sent),
+@@ -1993,6 +1993,13 @@ impl SessionInner {
+     async fn close(&self, reason: DisconnectReason) {
+         self.closed.store(true, Ordering::Release);
+         self.pc_state_notify.notify_waiters();
++        // A fast-publish negotiation waiting for its answer holds this session
++        // (and so both PeerConnections) for up to 10 s, and the signal task that
++        // would deliver the answer is already gone. `notify_one` keeps a permit
++        // if the loop is not yet waiting, so it cannot be missed; the loop sees
++        // `closed` and stops.
++        self.negotiation_queue.waiting_for_answer.store(false, Ordering::Release);
++        self.negotiation_queue.waker.notify_one();
+ 
+         // Both awaits below are unbounded, and `PeerTransport::close` is synchronous, so
+         // closing here — before the future can suspend — is what stops a cancelled
+@@ -2347,6 +2354,14 @@ impl SessionInner {
+ 
+     async fn execute_negotiation_with_retry(self: &Arc<Self>) {
+         loop {
++            // Nothing to negotiate on a closed session, and no answer will come.
++            if self.closed.load(Ordering::Acquire) {
++                log::debug!("session closed, abandoning publisher negotiation");
++                self.negotiation_queue.waiting_for_answer.store(false, Ordering::Release);
++                *self.negotiation_queue.state.lock() = NegotiationState::Idle;
++                break;
++            }
++
+             log::debug!("negotiating the publisher (fast mode)");
+ 
+             self.negotiation_queue.waiting_for_answer.store(true, Ordering::Release);
+@@ -2363,6 +2378,12 @@ impl SessionInner {
+ 
+                 tokio::select! {
+                     _ = self.negotiation_queue.waker.notified() => {
++                        if self.closed.load(Ordering::Acquire) {
++                            log::debug!("session closed while waiting for answer");
++                            self.negotiation_queue.waiting_for_answer.store(false, Ordering::Release);
++                            *self.negotiation_queue.state.lock() = NegotiationState::Idle;
++                            break;
++                        }
+                         log::debug!("answer received successfully");
+                     }
+                     _ = &mut timeout => {
+-- 
+2.55.0
+
