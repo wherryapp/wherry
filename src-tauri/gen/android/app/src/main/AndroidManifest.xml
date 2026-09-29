@@ -33,7 +33,16 @@
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
+    <!-- HAND EDIT, backup (decision 10, 2026-09-29; regen-hand-edits.md
+         edit 15). allowBackup false: no cloud backup, and no transfer on
+         Android 11 and older. dataExtractionRules: Android 12 and later
+         transfer device to device whatever allowBackup says for an app
+         targeting API 31 or later, so that file excludes everything there.
+         The WebView's storage holds decrypted messages and the session;
+         the server archive is the recovery path. -->
     <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.wherry_desktop"

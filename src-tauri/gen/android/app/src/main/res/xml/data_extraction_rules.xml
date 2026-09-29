@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HAND EDIT (docs/prompts/regen-hand-edits.md, edit 15; decision 10 of
+  2026-09-29). Nothing of this app leaves the phone in a backup or a
+  transfer. The WebView's storage (app_webview: the page's IndexedDB with
+  decrypted messages, and its local storage with the session) is the reason;
+  every other domain goes with it because nothing the app keeps is worth
+  restoring: the server archive is the recovery path, MLS state is rebuilt by
+  external commits, and the push plugin's ring key is sealed under the
+  Android Keystore, whose keys never travel.
+
+  Why this file as well as allowBackup="false" in the manifest: for an app
+  targeting API 31 or later, Android 12+ ignores allowBackup for
+  device-to-device transfer (the compat change IGNORE_ALLOW_BACKUP_IN_D2D) and
+  reads only this file's device-transfer section, and without that section
+  transfers everything. The cloud-backup section repeats the exclusion for any
+  build of the OS that honours this file over allowBackup. An empty section
+  would mean "everything", so each domain is excluded by name: a directory
+  excluded at its top is skipped whole, but excluding "root" alone does not
+  reach file, database and sharedpref, which the backup agent walks as
+  domains of their own. No cross-platform-transfer section: that transfer
+  (Android 16 QPR2) happens only for an app that declares one.
+
+  No double hyphen anywhere in here: XML forbids it inside a comment.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>
