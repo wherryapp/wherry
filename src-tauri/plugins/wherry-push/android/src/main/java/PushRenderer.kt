@@ -177,7 +177,10 @@ internal object PushRenderer {
       compat.notify(tag, idFor(group), builder.build())
       // Rows A-44 onward read this line. `why` never carries a name.
       Log.i(TAG, "posted $kind on ${channelFor(group)} (${text.why}${if (quiet) ", renamed" else ""})")
-      if (text.why == "locked") hold(context, Held(kind, ref, ids!!, tag, idFor(group)))
+      // Held for the rename only while the newest post under this tag is
+      // the nameless one: a later post replaced it, and a late rename must
+      // not bring the older ids back over it.
+      if (text.why == "locked") hold(context, Held(kind, ref, ids!!, tag, idFor(group))) else unhold(tag)
       true
     } catch (e: SecurityException) {
       // POST_NOTIFICATIONS refused between the check and the post.
@@ -227,6 +230,11 @@ internal object PushRenderer {
     } catch (e: Exception) {
       Log.w(TAG, "unlock receiver not registered: ${e.javaClass.simpleName}")
     }
+  }
+
+  @Synchronized
+  private fun unhold(tag: String) {
+    held.remove(tag)
   }
 
   /**
