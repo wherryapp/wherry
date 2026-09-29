@@ -79,6 +79,11 @@ internal object PushLifecycle : Application.ActivityLifecycleCallbacks {
   override fun onActivityResumed(activity: Activity) {
     resumedCount += 1
     PushState.resumed = true
+    // Coming to the front is an unlock signal that is never late, where
+    // ACTION_USER_PRESENT can be: a notification posted nameless behind the
+    // lock screen is named now (PushRenderer.renameHeld; a no-op while still
+    // locked, or when nothing is held).
+    PushRenderer.renameHeld(activity.applicationContext)
   }
 
   @Synchronized

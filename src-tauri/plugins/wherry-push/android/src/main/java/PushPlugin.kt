@@ -195,6 +195,30 @@ class PushPlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve()
   }
 
+  /**
+   * `{ conversations: { id: { label, group } }, users: { id: name } }`:
+   * replaces the label map a push is named from (LabelStore,
+   * notification-names-plan.md §4). Empty maps turn names off. Sanitised and
+   * capped here again whatever the page sent (Labels.of).
+   */
+  @Command
+  fun setLabels(invoke: Invoke) {
+    val args = invoke.getArgs()
+    val conversations = ArrayList<Pair<String, ConversationLabel>>()
+    args.getJSObject("conversations")?.let { map ->
+      for (id in map.keys()) {
+        val entry = map.optJSONObject(id) ?: continue
+        conversations += id to ConversationLabel(entry.optString("label", ""), entry.optBoolean("group", false))
+      }
+    }
+    val users = ArrayList<Pair<String, String>>()
+    args.getJSObject("users")?.let { map ->
+      for (id in map.keys()) users += id to map.optString(id, "")
+    }
+    LabelStore.set(activity.applicationContext, Labels.of(conversations, users))
+    invoke.resolve()
+  }
+
   @Command
   fun setBadge(invoke: Invoke) {
     // Launchers badge from posted notifications (§5.1); nothing to set.

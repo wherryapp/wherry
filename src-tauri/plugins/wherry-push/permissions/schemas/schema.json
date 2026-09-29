@@ -367,6 +367,18 @@
           "markdownDescription": "Denies the set_badge command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_labels command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-labels",
+          "markdownDescription": "Enables the set_labels command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_labels command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-labels",
+          "markdownDescription": "Denies the set_labels command without any pre-configured scope."
+        },
+        {
           "description": "Enables the status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-status",
@@ -403,10 +415,10 @@
           "markdownDescription": "Denies the unregister command without any pre-configured scope."
         },
         {
-          "description": "Everything the page needs to drive native push: read the state, obtain and\nforget the token, consume a notification tap, clear delivered notifications,\nset the icon badge, open the system settings page, and listen for the\n`token`, `opened` and `received` events. docs/prompts/native-push-plan.md §5.1.\n\n#### This default permission set includes:\n\n- `allow-status`\n- `allow-register`\n- `allow-unregister`\n- `allow-take-open`\n- `allow-clear`\n- `allow-set-badge`\n- `allow-open-settings`\n- `allow-register-listener`\n- `allow-remove-listener`",
+          "description": "Everything the page needs to drive native push: read the state, obtain and\nforget the token, consume a notification tap, clear delivered notifications,\nset the icon badge, open the system settings page, write the label map a\npush is named from, and listen for the `token`, `opened` and `received`\nevents. docs/prompts/native-push-plan.md §5.1,\ndocs/prompts/notification-names-plan.md §4.\n\n#### This default permission set includes:\n\n- `allow-status`\n- `allow-register`\n- `allow-unregister`\n- `allow-take-open`\n- `allow-clear`\n- `allow-set-badge`\n- `allow-open-settings`\n- `allow-set-labels`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Everything the page needs to drive native push: read the state, obtain and\nforget the token, consume a notification tap, clear delivered notifications,\nset the icon badge, open the system settings page, and listen for the\n`token`, `opened` and `received` events. docs/prompts/native-push-plan.md §5.1.\n\n#### This default permission set includes:\n\n- `allow-status`\n- `allow-register`\n- `allow-unregister`\n- `allow-take-open`\n- `allow-clear`\n- `allow-set-badge`\n- `allow-open-settings`\n- `allow-register-listener`\n- `allow-remove-listener`"
+          "markdownDescription": "Everything the page needs to drive native push: read the state, obtain and\nforget the token, consume a notification tap, clear delivered notifications,\nset the icon badge, open the system settings page, write the label map a\npush is named from, and listen for the `token`, `opened` and `received`\nevents. docs/prompts/native-push-plan.md §5.1,\ndocs/prompts/notification-names-plan.md §4.\n\n#### This default permission set includes:\n\n- `allow-status`\n- `allow-register`\n- `allow-unregister`\n- `allow-take-open`\n- `allow-clear`\n- `allow-set-badge`\n- `allow-open-settings`\n- `allow-set-labels`\n- `allow-register-listener`\n- `allow-remove-listener`"
         }
       ]
     }

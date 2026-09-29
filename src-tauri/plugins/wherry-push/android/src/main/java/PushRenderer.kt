@@ -2,6 +2,10 @@
 // §2, point 1, and §6.2). The server sends a kind and a per-device reference,
 // never a name or a sentence, so what the lock screen says is decided here,
 // by kind, from the same table the APNs builder uses (server/src/push/payload.ts).
+// Since 2026-09-29 a message may be named -- who and which chat, from the
+// page's own labels and ids sealed to this device, never what was said
+// (NotificationNames.kt, docs/prompts/notification-names-plan.md) -- and the
+// fixed text stays the fallback and the lock screen's version.
 //
 // Channels: this plugin owns `messages`, `calls` (missed calls, and the
 // generic incoming call when no calls plugin takes a ring) and `other`
@@ -10,15 +14,19 @@
 
 package app.wherry.push
 
+import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 
 internal object PushRenderer {
   private const val TAG = "wherry-push"
@@ -104,8 +112,26 @@ internal object PushRenderer {
   /**
    * Posts the notification for one kind. Returns false when nothing was
    * posted (notifications off, or the permission refused).
+   *
+   * [ids] are what `e` named (PushDispatch): with a label for the
+   * conversation, the notification is named (NamedText,
+   * notification-names-plan.md §1.3). **Behind a secure lock screen it is
+   * not** (§1.4): Android gives an app no way to make the lock screen show
+   * the public version while the person's "sensitive content" setting says
+   * show all (an app-created channel's lockscreen visibility is overwritten
+   * by the system, `PreferencesHelper.createNotificationChannel`; batch 0929's
+   * lockscreen finding). So the name is decided at post time from
+   * `KeyguardManager.isDeviceLocked()` -- true only behind a PIN, pattern or
+   * password, false on a swipe keyguard, which is no privacy boundary -- and
+   * a notification posted nameless while locked is named again at the next
+   * unlock the process sees ([renameHeld]). VISIBILITY_PRIVATE with the
+   * fixed-text public version stays as well, for the person who hides
+   * sensitive content: then even an unlocked-at-post name never reaches the
+   * lock screen later.
+   *
+   * [quiet] re-posts without sound or heads-up (the rename).
    */
-  fun show(context: Context, kind: String, ref: String?): Boolean {
+  fun show(context: Context, kind: String, ref: String?, ids: NamedIds? = null, quiet: Boolean = false): Boolean {
     ensureChannels(context)
     val compat = NotificationManagerCompat.from(context)
     if (!compat.areNotificationsEnabled()) {
@@ -114,10 +140,22 @@ internal object PushRenderer {
     }
     val group = groupFor(kind)
     val tag = tagFor(group, ref)
+    val fixed = textFor(kind)
+    val labels = if (ids != null) LabelStore.get(context) else Labels.EMPTY
+    val locked = deviceLocked(context)
+    val text = NamedText.compose(kind, fixed, ids, labels, locked)
     val builder = NotificationCompat.Builder(context, channelFor(group))
       .setSmallIcon(R.drawable.ic_stat_wherry)
-      .setContentText(textFor(kind))
+      .setContentText(text.text)
       .setAutoCancel(true)
+      .setOnlyAlertOnce(quiet)
+      .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+      .setPublicVersion(
+        NotificationCompat.Builder(context, channelFor(group))
+          .setSmallIcon(R.drawable.ic_stat_wherry)
+          .setContentText(fixed)
+          .build(),
+      )
       .setCategory(
         when (group) {
           Group.CALL -> NotificationCompat.CATEGORY_MISSED_CALL
@@ -128,6 +166,7 @@ internal object PushRenderer {
       .setPriority(
         if (group == Group.CONTACT) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH,
       )
+    text.title?.let { builder.setContentTitle(it) }
     // A ring shown here is the generic fallback: nothing will cancel it, so
     // it goes away by itself when the ring would have.
     if (kind == "call") {
@@ -136,12 +175,77 @@ internal object PushRenderer {
     contentIntent(context, kind, ref, tag)?.let { builder.setContentIntent(it) }
     return try {
       compat.notify(tag, idFor(group), builder.build())
-      Log.i(TAG, "posted $kind on ${channelFor(group)}")
+      // Rows A-44 onward read this line. `why` never carries a name.
+      Log.i(TAG, "posted $kind on ${channelFor(group)} (${text.why}${if (quiet) ", renamed" else ""})")
+      if (text.why == "locked") hold(context, Held(kind, ref, ids!!, tag, idFor(group)))
       true
     } catch (e: SecurityException) {
       // POST_NOTIFICATIONS refused between the check and the post.
       Log.i(TAG, "not posted: ${e.javaClass.simpleName}")
       false
+    }
+  }
+
+  /** True only behind a PIN, pattern or password (API 22's
+   *  `isDeviceLocked`); a swipe keyguard and an unlocked phone are false. */
+  private fun deviceLocked(context: Context): Boolean {
+    val keyguard = context.getSystemService(KeyguardManager::class.java) ?: return true
+    return keyguard.isDeviceLocked
+  }
+
+  // MARK: - Named again after the unlock
+
+  /** A notification posted nameless because the phone was locked, which
+   *  its ids could name. Process memory only: a process that dies keeps the
+   *  fixed text, which is the fallback anyway. */
+  private data class Held(val kind: String, val ref: String?, val ids: NamedIds, val tag: String, val id: Int)
+
+  private val held = LinkedHashMap<String, Held>()
+  private var unlockReceiver: BroadcastReceiver? = null
+
+  @Synchronized
+  private fun hold(context: Context, entry: Held) {
+    held[entry.tag] = entry
+    if (unlockReceiver != null) return
+    // ACTION_USER_PRESENT is best effort: since Android 14 a runtime
+    // receiver in a cached process hears it late (row A-59b saw minutes).
+    // The activity coming to the front is the other signal
+    // (PushLifecycle.onActivityResumed calls renameHeld too).
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context, intent: Intent) {
+        renameHeld(context)
+      }
+    }
+    try {
+      ContextCompat.registerReceiver(
+        context.applicationContext,
+        receiver,
+        IntentFilter(Intent.ACTION_USER_PRESENT),
+        ContextCompat.RECEIVER_NOT_EXPORTED,
+      )
+      unlockReceiver = receiver
+    } catch (e: Exception) {
+      Log.w(TAG, "unlock receiver not registered: ${e.javaClass.simpleName}")
+    }
+  }
+
+  /**
+   * Re-posts, named and quietly, every notification that was posted
+   * nameless while the phone was locked and is still showing. A no-op while
+   * the phone is still locked, or when nothing is held.
+   */
+  fun renameHeld(context: Context) {
+    val entries: List<Held>
+    synchronized(this) {
+      if (held.isEmpty() || deviceLocked(context)) return
+      entries = held.values.toList()
+      held.clear()
+    }
+    val manager = context.getSystemService(NotificationManager::class.java) ?: return
+    val showing = manager.activeNotifications.map { it.tag to it.id }.toSet()
+    for (entry in entries) {
+      if ((entry.tag to entry.id) !in showing) continue
+      show(context, entry.kind, entry.ref, entry.ids, quiet = true)
     }
   }
 

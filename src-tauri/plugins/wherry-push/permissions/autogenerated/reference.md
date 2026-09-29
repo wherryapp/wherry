@@ -2,8 +2,10 @@
 
 Everything the page needs to drive native push: read the state, obtain and
 forget the token, consume a notification tap, clear delivered notifications,
-set the icon badge, open the system settings page, and listen for the
-`token`, `opened` and `received` events. docs/prompts/native-push-plan.md §5.1.
+set the icon badge, open the system settings page, write the label map a
+push is named from, and listen for the `token`, `opened` and `received`
+events. docs/prompts/native-push-plan.md §5.1,
+docs/prompts/notification-names-plan.md §4.
 
 #### This default permission set includes the following:
 
@@ -14,6 +16,7 @@ set the icon badge, open the system settings page, and listen for the
 - `allow-clear`
 - `allow-set-badge`
 - `allow-open-settings`
+- `allow-set-labels`
 - `allow-register-listener`
 - `allow-remove-listener`
 
@@ -178,6 +181,32 @@ Enables the set_badge command without any pre-configured scope.
 <td>
 
 Denies the set_badge command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`wherry-push:allow-set-labels`
+
+</td>
+<td>
+
+Enables the set_labels command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`wherry-push:deny-set-labels`
+
+</td>
+<td>
+
+Denies the set_labels command without any pre-configured scope.
 
 </td>
 </tr>

@@ -221,6 +221,15 @@ class PushPlugin: Plugin {
     }
   }
 
+  /// The label map a push is named from (notification-names-plan.md §4).
+  /// Accepted and dropped on iOS until stage N-ios: an APNs alert can be
+  /// renamed only by a Notification Service Extension, which does not exist
+  /// yet, so there is nothing to keep it for. N-ios writes it to the App
+  /// Group instead.
+  @objc func setLabels(_ invoke: Invoke) {
+    invoke.resolve()
+  }
+
   @objc func openSettings(_ invoke: Invoke) {
     onMain {
       // The notification page where iOS has one (15.4 and later), else the
