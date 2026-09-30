@@ -9,7 +9,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { store } from "../store";
-import { acquireAvatar, releaseAvatar, type AvatarLoader } from "./avatars";
+import {
+  acquireAvatar,
+  avatarFailed,
+  releaseAvatar,
+  type AvatarLoader,
+} from "./avatars";
 import { DEFAULT_FILE_POLICY, type FilePolicy } from "./file-policy";
 import { ApiError, fetchAccountSettings, type Announcement,
   downloadAvatar,
@@ -1186,6 +1191,27 @@ function useResolvedAvatar(
   const fetchRef = useRef(fetchBytes);
   fetchRef.current = fetchBytes;
 
+  // Bumped to ask again after a failed fetch (avatars.ts's `failed`): when
+  // the connection comes back, or the engine says the account changed --
+  // both moments a fetch that failed may now work. Only while this holder is
+  // showing initials for a picture that failed, so neither event refetches
+  // anything that loaded or that genuinely does not exist.
+  const [retry, setRetry] = useState(0);
+  const failedNow =
+    !!avatarKey && resolved?.key === avatarKey && resolved.url === null && avatarFailed(avatarKey);
+  const failedRef = useRef(failedNow);
+  failedRef.current = failedNow;
+  useEffect(() => {
+    const onOnline = (): void => {
+      if (failedRef.current) setRetry((n) => n + 1);
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, []);
+  useSyncEvents((event) => {
+    if (event.type === "account" && failedRef.current) setRetry((n) => n + 1);
+  });
+
   useEffect(() => {
     if (!avatarKey) return;
 
@@ -1203,7 +1229,7 @@ function useResolvedAvatar(
       cancelled = true;
       void pending.finally(() => releaseAvatar(avatarKey));
     };
-  }, [owner, avatarKey]);
+  }, [owner, avatarKey, retry]);
 
   return avatarKey && resolved?.key === avatarKey ? resolved.url : null;
 }
