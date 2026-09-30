@@ -57,12 +57,47 @@ RUN pnpm build
 # alpine rather than node: nothing here runs JavaScript, it copies files.
 FROM alpine:3 AS publish
 COPY --from=build /app/dist /dist
+# index.html is set aside so the publish can put it in place last, alone.
+RUN mv /dist/index.html /index.html
 
-# Replace the previous build rather than merging into it. Vite fingerprints
-# asset filenames, so without the delete every deploy would leave the old
-# chunks behind forever and the volume would grow without bound.
+# Publish into the volume Caddy is serving *while this runs*: compose gates
+# Caddy on this container only on the first `up`; on every later deploy Caddy
+# is already running and is not recreated. So the order matters, no file is
+# ever rewritten in place, and nothing is deleted that a page might still ask
+# for:
 #
-# There is a sub-second window during the copy where the volume is incomplete.
-# It does not matter: compose gates Caddy on this container exiting
-# successfully, so during a deploy nothing is serving from the volume yet.
-CMD ["sh", "-c", "set -e; rm -rf /srv/client/*; cp -a /dist/. /srv/client/; echo 'published:'; ls -1 /srv/client"]
+# 1. Every file but index.html goes in beside what is there. One already there
+#    with the same bytes (most chunks, which are named by their hash) is only
+#    touched; anything else is copied to a temporary name and renamed over,
+#    which is atomic, so no request can read a half-written file. Either way
+#    each file this build ships gets the time of this publish, so a file's age
+#    below is how long ago it was last shipped.
+# 2. index.html last, the same rename: a page load sees the old index or the
+#    new one, and whichever it sees, the chunks it names are there. (It was
+#    `rm -rf` then `cp`, so for a moment "/" was a 404 or an index naming
+#    chunks not yet copied.)
+# 3. A top-level file the build no longer has goes now (a public/ file
+#    removed from the repo -- a stale sw.js must not outlive its source).
+# 4. An asset not shipped for 14 days goes. Until then, a tab opened before a
+#    deploy can still load its lazy chunks -- the call's E2EE worker is created
+#    per call from one, and Safari's @noble fallbacks are others -- where the
+#    delete used to leave it index.html (and now a 404, deploy/Caddyfile). This
+#    is also what keeps the volume from growing without bound, the reason the
+#    delete existed.
+CMD set -e; \
+    mkdir -p /srv/client/assets; \
+    cd /dist; \
+    find . -type f | while read -r f; do \
+      d="/srv/client/${f#./}"; \
+      if cmp -s "$f" "$d"; then touch "$d"; \
+      else mkdir -p "${d%/*}"; cp "$f" "$d.new"; mv -f "$d.new" "$d"; fi; \
+    done; \
+    cp /index.html /srv/client/index.html.new; \
+    mv -f /srv/client/index.html.new /srv/client/index.html; \
+    cd /srv/client; \
+    for f in *; do \
+      case "$f" in assets|index.html) ;; *) [ -e "/dist/$f" ] || rm -rf "$f" ;; esac; \
+    done; \
+    find assets -type f -mtime +14 -exec rm -f {} +; \
+    echo 'published:'; ls -1; \
+    echo "assets kept: $(find assets -type f | wc -l)"
