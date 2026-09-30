@@ -483,26 +483,20 @@ export function Chat({
     onSignOut();
   };
 
-  // The screen shortcut takes the Share button's path (CallControls'
-  // onScreenPress), not a bare toggle: a non-empty `screenSources()` means
-  // this transport opens no picker of its own -- the shell on Windows -- so
-  // ours goes up and the share waits for a choice. A bare toggle there asked
-  // the shell to share nothing in particular and showed its refusal as the
-  // bar's error line. Stopping never asks. No anchor: a keypress has no
-  // button, and the picker's Popover centres itself without one.
+  // The screen shortcut takes the Share button's decision
+  // (`voice.pressScreenShare`, rules.ts `decideScreenPress`), not a bare
+  // toggle: where this transport opens no picker of its own -- the shell on
+  // Windows -- sources come back, ours goes up and the share waits for a
+  // choice. A bare toggle there asked the shell to share nothing in
+  // particular and showed its refusal as the bar's error line. No anchor: a
+  // keypress has no button, and the picker's Popover centres itself without
+  // one.
   const [shortcutPicker, setShortcutPicker] = useState<ScreenSource[] | null>(null);
   // Gone with the call, not kept for the next one.
   if (shortcutPicker !== null && voiceState.phase !== "connected") setShortcutPicker(null);
   const shareFromShortcut = async (): Promise<void> => {
-    if (voice.getState().screen.on) {
-      await voice.setScreenShareEnabled(false);
-      return;
-    }
-    const sources = await voice.screenSources();
-    if (sources.length === 0) {
-      await voice.toggleScreenShare();
-      return;
-    }
+    const sources = await voice.pressScreenShare();
+    if (!sources) return;
     // A ring paints over everything and holds Escape; a picker opened under
     // it would register above it on the back stack (see the note below).
     if (rings.length > 0) return;

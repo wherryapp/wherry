@@ -699,6 +699,18 @@ static CONNECT_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// still to store one, never neither; cleared by the next connect's claim.
 static CONNECT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
+/// Wakes a connect waiting inside `Room::connect` when `CONNECT_CANCELLED` is
+/// set, so the hang-up ends it at once instead of when the SDK gives up. Before
+/// this, a hang-up that landed inside `Room::connect` was only read at the
+/// store: the page's leave had the server evict the joining device, so the
+/// SDK waited out its 15 s PeerConnection timeout, retried the join with the
+/// old token, and only then was closed -- and `CONNECT_IN_FLIGHT` kept the
+/// next call out for all of it (mac-1001 F2). `notify_waiters` stores no
+/// permit, so a wake meant for one connect cannot reach the next: it is sent
+/// under the `SESSION` lock, and the next connect enables its waiter only
+/// after its own claim has cleared the flag under that lock.
+static CONNECT_CANCEL: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 /// The one connect's claim on `CONNECT_IN_FLIGHT` for as long as this lives:
 /// dropped on every way out of `voice_connect`, including its future being
 /// dropped unfinished.
@@ -867,8 +879,16 @@ fn roster(room: &Room) -> Roster {
 
 /// Everything the pump tells the webview. `session` is on every variant so
 /// the listener can drop what is not its own.
+///
+/// Two renames, because serde keeps them apart: `rename_all` names the
+/// *variants* (the `kind` tag, snake_case: `video_changed`), and
+/// `rename_all_fields` names every variant's *fields* (camelCase, as the page
+/// reads them: `micOpen`). Without the second a multi-word field goes out in
+/// snake_case and the page reads `undefined` -- which is how a moderator's
+/// mute once never reached the button (mac-1001 F1). `event_wire_names` pins
+/// every variant's keys to what `transport-native.ts` reads.
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 enum Event {
   /// The roster changed: somebody joined or left, a track came or went, a
   /// mute or encryption status moved. Carries the whole snapshot.
@@ -1635,15 +1655,59 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     log::info!("voice: WHERRY_FORCE_RELAY=1 -- this call's ICE is relay-only");
   }
 
-  // Hung up while the devices and the key were being set up: nothing to
-  // close yet, so do not open anything.
-  if CONNECT_CANCELLED.load(Ordering::SeqCst) {
-    log::info!("voice: connect cancelled by a hang-up before it reached the SFU");
-    return Err(VoiceError::new("cancelled", "the call was hung up while it connected"));
-  }
-  let (room, rx) = Room::connect(&args.url, &args.token, options)
-    .await
-    .map_err(|e| VoiceError::new("connect_failed", e.to_string()))?;
+  // The SDK's connect, raced against a hang-up (`CONNECT_CANCEL`). In a
+  // block so the pinned futures, which borrow `args`, are gone before the
+  // session takes `args.url`.
+  let (room, rx) = {
+    // Enabled before the flag is read: a disconnect between the read and the
+    // race still wakes this waiter.
+    let mut cancel = std::pin::pin!(CONNECT_CANCEL.notified());
+    cancel.as_mut().enable();
+    // Hung up while the devices and the key were being set up: nothing to
+    // close yet, so do not open anything.
+    if CONNECT_CANCELLED.load(Ordering::SeqCst) {
+      log::info!("voice: connect cancelled by a hang-up before it reached the SFU");
+      return Err(VoiceError::new("cancelled", "the call was hung up while it connected"));
+    }
+    // What dropping this future unfinished leaves, read in the pinned fork
+    // (06f0a5d) -- **believed**, from the source:
+    // - Before the engine exists (the signal join, `wait_pc_connection`), the
+    //   drop is what the SDK itself does to a failed attempt before it
+    //   retries: the half-built `RtcSession` goes without `close()`; its
+    //   tasks stop on its dropped `close_tx`, its PeerConnections close when
+    //   the last reference goes, and the engine stays initialised because
+    //   `MEDIA_ENGINE` holds it. The signal socket's own task outlives it
+    //   until the SFU closes the socket -- which the page's leave causes, as
+    //   the server evicts this device from the room.
+    // - Once `RtcEngine::connect` has returned, a drop would strand the
+    //   engine: its task holds the engine and the engine holds the task's
+    //   `close_tx`, so nothing ends either, and a connected room would stay
+    //   in the process. The only suspension point after that is `Room::connect`'s
+    //   last `inner.handle.lock().await`, on a mutex nobody else holds yet,
+    //   which is ready on its first poll unless tokio's cooperative budget has
+    //   run out and makes it yield. `unconstrained` takes the budget away,
+    //   so once the engine exists this future runs to its end in the same
+    //   poll and the cancel can no longer win; the store below then closes
+    //   the room as it did before.
+    let connecting = std::pin::pin!(tokio::task::unconstrained(Room::connect(
+      &args.url,
+      &args.token,
+      options
+    )));
+    match futures_util::future::select(connecting, cancel).await {
+      futures_util::future::Either::Left((connected, _)) => {
+        connected.map_err(|e| VoiceError::new("connect_failed", e.to_string()))?
+      }
+      futures_util::future::Either::Right(((), connecting)) => {
+        drop(connecting);
+        log::info!(
+          "voice: connect cancelled by a hang-up inside the SDK's connect after {} ms -- dropped it, nothing stored",
+          started.elapsed().as_millis()
+        );
+        return Err(VoiceError::new("cancelled", "the call was hung up while it connected"));
+      }
+    }
+  };
   let room = Arc::new(room);
   let id = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
   log::info!(
@@ -1768,7 +1832,9 @@ pub struct DisconnectResult {
 
 /// Idempotent: a second call, or one with no session, answers zeros. With no
 /// session but a connect in flight, that connect is the call being hung up:
-/// it is told to close instead of storing its session (`CONNECT_CANCELLED`).
+/// it is told to close instead of storing its session (`CONNECT_CANCELLED`),
+/// and woken if it is waiting inside `Room::connect` (`CONNECT_CANCEL`), so it
+/// answers `cancelled` and lets go of its claim at once.
 #[tauri::command]
 pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
   let taken = {
@@ -1776,6 +1842,8 @@ pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
     let taken = guard.take();
     if taken.is_none() && CONNECT_IN_FLIGHT.load(Ordering::SeqCst) {
       CONNECT_CANCELLED.store(true, Ordering::SeqCst);
+      // Under the lock, after the flag: see `CONNECT_CANCEL`.
+      CONNECT_CANCEL.notify_waiters();
       log::info!("voice: disconnect requested while a connect is in flight -- it will close instead of storing its call");
     }
     taken
@@ -2744,6 +2812,65 @@ mod route_tests {
     let text = route_of(&stats).expect("a route").to_string();
     for leak in ["203.0.113.7", "50000", "turn.example.test", "turns:"] {
       assert!(!text.contains(leak), "{leak} leaked into {text}");
+    }
+  }
+}
+
+/// The `voice` event's wire names, as `transport-native.ts`'s `ShellEvent`
+/// reads them: the `kind` tag in snake_case, every field in camelCase. One
+/// case per variant, so a field added in snake_case fails here rather than
+/// reading `undefined` on the page.
+#[cfg(test)]
+mod event_wire_tests {
+  use super::{Envelope, Event, Roster};
+  use serde_json::{json, Value};
+
+  fn wire(event: Event) -> Value {
+    serde_json::to_value(Envelope { session: 7, event }).expect("an event serialises")
+  }
+
+  fn empty_roster() -> Roster {
+    Roster { participants: Vec::new(), local_level: 0.0 }
+  }
+
+  #[test]
+  fn event_wire_names() {
+    let roster = json!({ "participants": [], "localLevel": 0.0 });
+    let cases: Vec<(Event, Value)> = vec![
+      (Event::Roster { roster: empty_roster() }, json!({ "session": 7, "kind": "roster", "roster": roster })),
+      (Event::Speakers { roster: empty_roster() }, json!({ "session": 7, "kind": "speakers", "roster": roster })),
+      (Event::ParticipantJoined, json!({ "session": 7, "kind": "participant_joined" })),
+      (Event::ParticipantLeft, json!({ "session": 7, "kind": "participant_left" })),
+      (
+        Event::Connection { state: "connected".into(), quality: "good".into(), reason: None },
+        json!({ "session": 7, "kind": "connection", "state": "connected", "quality": "good" }),
+      ),
+      (
+        Event::Connection {
+          state: "disconnected".into(),
+          quality: "lost".into(),
+          reason: Some("ServerShutdown".into()),
+        },
+        json!({
+          "session": 7, "kind": "connection", "state": "disconnected", "quality": "lost",
+          "reason": "ServerShutdown",
+        }),
+      ),
+      (
+        Event::Encryption { identity: "u1".into(), state: "MissingKey".into() },
+        json!({ "session": 7, "kind": "encryption", "identity": "u1", "state": "MissingKey" }),
+      ),
+      (Event::VideoChanged, json!({ "session": 7, "kind": "video_changed" })),
+      (Event::Token { token: "t".into() }, json!({ "session": 7, "kind": "token", "token": "t" })),
+      // The only multi-word field today, and the one that went out as
+      // `mic_open` (mac-1001 F1).
+      (
+        Event::Local { mic_open: false, camera: true, screen: false },
+        json!({ "session": 7, "kind": "local", "micOpen": false, "camera": true, "screen": false }),
+      ),
+    ];
+    for (event, expected) in cases {
+      assert_eq!(wire(event), expected);
     }
   }
 }

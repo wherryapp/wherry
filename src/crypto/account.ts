@@ -199,6 +199,84 @@ export async function recoverWithCode(
   return { newRecoveryCode };
 }
 
+// ---------------------------------------------------------------------------
+// A new recovery code, from Settings
+// ---------------------------------------------------------------------------
+
+/**
+ * The part of regenerateRecoveryCode that touches no network or storage,
+ * exported so the test can pin it: from the stored row, the password and
+ * whatever keypair this browser holds, the replacement row and its code.
+ *
+ * The private key comes from the local store when it belongs to the stored
+ * public key, and otherwise from opening the password wrap. The keypair is
+ * the same one either way -- only the recovery wrap is new -- so everything
+ * sealed to the account (archive rows, wrapped history keys) stays readable.
+ *
+ * Both wraps are made fresh by the same buildWireKeys registration uses.
+ * Re-making the password wrap under the password the server is about to
+ * verify is harmless, and repairs a stale one if this browser's local key
+ * was what made regeneration possible.
+ *
+ * Throws KeysError WRONG_SECRET when there is no matching local key and the
+ * password does not open the wrap: a wrong password, or an account key this
+ * device never unlocked (recovery skipped after a reset). Either way there
+ * is no private key to re-wrap, and nothing has been sent.
+ */
+export async function reissueRecoveryWrap(
+  stored: AccountKeysWire,
+  password: string,
+  local: AccountKeypair | null,
+): Promise<{
+  wire: AccountKeysWire;
+  recoveryCode: string;
+  keypair: AccountKeypair;
+}> {
+  const privateKey =
+    local && encodeBase64(local.publicKey) === stored.publicKey
+      ? local.privateKey
+      : await unwrapKey(password, {
+          wrapped: decodeBase64(stored.passwordWrappedKey),
+          salt: decodeBase64(stored.passwordKdfSalt),
+          params: asKdfParams(stored.passwordKdfParams),
+        });
+
+  const keypair: AccountKeypair = {
+    publicKey: decodeBase64(stored.publicKey),
+    privateKey,
+  };
+  const recoveryCode = generateRecoveryCode();
+  const wire = await buildWireKeys(keypair, password, recoveryCode);
+  return { wire, recoveryCode, keypair };
+}
+
+/**
+ * Replaces the recovery code with a new one, for a person who lost theirs or
+ * never wrote it down. The old code stops opening anything the moment the
+ * PUT lands: the row holds one recovery wrap, and this replaces it.
+ *
+ * The same write recoverWithCode makes -- `PUT /account/keys`, which verifies
+ * the password server-side and replaces the whole row -- so no new route.
+ * The row is only ever the public key and the two wraps (migration 0009),
+ * and all three are sent, so nothing else in it can be lost.
+ *
+ * The new code is returned to be shown once, like registration's.
+ */
+export async function regenerateRecoveryCode(
+  password: string,
+): Promise<{ recoveryCode: string }> {
+  const stored = await fetchAccountKeys();
+  const { wire, recoveryCode, keypair } = await reissueRecoveryWrap(
+    stored,
+    password,
+    await loadAccountKeypair(),
+  );
+  await putAccountKeys(password, wire);
+  // The unwrap above may have been this browser's first sight of the key.
+  await persistKeypair(keypair);
+  return { recoveryCode };
+}
+
 /**
  * Tier 3b, and the honest end of the line: no password wrap, no local key,
  * no recovery code. Generates a brand-new keypair and replaces the row.
@@ -222,8 +300,9 @@ export async function startFresh(
  * Tier 2's write: same keypair, a fresh password wrap, and the recovery wrap
  * re-sent byte-for-byte. Preserving it matters: this repair runs silently,
  * and a silent repair must not invalidate the code the user wrote down at
- * registration. Only recoverWithCode replaces the recovery wrap, because
- * only there has the old code demonstrably been spent.
+ * registration. The recovery wrap is replaced only where the old code has
+ * demonstrably been spent (recoverWithCode) or the person asked for a new
+ * one (regenerateRecoveryCode).
  */
 async function rewrapPasswordWrap(
   password: string,

@@ -58,11 +58,13 @@ import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
 import {
   audioPresetFor,
   callerIsRinging,
+  decideScreenPress,
   cameraOnVisibility,
   grantLine,
   localMediaPatch,
   micStatus,
   nextCameraId,
+  overGrantStops,
   shouldJoinMuted,
   liveVideoKeys,
   paceSubscription,
@@ -292,6 +294,9 @@ export type VoiceDiagnostics = {
 };
 
 const LOCK_NAME = "messenger.voice";
+/** A join where the browser has no Web Locks. The same words as the sync
+ *  engine's, which will not start there either. */
+const NO_WEB_LOCKS = "This browser is too old for calls. Update it to Safari 15.4 or later.";
 /** How long a page picking up a call waits for the reloaded page's hold on
  *  the voice lock to drain. A document's locks go with the document, but
  *  the new one can be running before that has happened. */
@@ -373,6 +378,12 @@ class VoiceSession {
   /** The join in progress (`JoinAttempt`); null once it finished or was
    *  superseded. */
   #attempt: JoinAttempt | null = null;
+  /** Bumped by every `leave()`. A join reads it at its start and gives up if
+   *  it moved before the join has an attempt a teardown could supersede:
+   *  `#join` awaits the orphan check (and a room switch's teardown) first, and
+   *  a leave in that gap found no attempt, so the join carried on into a live
+   *  call with the microphone published (mac-1001 F3). */
+  #leaves = 0;
   /** Bumped by every setCameraEnabled, the background pause and resume, and
    *  a change the transport reported; see setCameraEnabled. */
   #cameraAsked = 0;
@@ -476,6 +487,7 @@ class VoiceSession {
 
   /** Leave, telling the server; also the starter's cancel while ringing. */
   async leave(): Promise<void> {
+    this.#leaves += 1;
     await this.#teardown({ tellServer: true, error: null });
   }
 
@@ -710,17 +722,23 @@ class VoiceSession {
   }
 
   /**
-   * Stop sharing, or start where the transport picks for itself.
+   * A "Share screen" press from anywhere -- the call controls' button, the
+   * keyboard shortcut -- decided once (rules.ts `decideScreenPress`).
    *
-   * Where it does not — the shell on Windows, whose `screenSources` is a
-   * real list — the caller opens `ScreenPicker` and calls
-   * `setScreenShareEnabled` with the choice instead. This stays the whole
-   * gesture for every transport that has a picker of its own.
+   * Stops, or starts where the transport picks for itself, and answers
+   * null: the press was the whole gesture. Answers the sources where it
+   * does not, and the caller draws `ScreenPicker` over them and calls
+   * `setScreenShareEnabled(true, choice)`; a caller that cannot draw one
+   * just now (Chat under a ring) drops the press. A press while a start is
+   * waiting on its picker is the same button pressed again, and is ignored
+   * there (setScreenShareEnabled). Replaces `toggleScreenShare`, which on
+   * Windows asked the shell to share nothing in particular.
    */
-  toggleScreenShare(): Promise<void> {
-    // A press while a start is waiting on its picker is the same button
-    // pressed again, and is ignored there (setScreenShareEnabled).
-    return this.setScreenShareEnabled(!this.#state.screen.on);
+  async pressScreenShare(): Promise<ScreenSource[] | null> {
+    const press = await decideScreenPress(this.#state.screen.on, () => this.screenSources());
+    if (press.action === "pick") return press.sources;
+    await this.setScreenShareEnabled(press.action === "start");
+    return null;
   }
 
   /**
@@ -809,9 +827,11 @@ class VoiceSession {
   async switchEngineForThisCall(): Promise<void> {
     const plan = this.#plan;
     if (!plan || this.#state.engineOverride === "webview") return;
+    // Read before the teardown: a hang-up while it runs ends the switch too.
+    const leaves = this.#leaves;
     await this.#teardown({ tellServer: false, error: null, keepPlan: true });
     this.#set({ engineOverride: "webview" });
-    await this.#join(plan, "webview");
+    await this.#join(plan, "webview", leaves);
   }
 
   /** From a tap: the browser's autoplay policy needs one. */
@@ -893,7 +913,13 @@ class VoiceSession {
 
   // -- joining -------------------------------------------------------------
 
-  async #join(plan: JoinPlan, engineOverride: "webview" | null = null): Promise<void> {
+  /** `leaves`: `#leaves` when the join was asked for; a `leave()` since then
+   *  and before this join has its `JoinAttempt` ends it. */
+  async #join(
+    plan: JoinPlan,
+    engineOverride: "webview" | null = null,
+    leaves = this.#leaves,
+  ): Promise<void> {
     if (this.#orphanCheck) {
       await this.#orphanCheck;
       // And again now (a no-op while this page holds a call, including
@@ -907,12 +933,17 @@ class VoiceSession {
       await this.#checkOrphan(0).catch(() => {
         // As at load: a failed check leaves things as they were.
       });
+      // Hung up while the checks ran, with no attempt yet to supersede.
+      if (this.#leaves !== leaves) return;
     }
     if (this.#state.phase !== "idle" && this.#state.phase !== "elsewhere") {
       if (this.#state.conversationId === plan.conversation.id) return;
       // Switching rooms: out of the old one first, then in.
       await this.#teardown({ tellServer: true, error: null });
     }
+    // And after that teardown, or the engine switch's before this join: the
+    // last point where a leave can have found no attempt.
+    if (this.#leaves !== leaves) return;
     // From here every await is followed by a check that nothing superseded
     // this join (`JoinAttempt`) -- the pattern `#adopt` already had. Without
     // it a hang-up during "Connecting…" only looked like one: the join woke up
@@ -926,10 +957,15 @@ class VoiceSession {
     // publish is recorded and applied by it (setMicMuted).
     this.#micStarting = attempt;
     const micAskedAtStart = this.#micAsked;
-    if (!(await this.#acquireLock())) {
+    const lock = await this.#acquireLock();
+    if (lock !== true) {
       if (!attempt.live) return;
       this.#supersedeJoin(false);
-      this.#set({ ...IDLE, phase: "elsewhere", error: "You are in a call in another window." });
+      this.#set(
+        lock === "unsupported"
+          ? { ...IDLE, error: NO_WEB_LOCKS }
+          : { ...IDLE, phase: "elsewhere", error: "You are in a call in another window." },
+      );
       return;
     }
     if (!attempt.live) return;
@@ -1166,7 +1202,11 @@ class VoiceSession {
     // voice lock. Not this one yet: the reloaded page's hold drains with its
     // document. A lock that stays held is another window's, and so is the
     // call -- nothing here touches it.
-    if (!(await this.#acquireLock(lockWaitMs))) return "lock-busy";
+    const lock = await this.#acquireLock(lockWaitMs);
+    // Unsupported: nothing here can tell whose call it is, so it is left
+    // alone, and not retried -- asking again will not add the API.
+    if (lock === "unsupported") return "settled";
+    if (!lock) return "lock-busy";
     const decision = orphanDecision({ orphan: found.call, userId: this.#callHolder });
     if (decision.kind === "adopt") {
       await this.#adopt(found, decision.handoff);
@@ -1348,7 +1388,7 @@ class VoiceSession {
     joined();
   }
 
-  async #acquireLock(waitMs = 0): Promise<boolean> {
+  async #acquireLock(waitMs = 0): Promise<boolean | "unsupported"> {
     // Already held by this session, so do not ask again.
     //
     // The engine switch (`switchEngineForThisCall`) tears the transport
@@ -1359,7 +1399,11 @@ class VoiceSession {
     // happening in another window and the switch failed every time. Found by
     // D-28 on 2026-09-08, the first run of that row.
     if (this.#releaseLock) return true;
-    if (typeof navigator === "undefined" || !("locks" in navigator)) return true;
+    // Web Locks are a hard requirement (Safari and iOS 15.4+; the sync
+    // engine will not start without them either, `hasWebLocks`). Without
+    // one there is no telling whether another window of this profile holds
+    // a call, so a join fails plainly rather than running uncoordinated.
+    if (typeof navigator === "undefined" || !navigator.locks) return "unsupported";
     // `waitMs`: queue for the lock that long, rather than asking once.
     const options: LockOptions =
       waitMs > 0 && typeof AbortSignal.timeout === "function"
@@ -1755,14 +1799,17 @@ class VoiceSession {
       if (event.type !== "call_state" || event.callId !== callId) return;
       if (event.error === "VIDEO_OVER_GRANT") {
         // The SFU muted the track; there is nothing to undo locally except
-        // the button, which must not keep saying the camera is on -- and a
-        // request still settling must not say it again.
-        this.#cameraAsked += 1;
-        this.#screenAsked += 1;
+        // the button, which must not keep saying it is on -- and a request
+        // still settling must not say it again. Only the source the server
+        // muted: the other is still published and still seen
+        // (client-voice-6). No source is an older server's frame, and both.
+        const stops = overGrantStops(event.source);
+        if (stops.camera) this.#cameraAsked += 1;
+        if (stops.screen) this.#screenAsked += 1;
         this.#set({
-          camera: { on: false, paused: false },
-          screen: { on: false },
-          error: "Your video exceeds this call's limit and was stopped.",
+          ...(stops.camera ? { camera: { on: false, paused: false } } : {}),
+          ...(stops.screen ? { screen: { on: false } } : {}),
+          error: stops.line,
         });
         return;
       }

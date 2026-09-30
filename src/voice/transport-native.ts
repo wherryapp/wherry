@@ -108,6 +108,9 @@ type NativeEntry = {
 
 type NativeRoster = { participants: NativeEntry[]; localLevel: number };
 
+// The shell's `Event` (mod.rs) on the wire: `kind` in snake_case, every field
+// in camelCase. mod.rs's `event_wire_names` test pins those names to this
+// type; a field added on either side is added to both.
 type NativeEvent = { session: number } & (
   | { kind: "roster"; roster: NativeRoster }
   | { kind: "speakers"; roster: NativeRoster }

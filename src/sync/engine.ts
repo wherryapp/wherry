@@ -273,6 +273,10 @@ export type SyncEvent =
        *  frame, which is what keeps it an error channel rather than a
        *  second state field. */
       error?: "VIDEO_OVER_GRANT";
+      /** Beside `error` only: which track the server muted. Absent from an
+       *  older server, which the session reads as both (rules.ts
+       *  `overGrantStops`). */
+      source?: "camera" | "screen";
     }
   | { type: "voice_presence"; conversationId: string; occupants: string[] };
 
@@ -1891,6 +1895,10 @@ export class SyncEngine {
       // an unknown error name from a newer server must not reach the UI as
       // a string nobody wrote a sentence for.
       const error = frame["error"] === "VIDEO_OVER_GRANT" ? ("VIDEO_OVER_GRANT" as const) : undefined;
+      // Narrowed the same way, and kept only beside the error it explains.
+      const rawSource = frame["source"];
+      const source: "camera" | "screen" | undefined =
+        error && (rawSource === "camera" || rawSource === "screen") ? rawSource : undefined;
       const event = {
         type: "call_state",
         callId,
@@ -1899,6 +1907,7 @@ export class SyncEngine {
         reason: typeof reason === "string" ? reason : null,
         participants: cleaned,
         ...(error ? { error } : {}),
+        ...(source ? { source } : {}),
       } as const;
       this.#emit(event);
       // NOT broadcast to the other tabs when it carries an error: the frame

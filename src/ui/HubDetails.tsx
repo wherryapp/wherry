@@ -56,6 +56,7 @@ import type {
   VideoLimits,
 } from "../api/types";
 import { webOrigin } from "../api/base";
+import { hubEventText } from "./hub-events";
 import { sync } from "../sync/engine";
 import { mlsEnabled, mlsSync } from "../sync/mls";
 import { useConversations } from "./hooks";
@@ -96,78 +97,6 @@ const ROLE_LABEL: Record<HubRole, string> = {
   moderator: "Moderator",
   member: "Member",
 };
-
-/** The words for a hub audit line -- the hub_events mirror of eventText. */
-function hubEventText(event: HubEvent, selfUserId: string): string {
-  const actor =
-    event.actorUserId === selfUserId
-      ? "You"
-      : event.actorDisplayName || event.actorUsername;
-  const target =
-    event.targetUserId === selfUserId
-      ? "you"
-      : (event.targetDisplayName || event.targetUsername) ?? "someone";
-
-  switch (event.kind) {
-    case "member_added":
-      return event.actorUserId === event.targetUserId
-        ? `${actor} joined`
-        : event.historyShared
-          ? `${actor} added ${target}, with earlier messages shared`
-          : `${actor} added ${target}`;
-    case "member_removed":
-      return event.actorUserId === event.targetUserId
-        ? `${actor} left`
-        : `${actor} removed ${target}`;
-    case "member_banned":
-      return `${actor} banned ${target}`;
-    case "member_unbanned":
-      return `${actor} unbanned ${target}`;
-    case "role_changed":
-      return `${actor} made ${target} ${event.title ?? "a member"}`;
-    case "renamed":
-      return `${actor} named the hub "${event.title ?? ""}"`;
-    case "avatar_changed":
-      return `${actor} changed the hub picture`;
-    case "channel_moved":
-      return `${actor} moved #${event.title ?? "a channel"} to a category`;
-    case "category_created":
-      return `${actor} created the category "${event.title ?? ""}"`;
-    case "category_renamed":
-      return `${actor} renamed a category to "${event.title ?? ""}"`;
-    case "category_deleted":
-      return `${actor} deleted the category "${event.title ?? ""}"`;
-    case "channel_created":
-      return `${actor} created #${event.title ?? "a channel"}`;
-    case "channel_renamed":
-      return `${actor} renamed a channel to #${event.title ?? ""}`;
-    case "channel_topic":
-      return event.title
-        ? `${actor} set a channel topic`
-        : `${actor} cleared a channel topic`;
-    case "channel_posting":
-      return event.title === "moderators"
-        ? `${actor} made a channel announcement-only`
-        : `${actor} opened a channel to everyone`;
-    case "channel_slowmode":
-      return event.title
-        ? `${actor} set slowmode to ${event.title}s`
-        : `${actor} turned slowmode off`;
-    case "message_deleted":
-      return `${actor} removed a message`;
-    case "message_pinned":
-      return `${actor} pinned a message`;
-    case "message_unpinned":
-      return `${actor} unpinned a message`;
-    case "invite_created":
-      return `${actor} created an invite link`;
-    case "invite_revoked":
-      return `${actor} revoked an invite link`;
-    default:
-      // A kind from a newer server: render nothing rather than guess.
-      return "";
-  }
-}
 
 export function HubDetails({
   hubId,
