@@ -63,6 +63,7 @@ import {
   localMediaPatch,
   micStatus,
   nextCameraId,
+  overGrantStops,
   shouldJoinMuted,
   liveVideoKeys,
   paceSubscription,
@@ -1771,14 +1772,17 @@ class VoiceSession {
       if (event.type !== "call_state" || event.callId !== callId) return;
       if (event.error === "VIDEO_OVER_GRANT") {
         // The SFU muted the track; there is nothing to undo locally except
-        // the button, which must not keep saying the camera is on -- and a
-        // request still settling must not say it again.
-        this.#cameraAsked += 1;
-        this.#screenAsked += 1;
+        // the button, which must not keep saying it is on -- and a request
+        // still settling must not say it again. Only the source the server
+        // muted: the other is still published and still seen
+        // (client-voice-6). No source is an older server's frame, and both.
+        const stops = overGrantStops(event.source);
+        if (stops.camera) this.#cameraAsked += 1;
+        if (stops.screen) this.#screenAsked += 1;
         this.#set({
-          camera: { on: false, paused: false },
-          screen: { on: false },
-          error: "Your video exceeds this call's limit and was stopped.",
+          ...(stops.camera ? { camera: { on: false, paused: false } } : {}),
+          ...(stops.screen ? { screen: { on: false } } : {}),
+          error: stops.line,
         });
         return;
       }

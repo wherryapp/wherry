@@ -993,3 +993,40 @@ export function tilesDrawAbovePage(state: {
 }): boolean {
   return state.nativeEngine && state.capabilities.renderVideo;
 }
+
+// -- the server's over-grant mute --------------------------------------------
+
+/**
+ * Which of this page's video sources a `VIDEO_OVER_GRANT` frame turns off.
+ *
+ * The server mutes exactly one track -- the one the `track_published`
+ * webhook found over the grant -- and since 2026-09-29 says which beside
+ * the error. Turning both off when only one was muted is the bug this
+ * answers (client-voice-6): a camera over its ceiling during a share took
+ * the self screen tile down and set the button back to "Share screen" while
+ * the screen was still published and seen by everybody. A frame with no
+ * source is an older server's, and keeps the old both-off: it cannot say
+ * which, and "off" is the safe reading of a button.
+ */
+export function overGrantStops(source: VideoSource | undefined): {
+  camera: boolean;
+  screen: boolean;
+  line: string;
+} {
+  if (source === "camera") {
+    return {
+      camera: true,
+      screen: false,
+      line: "Your camera exceeds this call's limit and was stopped.",
+    };
+  }
+  if (source === "screen") {
+    return {
+      camera: false,
+      screen: true,
+      line: "Your screen share exceeds this call's limit and was stopped.",
+    };
+  }
+  return { camera: true, screen: true, line: "Your video exceeds this call's limit and was stopped." };
+}
+

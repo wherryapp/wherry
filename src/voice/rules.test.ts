@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { Call } from "../api/types";
 import {
   audioPresetFor,
+  overGrantStops,
   callerIsRinging,
   callKeyContext,
   cameraOnVisibility,
@@ -893,3 +894,19 @@ test("localMediaPatch: a source the page is changing is left to that change", ()
     { camera: { on: false, paused: false } },
   );
 });
+
+test("an over-grant frame turns off only the source the server muted", () => {
+  const camera = overGrantStops("camera");
+  assert.deepEqual([camera.camera, camera.screen], [true, false]);
+  assert.match(camera.line, /camera/);
+  const screen = overGrantStops("screen");
+  assert.deepEqual([screen.camera, screen.screen], [false, true]);
+  assert.match(screen.line, /screen share/);
+  // An older server names no source: both off, in the old words.
+  assert.deepEqual(overGrantStops(undefined), {
+    camera: true,
+    screen: true,
+    line: "Your video exceeds this call's limit and was stopped.",
+  });
+});
+
