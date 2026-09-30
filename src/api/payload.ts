@@ -158,11 +158,11 @@ export type MessageOp = ReactionOp | EditOp | RetractOp;
  * any new kind does, precisely because it only protects clients that already
  * have it.
  */
+export type DecodedContent = RenderableContent | MessageOp;
+
 /** What the timeline can put in a bubble: everything decode produces except
  * an operation, which is aggregated onto its target instead of rendered. */
 export type RenderableContent = MessageContent | "unsupported";
-
-export type DecodedContent = RenderableContent | MessageOp;
 
 /**
  * Discriminates an operation from renderable content. `MessageContent` never

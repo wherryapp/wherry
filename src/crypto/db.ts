@@ -348,7 +348,12 @@ export async function clearHistoryKeys(): Promise<void> {
 
 /**
  * The private half of a published key package, waiting for the welcome that
- * consumes it. Kept until a join uses it or it is pruned.
+ * consumes it. Kept until a join uses it; nothing prunes. A package claimed
+ * by a commit that then lost the epoch race never gets a welcome, so those
+ * accumulate, and every welcome tries each in turn. Pruning by age would
+ * need care: a package the server still holds unclaimed can be claimed
+ * months later, and deleting its private half here turns that welcome into
+ * a NOT_IN_GROUP.
  */
 export type StoredKeyPackage = {
   /** The wire-encoded public package, for joinGroup. */

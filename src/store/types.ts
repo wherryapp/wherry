@@ -101,7 +101,7 @@ export type StoredConversation = {
   /**
    * The channel's content class, straight off the wire. A *readable* class
    * -- 'public' or 'invite_only' -- is what routes a send around the E2E
-   * seal (sync/engine.ts enqueue); ask `isServerReadable` (ui/hub-class.ts)
+   * seal (sync/engine.ts enqueue); ask `isServerReadable` (api/hub-class.ts)
    * rather than comparing to 'public', which is the different question of
    * whether anyone may join. Absent on pre-hubs rows, which are all sealed.
    */
@@ -197,7 +197,7 @@ export type OutboxEntry = {
   archive?: { userId: string; payload: Uint8Array }[];
   /**
    * Set when enqueue could not encrypt yet -- no group state (not joined,
-   * group not created) or no cached recipients. `payload` is empty and
+   * group not created) or no history key cached yet. `payload` is empty and
    * `content` holds the plaintext; the outbox flush encrypts when it can,
    * and entries behind one of these in the same conversation wait so the
    * conversation's order is preserved.

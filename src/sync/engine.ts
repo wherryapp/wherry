@@ -737,7 +737,8 @@ export class SyncEngine {
       ? { ...base, ...sealed }
       : {
           // Cannot encrypt yet -- no group state (not joined, or the group
-          // is still being created) or no recipient keys. Parked with the
+          // is still being created) or no history key cached yet
+          // (HISTORY_KEY_UNAVAILABLE; see sealForOutbox). Parked with the
           // plaintext; the flush seals it the moment it can. The message
           // still appears instantly, which is the outbox's whole promise.
           ...base,
@@ -2424,7 +2425,6 @@ export class SyncEngine {
     await this.#refreshConversations(signal);
   }
 
-  /** Forces the next tick to re-read conversations. */
   /**
    * Stores a hubs list the caller already holds -- the answer to a reorder,
    * or the optimistic copy sent ahead of it -- and tells every surface,
@@ -2438,6 +2438,7 @@ export class SyncEngine {
     broadcast({ type: "hubs" });
   }
 
+  /** Forces the next tick to re-read conversations. */
   invalidateConversations(): void {
     this.#lastConversationRefresh = 0;
     this.poke();
