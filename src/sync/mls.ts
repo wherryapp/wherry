@@ -33,7 +33,7 @@ import {
   saveRotatedKey,
 } from "../crypto/history";
 import { store } from "../store";
-import { planJoin } from "./join-plan";
+import { planJoin, planWelcomeFailure } from "./join-plan";
 
 /** Cached per conversation so enqueue can seal archive rows offline. */
 export type CachedRecipient = { userId: string; publicKey: string };
@@ -103,6 +103,11 @@ export class MlsSync {
    * engine.ts's #delayAfter already applies to the outer poll loop.
    */
   #reconcileCooldownUntil = new Map<string, number>();
+  /**
+   * welcomeId -> failed attempts to open it this session. In memory: a
+   * restart retrying a stubborn welcome a few more times costs nothing.
+   */
+  #welcomeFailures = new Map<string, number>();
   /**
    * conversationId -> when this device first saw it with no group in it.
    * Feeds planJoin's creation grace: deferring to the designated creator is
@@ -311,23 +316,39 @@ export class MlsSync {
     const acked: string[] = [];
     const joined: string[] = [];
     for (const welcome of welcomes) {
+      if (signal.aborted) break;
       try {
         await handshake.joinFromWelcome(
           welcome.conversationId,
           decodeBase64(welcome.payload),
         );
+        this.#welcomeFailures.delete(welcome.welcomeId);
         joined.push(welcome.conversationId);
         acked.push(welcome.welcomeId);
       } catch (error) {
-        if (error instanceof E2EError && error.code === "NOT_IN_GROUP") {
-          // No stored key package matches -- this browser's storage was
-          // cleared after the package was claimed. The welcome is dead to
-          // us; ack it so it stops arriving, and the reconciliation sweep
-          // on other members will re-add this device via a fresh package.
+        // Never rethrown: this runs before every send and every read, so a
+        // welcome that cannot open must cost at most its own conversation.
+        // NOT_IN_GROUP -- no stored key package matches, because this
+        // browser's storage was cleared after the package was claimed -- is
+        // dead at once; anything else gets a few passes (planWelcomeFailure).
+        const attempts = (this.#welcomeFailures.get(welcome.welcomeId) ?? 0) + 1;
+        const plan = planWelcomeFailure({
+          notInGroup: error instanceof E2EError && error.code === "NOT_IN_GROUP",
+          attempts,
+        });
+        if (plan === "ack") {
+          // Acked so it stops arriving; another member's sweep re-adds this
+          // device with a fresh package, or it joins by external commit.
+          this.#welcomeFailures.delete(welcome.welcomeId);
           acked.push(welcome.welcomeId);
         } else {
-          throw error;
+          this.#welcomeFailures.set(welcome.welcomeId, attempts);
         }
+        console.error(
+          `welcome ${welcome.welcomeId} for ${welcome.conversationId} did not open` +
+            (plan === "ack" ? "; giving up on it" : `; attempt ${attempts}`),
+          error,
+        );
       }
     }
 

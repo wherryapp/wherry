@@ -10,7 +10,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CREATION_GRACE_MS, planJoin } from "./join-plan.ts";
+import {
+  CREATION_GRACE_MS,
+  WELCOME_ATTEMPTS,
+  planJoin,
+  planWelcomeFailure,
+} from "./join-plan.ts";
 
 const ME = "01a058ac-0000-7000-8000-000000000001";
 const OTHER = "01a05352-0000-7000-8000-000000000002";
@@ -215,5 +220,31 @@ test("a sole device with no group creates it immediately", () => {
       memberDeviceIds: [ME],
     }),
     { action: "create" },
+  );
+});
+
+// A welcome that does not open. It must never be able to stop the pass, and
+// the only question left is whether to keep it for the next one.
+
+test("a welcome no key package matches is acknowledged at once", () => {
+  assert.equal(planWelcomeFailure({ notInGroup: true, attempts: 1 }), "ack");
+});
+
+test("any other failure is retried before it is given up on", () => {
+  // A transient IndexedDB refusal must not cost the device its welcome.
+  for (let attempts = 1; attempts < WELCOME_ATTEMPTS; attempts += 1) {
+    assert.equal(planWelcomeFailure({ notInGroup: false, attempts }), "retry");
+  }
+});
+
+test("a welcome that keeps failing is eventually acknowledged", () => {
+  // Otherwise a malformed welcome comes back on every pass, forever.
+  assert.equal(
+    planWelcomeFailure({ notInGroup: false, attempts: WELCOME_ATTEMPTS }),
+    "ack",
+  );
+  assert.equal(
+    planWelcomeFailure({ notInGroup: false, attempts: WELCOME_ATTEMPTS + 3 }),
+    "ack",
   );
 });

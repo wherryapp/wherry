@@ -113,3 +113,35 @@ export function planJoin(input: {
 
   return { action: "wait" };
 }
+
+/**
+ * How many passes a welcome may fail to open, for any reason other than "no
+ * key package here matches it", before this device gives up on it.
+ */
+export const WELCOME_ATTEMPTS = 5;
+
+/**
+ * What to do with a welcome that did not open: acknowledge it (it is dead to
+ * this device and stops arriving) or leave it for the next pass.
+ *
+ * Either way the caller carries on with the rest of the pass. A welcome used
+ * to rethrow anything but NOT_IN_GROUP, and because the welcome drain runs
+ * before the outbox flush and the inbox drain, one welcome that never opened
+ * -- a malformed payload decodes to EPOCH_UNAVAILABLE -- came back on every
+ * pass and stopped the account sending or receiving anything, anywhere.
+ *
+ * Giving up is safe for the same reason NOT_IN_GROUP always was: a device
+ * with no group state is re-added by another member's sweep, or joins by
+ * external commit (`planJoin`). The attempts are there so that a transient
+ * failure -- IndexedDB refusing one write -- is retried rather than thrown
+ * away on its first occurrence.
+ */
+export function planWelcomeFailure(input: {
+  /** The provider found no stored key package matching the welcome. */
+  notInGroup: boolean;
+  /** Failed attempts on this welcome, including the one just made. */
+  attempts: number;
+}): "ack" | "retry" {
+  if (input.notInGroup) return "ack";
+  return input.attempts >= WELCOME_ATTEMPTS ? "ack" : "retry";
+}
