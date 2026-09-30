@@ -380,6 +380,7 @@ const frame = (over: Partial<CallFrame>): CallFrame => ({
   status: "ringing",
   reason: null,
   participants: [],
+  micMuted: false,
   ...over,
 });
 
@@ -486,11 +487,19 @@ test("setActive carries the call, its label and whether anybody's video is on", 
     label: null,
     audioOnly: true,
     pageOwnsAudio: false,
+    micMuted: null,
   });
   // Still asking the server for a token: active, no id yet.
   assert.deepEqual(
     nativeActiveCall(state({ phase: "connecting", conversationId: "conv" }), labels, true),
-    { active: true, callId: null, label: "Alice", audioOnly: true, pageOwnsAudio: false },
+    {
+      active: true,
+      callId: null,
+      label: "Alice",
+      audioOnly: true,
+      pageOwnsAudio: false,
+      micMuted: null,
+    },
   );
   const connected = state({ phase: "connected", conversationId: "conv", call: { id: "c" } });
   assert.deepEqual(nativeActiveCall(connected, labels, false), {
@@ -499,6 +508,7 @@ test("setActive carries the call, its label and whether anybody's video is on", 
     label: "Alice",
     audioOnly: true,
     pageOwnsAudio: false,
+    micMuted: null,
   });
   const at = (over: Partial<ActiveCallInput>) =>
     nativeActiveCall({ ...connected, ...over }, labels, false);
@@ -520,6 +530,24 @@ test("the page owns the call's audio only once connected and in front (I-58, bra
   }
   assert.equal(nativeActiveCall({ ...connected, call: null }, {}, true).pageOwnsAudio, false);
   assert.equal(nativeActiveCall({ ...connected, phase: "elsewhere" }, {}, true).pageOwnsAudio, false);
+});
+
+test("the page's mute reaches a native call UI only where one shows a mute (client-voice-7)", () => {
+  const connected = state({ phase: "connected", conversationId: "conv", call: { id: "c" } });
+  // CallKit: its button follows the page, muted and unmuted.
+  assert.equal(nativeActiveCall({ ...connected, micMuted: true }, {}, false, true).micMuted, true);
+  assert.equal(nativeActiveCall({ ...connected, micMuted: false }, {}, false, true).micMuted, false);
+  // A call joining muted is reported muted from its first report.
+  assert.equal(
+    nativeActiveCall({ ...connected, phase: "connecting", micMuted: true }, {}, false, true).micMuted,
+    true,
+  );
+  // Android and the page-only shells: nothing, so a mute press is not a
+  // native report (on Android it would restart the service's notification).
+  assert.equal(nativeActiveCall({ ...connected, micMuted: true }, {}, false).micMuted, null);
+  assert.equal(nativeActiveCall({ ...connected, micMuted: true }, {}, false, false).micMuted, null);
+  // No call: nothing to show.
+  assert.equal(nativeActiveCall(state({ micMuted: true }), {}, false, true).micMuted, null);
 });
 
 // -- labels -----------------------------------------------------------------

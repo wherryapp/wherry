@@ -21,7 +21,9 @@
 //   call already ended on this device (EndedCalls, in RingMessage.swift) is
 //   reported and ended at once, never rung again.
 // - The provider delegate: Answer, End (a signed decline while ringing, a
-//   hang-up once answered), Mute, reset.
+//   hang-up once answered), Mute, reset. Mute goes both ways: CallKit's
+//   button reaches the page as `mute`, and the page's mute reaches CallKit
+//   through `setActive`'s `micMuted` (`matchMute`).
 // - The commands the page drives, `debugIncoming` (debug builds) and a
 //   debug-only launch ring (`WHERRY_DEBUG_RING`), which run the same handler
 //   without APNs: the simulator's only way in (rows I-51, I-52).
@@ -78,6 +80,9 @@ struct ActiveArgs: Decodable {
   let audioOnly: Bool
   /// Absent from an older page: false.
   let pageOwnsAudio: Bool?
+  /// The page's microphone mute (client-voice-7); null or absent: leave
+  /// CallKit's mute as it is.
+  let micMuted: Bool?
 }
 
 struct EndedArgs: Decodable {
@@ -107,6 +112,12 @@ final class TrackedCall {
   /// word: the provider delegate must not send it back as an action.
   var answerRequested = false
   var endRequested = false
+  /// What CallKit's mute button shows for this call, as its last
+  /// CXSetMutedCallAction said (false until one has).
+  var muted = false
+  /// A mute this plugin asked CallKit for on the page's word: the delegate
+  /// does not send its echo back to the page as a `mute` event.
+  var muteRequested: Bool?
   var expiry: DispatchWorkItem?
   var watchdog: DispatchWorkItem?
 
@@ -369,6 +380,8 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
         if args.pageOwnsAudio == true, call.answered, !call.endRequested {
           NSLog("[wherry] calls: page owns audio; ending CallKit's call uuid=%@", call.callId)
           self.endLocally(call)
+        } else if let muted = args.micMuted {
+          self.matchMute(call, muted)
         }
       }
       if !args.active {
@@ -683,6 +696,26 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     }
   }
 
+  /// The page's mute, shown on CallKit's own button (client-voice-7): a mute
+  /// from the page's button, a call joined muted, or an unmute that failed
+  /// would otherwise leave the lock screen reading the opposite, and the next
+  /// press there would ask for what the page already had. Only for a call
+  /// CallKit holds answered; its echo is not sent back to the page.
+  private func matchMute(_ call: TrackedCall, _ muted: Bool) {
+    guard call.answered, !call.endRequested else { return }
+    let target = call.muteRequested ?? call.muted
+    if target == muted { return }
+    call.muteRequested = muted
+    let transaction = CXTransaction(action: CXSetMutedCallAction(call: call.uuid, muted: muted))
+    controller.request(transaction) { error in
+      guard let error = error else { return }
+      DispatchQueue.main.async {
+        if call.muteRequested == muted { call.muteRequested = nil }
+        NSLog("[wherry] calls: mute to CallKit refused (%@)", Self.describe(error))
+      }
+    }
+  }
+
   /// Drops a call CallKit never took (its report failed): a later ring for
   /// it may still be reported.
   private func forget(_ uuid: UUID) {
@@ -774,7 +807,14 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
 
   func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
     if let call = calls[action.callUUID] {
-      trigger("mute", data: ["callId": call.callId, "muted": action.isMuted])
+      call.muted = action.isMuted
+      if let requested = call.muteRequested, requested == action.isMuted {
+        // The page's own mute, asked for by `matchMute`: it knows.
+        call.muteRequested = nil
+      } else {
+        call.muteRequested = nil
+        trigger("mute", data: ["callId": call.callId, "muted": action.isMuted])
+      }
     }
     action.fulfill()
   }

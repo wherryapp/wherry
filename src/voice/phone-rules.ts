@@ -429,6 +429,7 @@ export type ActiveCallInput = {
   camera: { on: boolean };
   screen: { on: boolean };
   participants: readonly { camera: boolean; screen: boolean }[];
+  micMuted: boolean;
 };
 
 /**
@@ -456,15 +457,30 @@ export function callServiceWanted(state: Pick<ActiveCallInput, "phase">): boolea
  *  connected and the page is in front, CallKit has carried the ring and the
  *  plugin ends its call (never the page's); a call answered on the lock
  *  screen keeps CallKit until the app is opened. The plugin ignores it
- *  where it holds no CallKit call (Android; an outgoing call). */
+ *  where it holds no CallKit call (Android; an outgoing call).
+ *
+ *  `micMuted` is the page's mute, sent only where a native call UI shows a
+ *  mute of its own (`muteShownNatively`: CallKit), so CallKit's button reads
+ *  what the page does -- a mute from the page's button, a call joined muted,
+ *  or a failed unmute (client-voice-7). Null elsewhere: on Android every
+ *  change of the report restarts the call service's notification, and it
+ *  shows no mute. */
 export function nativeActiveCall(
   state: ActiveCallInput,
   labels: Readonly<Record<string, string>>,
   inFront: boolean,
+  muteShownNatively = false,
 ): ActiveReport {
   const active = callServiceWanted(state);
   if (!active) {
-    return { active: false, callId: null, label: null, audioOnly: true, pageOwnsAudio: false };
+    return {
+      active: false,
+      callId: null,
+      label: null,
+      audioOnly: true,
+      pageOwnsAudio: false,
+      micMuted: null,
+    };
   }
   const video =
     state.camera.on || state.screen.on || state.participants.some((p) => p.camera || p.screen);
@@ -474,6 +490,7 @@ export function nativeActiveCall(
     label: state.conversationId ? (labels[state.conversationId] ?? null) : null,
     audioOnly: !video,
     pageOwnsAudio: inFront && state.phase === "connected" && state.call !== null,
+    micMuted: muteShownNatively ? state.micMuted : null,
   };
 }
 

@@ -189,6 +189,13 @@ export type ActiveReport = {
    *  carried the ring, and the iOS plugin ends its call without ending the
    *  page's (branch B of row I-58; phone-rules.ts's `nativeActiveCall`). */
   pageOwnsAudio: boolean;
+  /** The page's microphone mute, for CallKit's own mute button to show
+   *  (the lock screen, Control Center): the iOS plugin asks CallKit to
+   *  match it while CallKit holds the answered call. Null where no native
+   *  call UI shows a mute (Android, the page-only shells) and while no call
+   *  is active, so a mute press there sends nothing native. Absent from an
+   *  older page: the plugin then leaves CallKit's mute alone. */
+  micMuted: boolean | null;
 };
 
 export interface PhoneCalls {

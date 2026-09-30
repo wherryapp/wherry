@@ -542,6 +542,7 @@ class PhoneBridge {
         state,
         this.#labels,
         document.visibilityState === "visible",
+        this.#capabilities?.ringUi === "callkit",
       );
       const key = JSON.stringify(report);
       if (key !== this.#activeKey) {

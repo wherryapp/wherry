@@ -103,6 +103,11 @@ pub struct ActiveArgs {
     /// CallKit's call (never the page's). Absent from an older page: false.
     #[serde(default)]
     pub page_owns_audio: bool,
+    /// The page's microphone mute, for CallKit's mute button to follow
+    /// (client-voice-7). None where no native call UI shows a mute, and from
+    /// an older page: the plugin then leaves CallKit's mute alone.
+    #[serde(default)]
+    pub mic_muted: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
