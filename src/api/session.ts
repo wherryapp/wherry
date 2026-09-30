@@ -153,6 +153,27 @@ export function loadSession(): StoredSession | null {
 
 /** Stores the session, and separately remembers the device for next time. */
 export function saveSession(result: AuthResult): StoredSession {
+  const session = holdSession(result);
+  persistSession(session);
+  return session;
+}
+
+/**
+ * The first half of saveSession: the session is live for this page (every
+ * request carries its token) but not yet written anywhere a reload reads,
+ * while the device id is remembered at once.
+ *
+ * For a sign-in that has a screen still to pass before it counts: the
+ * recovery code, shown exactly once after registering (or after a recovery
+ * mints a new one). Persisted at once, a reload or a killed app on that
+ * screen came back signed in with the code gone for good and nothing saying
+ * so. Held, it comes back signed out, and signing in again with the
+ * password is the whole cost. The device id is not held back, because the
+ * server already created that row: a re-login without it would make
+ * another, and a phantom device with no key packages stops the membership
+ * sweep committing.
+ */
+export function holdSession(result: AuthResult): StoredSession {
   const session: StoredSession = {
     token: result.token,
     expiresAt: result.expiresAt,
@@ -161,14 +182,19 @@ export function saveSession(result: AuthResult): StoredSession {
     emailVerified: result.emailVerified,
   };
   cached = session;
-  writeKey(SESSION_KEY, JSON.stringify(session));
-  void vaultSet(VAULT_SESSION, JSON.stringify(session));
 
   // The line this whole file exists for.
   writeKey(DEVICE_KEY, result.device.id);
   void vaultSet(VAULT_DEVICE, result.device.id);
 
   return session;
+}
+
+/** The second half: the held session is written where a reload reads it. */
+export function persistSession(session: StoredSession): void {
+  cached = session;
+  writeKey(SESSION_KEY, JSON.stringify(session));
+  void vaultSet(VAULT_SESSION, JSON.stringify(session));
 }
 
 /**

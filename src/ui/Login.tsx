@@ -9,7 +9,8 @@ import {
   defaultDeviceName,
   deviceDescriptor,
   forgetDevice,
-  saveSession,
+  holdSession,
+  persistSession,
   storedDeviceId,
 } from "../api/session";
 import { clearDeviceCrypto } from "../crypto/db";
@@ -69,6 +70,12 @@ export function Login({
   const [error, setError] = useState<string | null>(null);
   const [postAuth, setPostAuth] = useState<PostAuth | null>(null);
 
+  /** The one way out of this screen: persist the held session, then go. */
+  function enter(session: StoredSession) {
+    persistSession(session);
+    onSignedIn(session);
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -121,10 +128,11 @@ export function Login({
         await persistKeypair(keys.keypair);
         // Not signed in yet: the recovery code screen stands between the
         // account existing and the app opening, because it is shown once.
+        // Held, not persisted, until Continue -- see holdSession.
         setPostAuth({
           kind: "show-code",
           code: keys.recoveryCode,
-          session: saveSession(result),
+          session: holdSession(result),
         });
         return;
       }
@@ -155,7 +163,10 @@ export function Login({
         });
       }
       await forgetOtherDevice(result.device.id);
-      const session = saveSession(result);
+      // Held while the account key is unlocked: a recovery may yet mint a
+      // new code to show once, and the session is persisted only when this
+      // sign-in actually completes (enter, below).
+      const session = holdSession(result);
 
       // While the password is still in hand. Never kept beyond this.
       const unlock = await unlockAccountKey(password);
@@ -164,7 +175,7 @@ export function Login({
         return;
       }
 
-      onSignedIn(session);
+      enter(session);
     } catch (caught) {
       // Match on the code, never the message -- docs/api.md is explicit that
       // the text is for humans and will change.
@@ -196,7 +207,7 @@ export function Login({
     return (
       <RecoveryCodeScreen
         code={postAuth.code}
-        onDone={() => onSignedIn(postAuth.session)}
+        onDone={() => enter(postAuth.session)}
       />
     );
   }
@@ -212,7 +223,7 @@ export function Login({
             session: postAuth.session,
           })
         }
-        onSkip={() => onSignedIn(postAuth.session)}
+        onSkip={() => enter(postAuth.session)}
       />
     );
   }
