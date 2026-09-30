@@ -317,10 +317,10 @@ fn builtin_aec_off(
 ///
 /// When recording is already initialised nothing is asked: the module would
 /// refuse, and the path was decided at that `InitRecording`, which this
-/// function (or the connect's call) preceded. The one other re-init, a
-/// mid-call `switch_recording_device`, re-initialises only when recording
-/// was initialised -- unmuted -- and nothing can have been accepted since the
-/// last repair, because every `EnableBuiltInAEC` in that time was refused.
+/// function (or the connect's call) preceded. A mid-call capture switch
+/// (`voice_set_input_device`) no longer uses the SDK's
+/// `switch_recording_device` and re-initialises through `restart_recording`,
+/// so it has the repair in front too.
 ///
 /// That last argument holds only while nothing but this file initialises
 /// recording, which was not true before the microphone gate (below): a share
@@ -506,7 +506,18 @@ fn microphone_gate_open() -> bool {
 /// The log line carries whether recording was still initialised at this
 /// point, which is the reading that tells the mechanism above from anything
 /// else: `false` right after `screen audio muted` with the microphone open.
-pub(crate) fn ensure_microphone_recording(when: &str) {
+/// What `ensure_microphone_recording` found and did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MicCheck {
+  /// No call, or the microphone muted or never published.
+  Closed,
+  /// Open, and recording read as initialised: nothing was done.
+  Running,
+  /// Open, and recording was started again here (or its start was retried).
+  Restarted,
+}
+
+pub(crate) fn ensure_microphone_recording(when: &str) -> MicCheck {
   // Before the snapshot, so a hang-up or a mute is either wholly before this
   // or wholly after it.
   let _sequence = mic_recording_lock();
@@ -519,8 +530,8 @@ pub(crate) fn ensure_microphone_recording(when: &str) {
       session.mic_start_failed,
     )
   });
-  let Some((id, published, processing, engine_held, start_failed)) = snapshot else { return };
-  let Ok(audio) = platform_audio() else { return };
+  let Some((id, published, processing, engine_held, start_failed)) = snapshot else { return MicCheck::Closed };
+  let Ok(audio) = platform_audio() else { return MicCheck::Closed };
   let recording = audio.is_recording_initialized();
   let open = published && microphone_gate_open();
   if !open {
@@ -528,11 +539,11 @@ pub(crate) fn ensure_microphone_recording(when: &str) {
       "voice: {when} -- microphone {}, left closed (recording initialised {recording})",
       if published { "muted" } else { "not published" }
     );
-    return;
+    return MicCheck::Closed;
   }
   if recording && !start_failed {
     log::info!("voice: {when} -- microphone open, recording still initialised: nothing to restart");
-    return;
+    return MicCheck::Running;
   }
   if recording {
     // D-74's state: `InitRecording` succeeded and `StartRecording` was
@@ -547,6 +558,10 @@ pub(crate) fn ensure_microphone_recording(when: &str) {
     log::info!(
       "voice: {when} -- microphone open but its recording was stopped (recording initialised false): starting it again"
     );
+    // libwebrtc stopped it (D-68's stop inside a mute), at a moment this
+    // does not know and was most likely just now: the whole settle, not the
+    // remainder of one (`RECORDING_SETTLE_MS`).
+    std::thread::sleep(std::time::Duration::from_millis(RECORDING_SETTLE_MS));
     before_init_recording(&audio, processing, engine_held, when);
   }
   let started = match audio.start_recording() {
@@ -563,6 +578,7 @@ pub(crate) fn ensure_microphone_recording(when: &str) {
     }
   };
   set_mic_start_failed(id, !started);
+  MicCheck::Restarted
 }
 
 /// Records whether the shell's last start of the open microphone failed
@@ -590,9 +606,110 @@ pub(crate) fn recheck_microphone(when: &'static str) {
       if session_id() != Some(id) {
         return;
       }
-      ensure_microphone_recording(&format!("{when} (+{at} ms)"));
+      let label = format!("{when} (+{at} ms)");
+      if take_share_stop_pending(id) {
+        // Blocking (it holds the recording lock across the settle).
+        tauri::async_runtime::spawn_blocking(move || restart_open_microphone(&label)).await.ok();
+      } else {
+        ensure_microphone_recording(&label);
+      }
     }
   });
+}
+
+// -- a share's sound muted before its sender was negotiated -------------------
+//
+// Row "quick share" (rig-1001 finding 3, 2026-09-30): Share with audio, then
+// Stop within ~100-200 ms, left the microphone silent (-140 at the peer) for
+// the rest of the call. The libwebrtc log (`WHERRY_WEBRTC_LOG=1`) showed why.
+// A share's sound muted that soon has a sender whose send state has not been
+// applied yet, so the mute stops nothing and `ensure_microphone_recording`
+// reads "initialised: nothing to restart". The send state lands with the
+// publisher's next negotiation, and there, in order: `MuteStream: ADM:1` ->
+// `StopRecording` (D-68's stop, late), `EnableBuiltInAEC(1)` accepted (the
+// module is no longer initialised, so the refusal D-67 relies on is gone)
+// with AEC3 turned off beside it, then an `InitRecording` from libwebrtc's own
+// sending-stream bookkeeping and **no** `StartRecording`. The +1 s and +3 s
+// looks then read "initialised" again and did nothing -- initialised is not
+// recording, and nothing the SDK exposes tells the two apart.
+//
+// So when the share's sound is muted and recording still reads initialised,
+// the stop is taken to be still coming, and the +1 s look (after the
+// negotiation, `RECHECK_AFTER_MS`) restarts recording through the shell's own
+// path -- stop, the repair, init and start -- instead of trusting the reading.
+// If no stop came after all, that restart costs the microphone a few tens of
+// milliseconds once. S-18's rule is untouched: the share's sound stays
+// published and muted.
+
+static SHARE_STOP_PENDING: Mutex<Option<u64>> = Mutex::new(None);
+
+/// The share's sound was muted with recording still reading initialised, in
+/// call `id`: its stop may still be coming (above).
+pub(crate) fn mark_share_stop_pending(id: u64) {
+  *SHARE_STOP_PENDING.lock().unwrap() = Some(id);
+}
+
+fn take_share_stop_pending(id: u64) -> bool {
+  let mut pending = SHARE_STOP_PENDING.lock().unwrap();
+  match *pending {
+    Some(marked) if marked == id => {
+      *pending = None;
+      true
+    }
+    _ => false,
+  }
+}
+
+/// Recording stopped and started again through the shell's own path, if the
+/// microphone is open: the repair in front of the init, as on an unmute.
+fn restart_open_microphone(when: &str) {
+  let _sequence = mic_recording_lock();
+  let snapshot = SESSION.lock().unwrap().as_ref().map(|session| {
+    (session.id, session.mic.is_some(), session.processing, session.engine_held)
+  });
+  let Some((id, published, processing, engine_held)) = snapshot else { return };
+  let Ok(audio) = platform_audio() else { return };
+  if !(published && microphone_gate_open()) {
+    log::info!("voice: {when} -- microphone not open, nothing to restart");
+    return;
+  }
+  log::info!(
+    "voice: {when} -- the share's sound was muted before its sender was negotiated, so recording is restarted rather than read (initialised {})",
+    audio.is_recording_initialized()
+  );
+  if let Err(error) = audio.stop_recording() {
+    log::debug!("voice: stop_recording {when}: {error:?}");
+  }
+  note_recording_stopped();
+  restart_recording(&audio, id, processing, engine_held, when);
+}
+
+/// The start half the shell uses everywhere it restarts recording itself:
+/// the repair, then `start_recording`, which initialises (on the selected
+/// device) and starts. True if it started.
+fn restart_recording(
+  audio: &PlatformAudio,
+  id: u64,
+  processing: ProcessingArgs,
+  engine_held: bool,
+  when: &str,
+) -> bool {
+  settle_before_start();
+  before_init_recording(audio, processing, engine_held, when);
+  let started = match audio.start_recording() {
+    Ok(()) => true,
+    Err(error) => {
+      log::warn!("voice: start_recording {when}: {error:?}");
+      false
+    }
+  };
+  set_mic_start_failed(id, !started);
+  log::info!(
+    "voice: {when} -- recording restarted (initialised {}){}",
+    audio.is_recording_initialized(),
+    if started { "" } else { ", START FAILED" }
+  );
+  started
 }
 
 // -- the session ------------------------------------------------------------
@@ -1695,9 +1812,20 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
       options
     )));
     match futures_util::future::select(connecting, cancel).await {
-      futures_util::future::Either::Left((connected, _)) => {
-        connected.map_err(|e| VoiceError::new("connect_failed", e.to_string()))?
-      }
+      futures_util::future::Either::Left((connected, _)) => match connected {
+        Ok(connected) => connected,
+        Err(error) => {
+          // Our own line: until 2026-10-01 a failed connect left only the
+          // SDK's retry lines, so "why did this call never connect" (and
+          // whether a hang-up was involved) had no answer in the shell's log.
+          log::warn!(
+            "voice: connect failed after {} ms{}: {error}",
+            started.elapsed().as_millis(),
+            if CONNECT_CANCELLED.load(Ordering::SeqCst) { " (after a hang-up)" } else { "" }
+          );
+          return Err(VoiceError::new("connect_failed", error.to_string()));
+        }
+      },
       futures_util::future::Either::Right(((), connecting)) => {
         drop(connecting);
         log::info!(
@@ -1937,6 +2065,8 @@ pub async fn voice_set_mic(
       // The gate first: opening it starts nothing, and a closed one would
       // turn the start below into a no-op that reports success.
       set_microphone_gate(true, "on unmute");
+      // Not straight after the mute's stop (`settle_before_start`).
+      settle_before_start();
       // Mute stopped recording, so this start initialises it again: repair
       // anything a renegotiation while muted turned on (`before_init_recording`).
       // With the gate, nothing else can have initialised it while muted --
@@ -1961,6 +2091,7 @@ pub async fn voice_set_mic(
       if let Err(error) = audio.stop_recording() {
         log::debug!("voice: stop_recording on mute: {error:?}");
       }
+      note_recording_stopped();
       // Stopped on purpose: a failed start before this is moot, and the
       // unmute initialises and starts afresh.
       set_mic_start_failed(id, false);
@@ -2032,6 +2163,19 @@ pub async fn voice_set_mic(
     }
     return Ok(());
   }
+  // Held from here to the start, and the call re-read under it: a hang-up
+  // that landed while the publish was in flight has closed the gate and
+  // stopped recording under this same lock, and a start after it would
+  // light the device for a call that is over (mac-1001, "a mic publish can
+  // race a hang-up"). The publication goes with the closed room.
+  let _sequence = mic_recording_lock();
+  if session_id() != Some(id) {
+    log::info!(
+      "voice: microphone published as {} after the call ended -- recording not started",
+      publication.sid()
+    );
+    return Ok(());
+  }
   // On the rig's pre-fix reading the publish had initialised recording by
   // this point (status §3.3), so this should ask nothing; it is here so that no `start_recording` in this file can
   // initialise recording without the repair in front of it.
@@ -2072,6 +2216,7 @@ pub async fn voice_set_mic(
       }
     }
   };
+  drop(_sequence);
   if stored && start_failed {
     // After the publication is in the session, which is what makes
     // `ensure_microphone_recording` count the microphone as open, and with
@@ -2092,7 +2237,7 @@ pub async fn voice_set_mic(
 // is the same thing `voice_connect` gets for free by being handed an id the
 // TypeScript side already filtered through `knownDeviceId`.
 #[tauri::command]
-pub fn voice_set_input_device(device_id: String) -> VoiceResult<()> {
+pub async fn voice_set_input_device(device_id: String) -> VoiceResult<()> {
   let audio = platform_audio()?;
   let devices = list_devices(&audio);
   let Some(found) = devices.inputs.iter().find(|d| d.device_id == device_id) else {
@@ -2102,10 +2247,139 @@ pub fn voice_set_input_device(device_id: String) -> VoiceResult<()> {
       format!("switch_recording_device: {device_id} is not an active capture device"),
     ));
   };
-  log::info!("voice: capture switched to {device_id} ({})", found.label);
+  let label = found.label.clone();
+  let id = RecordingDeviceId::from_unchecked_guid(&device_id);
+  if sdk_mic_switch() {
+    log::info!("voice: capture switched to {device_id} ({label}) -- WHERRY_MIC_SWITCH=sdk");
+    return audio
+      .switch_recording_device(&id)
+      .map_err(|e| VoiceError::new("device", format!("switch_recording_device: {e:?}")));
+  }
+  // Blocking: the switch holds the recording lock across the settle.
+  tauri::async_runtime::spawn_blocking(move || switch_capture(&audio, &id, &device_id, &label))
+    .await
+    .map_err(|e| VoiceError::new("device", e.to_string()))?
+}
+
+/// How long recording stays stopped before it is initialised again, when
+/// the shell stops and restarts it itself (a capture switch, the restart after
+/// a share's late stop).
+///
+/// Row D-77 (rig-1001 finding 1, 2026-09-30): the SDK's
+/// `switch_recording_device` runs `StopRecording`, `SetRecordingDevice`,
+/// `InitRecording` and `StartRecording` back to back, and on the rig every
+/// other such restart came up silent -- the capture thread received buffers at
+/// the full rate (libwebrtc's `[REC]` line: 985 callbacks in 10 s) whose peak
+/// was 1, the endpoint's own meter read 0, and the far end heard -92 to -101
+/// dBFS until the next restart, which worked. The same sequence run by the
+/// shell with the repair in front of the init failed the same way (5/5
+/// alternating); with 50 ms between the stop and the init it did not (4/4).
+/// **Believed** to be Windows' shared-mode engine still tearing down the
+/// endpoint's stream when the next one is initialised on it; the shell's own
+/// mute and unmute, which have an IPC round trip between them, never showed
+/// it. 100 ms keeps a margin over the 50 read on the rig; a switch already
+/// interrupts the microphone for about that long.
+const RECORDING_SETTLE_MS: u64 = 100;
+
+/// When the shell last stopped recording itself (a mute, a capture switch, a
+/// restart), for `settle_before_start`.
+static LAST_RECORDING_STOP: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn note_recording_stopped() {
+  *LAST_RECORDING_STOP.lock().unwrap() = Some(Instant::now());
+}
+
+/// Wait out whatever is left of `RECORDING_SETTLE_MS` since the shell's last
+/// stop, before a start that initialises recording again. The same restart
+/// straight after a stop came up silent on the rig through the unmute too
+/// (a mute and an unmute sent back to back: 1 of 4 at -140), so every start
+/// the shell makes after its own stop goes through here. Blocking, and at
+/// most 100 ms; called with the recording lock held, so nothing else starts
+/// recording meanwhile.
+fn settle_before_start() {
+  let since = LAST_RECORDING_STOP.lock().unwrap().map(|at| at.elapsed());
+  if let Some(wait) = settle_remaining(since, std::time::Duration::from_millis(RECORDING_SETTLE_MS)) {
+    std::thread::sleep(wait);
+  }
+}
+
+/// How long a start must still wait, `since` the last stop (`None`: no stop
+/// on record).
+fn settle_remaining(
+  since: Option<std::time::Duration>,
+  settle: std::time::Duration,
+) -> Option<std::time::Duration> {
+  since.filter(|since| *since < settle).map(|since| settle - since)
+}
+
+#[cfg(test)]
+mod settle_tests {
+  use super::settle_remaining;
+  use std::time::Duration;
+
+  #[test]
+  fn a_start_right_after_a_stop_waits_the_rest_of_the_settle() {
+    let settle = Duration::from_millis(100);
+    assert_eq!(settle_remaining(Some(Duration::from_millis(0)), settle), Some(settle));
+    assert_eq!(settle_remaining(Some(Duration::from_millis(30)), settle), Some(Duration::from_millis(70)));
+  }
+
+  #[test]
+  fn a_start_long_after_a_stop_or_with_none_does_not_wait() {
+    let settle = Duration::from_millis(100);
+    assert_eq!(settle_remaining(Some(Duration::from_millis(100)), settle), None);
+    assert_eq!(settle_remaining(Some(Duration::from_secs(5)), settle), None);
+    assert_eq!(settle_remaining(None, settle), None);
+  }
+}
+
+/// A mid-call capture switch through the shell's own path. Open microphone:
+/// stop, select, settle, then the start an unmute runs (the repair, init,
+/// start) -- whole under the recording lock, so no check starts recording in
+/// the gap. Otherwise (muted, not yet published, no call): select only, and
+/// the next start opens this device.
+fn switch_capture(
+  audio: &PlatformAudio,
+  id: &RecordingDeviceId,
+  device_id: &str,
+  label: &str,
+) -> VoiceResult<()> {
+  let _sequence = mic_recording_lock();
+  let snapshot = SESSION.lock().unwrap().as_ref().map(|session| {
+    (session.id, session.mic.is_some(), session.processing, session.engine_held)
+  });
+  let open = matches!(snapshot, Some((_, true, _, _))) && microphone_gate_open();
+  if audio.is_recording_initialized() {
+    if let Err(error) = audio.stop_recording() {
+      log::debug!("voice: stop_recording for a capture switch: {error:?}");
+    }
+    note_recording_stopped();
+  }
   audio
-    .switch_recording_device(&RecordingDeviceId::from_unchecked_guid(&device_id))
-    .map_err(|e| VoiceError::new("device", format!("switch_recording_device: {e:?}")))
+    .set_recording_device(id)
+    .map_err(|e| VoiceError::new("device", format!("set_recording_device: {e:?}")))?;
+  let Some((session, true, processing, engine_held)) = snapshot.filter(|_| open) else {
+    log::info!(
+      "voice: capture switched to {device_id} ({label}) -- microphone not open, selected for its next start"
+    );
+    return Ok(());
+  };
+  restart_recording(audio, session, processing, engine_held, &format!("on a capture switch to {device_id} ({label})"));
+  Ok(())
+}
+
+/// Debug builds: `WHERRY_MIC_SWITCH=sdk` puts back the SDK's own
+/// `switch_recording_device` for a mid-call capture switch, the pre-fix path,
+/// so row D-77's failure can be read again. Never in a release build.
+fn sdk_mic_switch() -> bool {
+  #[cfg(debug_assertions)]
+  {
+    std::env::var("WHERRY_MIC_SWITCH").ok().as_deref() == Some("sdk")
+  }
+  #[cfg(not(debug_assertions))]
+  {
+    false
+  }
 }
 
 #[tauri::command]

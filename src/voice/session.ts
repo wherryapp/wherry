@@ -58,6 +58,7 @@ import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
 import {
   audioPresetFor,
   callerIsRinging,
+  cameraToggleTarget,
   decideScreenPress,
   cameraOnVisibility,
   grantLine,
@@ -387,6 +388,13 @@ class VoiceSession {
   /** Bumped by every setCameraEnabled, the background pause and resume, and
    *  a change the transport reported; see setCameraEnabled. */
   #cameraAsked = 0;
+  /** What the latest `setCameraEnabled` asked for while it is still
+   *  settling; null once it has, or once something else said what the camera
+   *  is. The button toggles this rather than the rendered state, which moves
+   *  only when a request settles: pressed twice before the first "on" had
+   *  published, it sent "on" twice, and the shell opened the device twice at
+   *  once (rig-1001 finding 2). */
+  #cameraWanted: boolean | null = null;
   /** The microphone's twin of `#cameraAsked`: bumped by every mute or
    *  unmute, and by a change the transport reported. */
   #micAsked = 0;
@@ -600,13 +608,17 @@ class VoiceSession {
     // which applies the same latest-wins rule (`video.rs`, `camera_asked`),
     // kept the camera muted. Read on the macOS shell, 2026-09-30.
     const ticket = ++this.#cameraAsked;
+    this.#cameraWanted = on;
     // The camera button is the engine switch on a native engine that
     // cannot open a camera (rules.ts's `videoNeedsSwitch`): one press
     // rejoins through the browser engine and *then* turns the camera on,
     // rather than two.
     if (on && videoNeedsSwitch(this.#state, "camera")) await this.switchEngineForThisCall();
     const transport = this.#transport;
-    if (!transport) return;
+    if (!transport) {
+      if (ticket === this.#cameraAsked) this.#cameraWanted = null;
+      return;
+    }
     this.#busy.camera += 1;
     try {
       await transport.setCameraEnabled(on, loadVoicePrefs().cameraDeviceId);
@@ -619,11 +631,14 @@ class VoiceSession {
       this.#set({ camera: { on: false, paused: false }, error: publishError(error) });
     } finally {
       this.#busy.camera -= 1;
+      if (ticket === this.#cameraAsked) this.#cameraWanted = null;
     }
   }
 
   toggleCamera(): Promise<void> {
-    return this.setCameraEnabled(!this.#state.camera.on);
+    return this.setCameraEnabled(
+      cameraToggleTarget({ pending: this.#cameraWanted, rendered: this.#state.camera.on }),
+    );
   }
 
   /** Switch camera without stopping: a republish on the new device. */
@@ -1538,7 +1553,10 @@ class VoiceSession {
       this.#micAsked += 1;
       this.#micWanted = patch.micMuted;
     }
-    if (patch.camera) this.#cameraAsked += 1;
+    if (patch.camera) {
+      this.#cameraAsked += 1;
+      this.#cameraWanted = null;
+    }
     if (patch.screen) this.#screenAsked += 1;
     this.#set(patch);
   }
@@ -1724,6 +1742,7 @@ class VoiceSession {
       // overwritten by the resume's settle, and a press still in flight when
       // the pause landed by the pause's (client-voice-12).
       const ticket = ++this.#cameraAsked;
+      this.#cameraWanted = null;
       this.#busy.camera += 1;
       const done = (): void => {
         this.#busy.camera -= 1;
@@ -1804,7 +1823,10 @@ class VoiceSession {
         // muted: the other is still published and still seen
         // (client-voice-6). No source is an older server's frame, and both.
         const stops = overGrantStops(event.source);
-        if (stops.camera) this.#cameraAsked += 1;
+        if (stops.camera) {
+          this.#cameraAsked += 1;
+          this.#cameraWanted = null;
+        }
         if (stops.screen) this.#screenAsked += 1;
         this.#set({
           ...(stops.camera ? { camera: { on: false, paused: false } } : {}),

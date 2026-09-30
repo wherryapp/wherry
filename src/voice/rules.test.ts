@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Call } from "../api/types";
 import {
+  cameraToggleTarget,
   audioPresetFor,
   decideScreenPress,
   overGrantStops,
@@ -928,4 +929,11 @@ test("a share press stops without asking, starts where the transport picks, and 
     sources: windows,
   });
   assert.equal(asked, 2);
+});
+
+test("cameraToggleTarget: a second press while an on is settling turns it off", () => {
+  assert.equal(cameraToggleTarget({ pending: true, rendered: false }), false);
+  assert.equal(cameraToggleTarget({ pending: false, rendered: true }), true);
+  assert.equal(cameraToggleTarget({ pending: null, rendered: false }), true);
+  assert.equal(cameraToggleTarget({ pending: null, rendered: true }), false);
 });

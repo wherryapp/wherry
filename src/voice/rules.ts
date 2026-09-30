@@ -1063,3 +1063,14 @@ export async function decideScreenPress(
   const sources = await listSources();
   return sources.length === 0 ? { action: "start" } : { action: "pick", sources };
 }
+
+/**
+ * What the camera button asks for: the opposite of the latest request while
+ * one is still settling, else of what the camera is. The rendered state moves
+ * only when a request settles, so a second press before the first "on" had
+ * published used to ask "on" again, and the native shell opened the device
+ * twice at once (rig-1001 finding 2, 2026-09-30).
+ */
+export function cameraToggleTarget(input: { pending: boolean | null; rendered: boolean }): boolean {
+  return !(input.pending ?? input.rendered);
+}

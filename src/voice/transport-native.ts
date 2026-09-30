@@ -137,9 +137,10 @@ type NativeDevices = {
    *  shell that leaves playout to the platform (voice/playout.rs). */
   defaultOutput?: string | null;
   /** The platform's default input, where the shell can say and its list has
-   *  no `default` entry for it (Windows). No shell sends it yet; until one
-   *  does, "Default" mid-call there moves nothing (transport-rules.ts's
-   *  `defaultInputId`). */
+   *  no `default` entry for it: the Windows shell sends it (voice/playout.rs,
+   *  since 2026-09-30), and "Default" mid-call moves the live call there
+   *  (transport-rules.ts's `defaultInputId`). Absent from a shell that
+   *  predates it, where "Default" mid-call moves nothing. */
   defaultInput?: string | null;
 };
 
@@ -599,8 +600,8 @@ export class NativeTransport implements VoiceTransport {
     if (id === null) {
       // "Default" mid-call moves the live call, as a named device does. The
       // shell's list names the default on macOS (`default`); on Windows it
-      // does not, and without the shell's `defaultInput` there is no telling
-      // which device that is, so nothing moves (transport-rules.ts).
+      // does not, and the shell's `defaultInput` names it instead (a shell
+      // too old to send it: nothing moves, transport-rules.ts).
       id = defaultInputId({
         inputs: this.#devices.inputs,
         defaultInput: this.#devices.defaultInput,

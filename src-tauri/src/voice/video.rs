@@ -139,6 +139,11 @@ struct VideoState {
   /// ahead of the "on" sent just before it, and numbered on arrival that left
   /// the camera on (the rig, 4 of 5 tries, 2026-10-01).
   camera_asked: u64,
+  /// What the latest `voice_set_camera` asked for (`camera_asked`'s ticket).
+  /// An instruction still stands if it is the latest *or* asks the same as
+  /// the latest: a second "on" for the device already opening does not
+  /// supersede the first, it is fulfilled by it (`wish_stands`).
+  camera_wish: Option<CameraWish>,
   /// The screen's twin of `camera_asked`, bumped (or set from
   /// `ScreenArgs::seq`) by every `voice_set_screen`. A start that finds it
   /// moved when it is ready to store its share -- a stop, or another start,
@@ -172,6 +177,37 @@ fn with_live_state<T>(session: u64, f: impl FnOnce(&mut VideoState) -> T) -> Opt
     _ => None,
   }
 }
+
+/// What a camera instruction asks for. Off is off, whichever device it named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CameraWish {
+  enabled: bool,
+  device_id: Option<String>,
+}
+
+impl CameraWish {
+  fn of(enabled: bool, device_id: Option<&str>) -> CameraWish {
+    CameraWish { enabled, device_id: if enabled { device_id.map(str::to_owned) } else { None } }
+  }
+}
+
+/// Whether the camera instruction holding `ticket` and asking `mine` should
+/// still act: it is the latest, or the latest asks exactly what it asks.
+fn wish_stands(asked: u64, latest: Option<&CameraWish>, ticket: u64, mine: &CameraWish) -> bool {
+  asked == ticket || latest == Some(mine)
+}
+
+/// Serialises the camera instructions of the call. Before this, each ran as
+/// its own task, and two "on"s for a camera not yet published (the page's
+/// button pressed twice before the first had settled) both took the
+/// first-open path and opened the device at once: on the rig the second
+/// reader preempted the first (`0xC00D3EA3`) and a camera read "on" with no
+/// picture, or the second's first read hung to `OPEN_TIMEOUT`, or both
+/// published and one was left muted and unrecorded (rig-1001 finding 2).
+/// Serialised, the second waits, and `wish_stands` lets the first fulfil it.
+/// Tickets are still taken on arrival, before the wait, so a late arrival is
+/// still dropped as stale.
+static CAMERA_OPS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Take a ticket for an instruction: the page's own number where it sent one
 /// (`None` back if an instruction numbered later has already arrived, so this
@@ -376,17 +412,37 @@ pub fn dev_open_camera(max_height: u32) {
 #[tauri::command]
 pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<()> {
   let (session, room, shared) = current()?;
+  let mine = CameraWish::of(args.enabled, args.device_id.as_deref());
   let taken = with_state(session, |state| {
     let ticket = take_ticket(&mut state.camera_asked, args.seq)?;
-    let existing = state.camera.as_ref().map(|c| (c.capture.is_some(), c.device_id.clone(), c.source.clone()));
-    Some((ticket, existing))
+    state.camera_wish = Some(mine.clone());
+    Some(ticket)
   });
-  let Some((ticket, existing)) = taken else {
+  let Some(ticket) = taken else {
     log::info!(
       "voice: camera {} arrived after a later instruction -- stale, dropped",
       if args.enabled { "on" } else { "off" }
     );
     return Ok(());
+  };
+  let stands = |state: &VideoState| wish_stands(state.camera_asked, state.camera_wish.as_ref(), ticket, &mine);
+  // One at a time (`CAMERA_OPS`), and what the camera is read only once this
+  // one's turn has come.
+  let _turn = CAMERA_OPS.lock().await;
+  let existing = match with_live_state(session, |state| {
+    stands(state).then(|| {
+      state.camera.as_ref().map(|c| (c.capture.is_some(), c.device_id.clone(), c.source.clone()))
+    })
+  }) {
+    None => return Ok(()),
+    Some(None) => {
+      log::info!(
+        "voice: camera {} superseded while an earlier instruction ran -- dropped",
+        if args.enabled { "on" } else { "off" }
+      );
+      return Ok(());
+    }
+    Some(Some(existing)) => existing,
   };
 
   if let Some((capturing, device, source)) = existing {
@@ -419,7 +475,7 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
     }
     // Checked before the open as well as after, so a mute that arrived while
     // the old device was closing does not light the camera at all.
-    if with_live_state(session, |state| state.camera_asked != ticket).unwrap_or(true) {
+    if with_live_state(session, |state| !stands(state)).unwrap_or(true) {
       log::info!("voice: camera switch superseded before opening");
       return Ok(());
     }
@@ -440,7 +496,7 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
     // capture thread for the life of the process.
     let mut fresh = Some(capture);
     with_live_state(session, |state| {
-      if state.camera_asked != ticket {
+      if !stands(state) {
         return;
       }
       if let Some(c) = state.camera.as_mut() {
@@ -476,7 +532,7 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
   // A mute that arrived while the device opened found no camera to mute;
   // nothing is published yet, so honouring it is closing the device. So is a
   // call that ended meanwhile.
-  if with_live_state(session, |state| state.camera_asked != ticket).unwrap_or(true) {
+  if with_live_state(session, |state| !stands(state)).unwrap_or(true) {
     tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
     log::info!("voice: camera superseded while opening, device closed");
     return Ok(());
@@ -524,7 +580,7 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
   // its room is closed, and the device is closed below all the same.
   let mut fresh = Some(capture);
   let recorded = with_live_state(session, |state| {
-    let superseded = state.camera_asked != ticket;
+    let superseded = !stands(state);
     if superseded {
       publication.mute();
     }
@@ -821,7 +877,12 @@ async fn stop_share_sound(session: u64, only: Option<u64>) -> bool {
   // `StopRecording` before the line below). Put it back before anything
   // else, so the microphone loses milliseconds rather than the time the
   // capture thread takes to stop. mod.rs, above `set_microphone_gate`.
-  super::ensure_microphone_recording("after the share's sound was muted");
+  if super::ensure_microphone_recording("after the share's sound was muted") == super::MicCheck::Running {
+    // Nothing stopped yet: a sender not negotiated yet takes its stop to the
+    // next negotiation, where libwebrtc re-initialises without starting
+    // (mod.rs, "a share's sound muted before its sender was negotiated").
+    super::mark_share_stop_pending(session);
+  }
   let frames = capture.frames();
   tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
   log::info!("voice: screen audio muted after {frames} frame(s), kept published");
@@ -1260,6 +1321,7 @@ pub fn forget_page(session: u64) -> usize {
     // command of the old page's still in flight compares unequal and stands
     // down, which is what a command superseded by a newer one does anyway.
     state.camera_asked = 0;
+    state.camera_wish = None;
     state.screen_asked = 0;
     state.tiles.drain().map(|(_, entry)| entry).collect()
   });
@@ -1439,7 +1501,7 @@ pub async fn teardown() {
 
 #[cfg(test)]
 mod ticket_tests {
-  use super::take_ticket;
+  use super::{take_ticket, wish_stands, CameraWish};
 
   #[test]
   fn an_off_overtaken_by_the_on_before_it_is_dropped() {
@@ -1457,6 +1519,33 @@ mod ticket_tests {
     assert_eq!(take_ticket(&mut asked, Some(1)), Some(1));
     assert_eq!(take_ticket(&mut asked, Some(3)), Some(3));
     assert_eq!(take_ticket(&mut asked, Some(3)), None);
+  }
+
+  #[test]
+  fn a_second_on_for_the_same_camera_lets_the_first_stand() {
+    // The page's button pressed twice before the first "on" settled: on #2,
+    // on #3, same device. The first is no longer the latest, but it asks
+    // what the latest asks, so its open is kept and fulfils both (finding 2).
+    let a = CameraWish::of(true, Some("A"));
+    assert!(wish_stands(3, Some(&a), 2, &a));
+    // An off in between and an on after it: the first on stands again,
+    // because the latest asks for what it opened; the off does not.
+    let off = CameraWish::of(false, Some("A"));
+    assert!(!wish_stands(4, Some(&a), 3, &off));
+  }
+
+  #[test]
+  fn a_later_off_or_other_device_supersedes() {
+    let a = CameraWish::of(true, Some("A"));
+    let b = CameraWish::of(true, Some("B"));
+    let off = CameraWish::of(false, None);
+    assert!(!wish_stands(3, Some(&off), 2, &a));
+    assert!(!wish_stands(3, Some(&b), 2, &a));
+    assert!(wish_stands(3, Some(&off), 3, &off));
+    // Off is off whichever device an off names.
+    assert_eq!(CameraWish::of(false, Some("A")), CameraWish::of(false, Some("B")));
+    // An adopting page cleared the wish: an old page's command stands down.
+    assert!(!wish_stands(0, None, 2, &a));
   }
 
   #[test]
