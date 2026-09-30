@@ -81,9 +81,43 @@ pub(crate) fn default_output() -> Option<Option<String>> {
   }
 }
 
+/// The Windows console default *capture* endpoint's id, in the module's own
+/// spelling, the capture twin of `default_output` with the same three
+/// answers. The page needs it because the Windows module's recording list,
+/// unlike macOS's, has no `default` entry: without it "Default" chosen
+/// mid-call could not name a device to move the live call to
+/// (transport-rules.ts's `defaultInputId`). The console role, because it is
+/// what the Sound panel calls the default device and what the fork's
+/// console-role patch opens for "default".
+///
+/// Unlike playout, nothing here follows the default on its own: the page
+/// moves the call only when the person chooses "Default", and a call left on
+/// the platform default keeps whatever the module resolved at its start.
+pub(crate) fn default_input(audio: &PlatformAudio) -> Option<Option<String>> {
+  #[cfg(target_os = "windows")]
+  {
+    // Handed on in the module's spelling: `voice_set_input_device` compares
+    // ids exactly, and Core Audio's case is not promised to match the list's.
+    Some(win::default_capture_id().map(|id| {
+      audio
+        .recording_devices()
+        .find(|device| device.id.as_str().eq_ignore_ascii_case(&id))
+        .map(|device| device.id.as_str().to_string())
+        .unwrap_or(id)
+    }))
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    let _ = audio;
+    None
+  }
+}
+
 #[cfg(target_os = "windows")]
 mod win {
-  use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
+  use windows::Win32::Media::Audio::{
+    eCapture, eConsole, eRender, EDataFlow, IMMDeviceEnumerator, MMDeviceEnumerator,
+  };
   use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
     COINIT_MULTITHREADED,
@@ -99,16 +133,25 @@ mod win {
   /// thread, neither of which this file should initialise COM on. One short
   /// thread per question, at most every poll tick.
   pub(super) fn default_render_id() -> Option<String> {
+    default_id(eRender, "wherry-default-output")
+  }
+
+  /// The same question for the capture flow (`default_input`).
+  pub(super) fn default_capture_id() -> Option<String> {
+    default_id(eCapture, "wherry-default-input")
+  }
+
+  fn default_id(flow: EDataFlow, thread: &str) -> Option<String> {
     std::thread::Builder::new()
-      .name("wherry-default-output".into())
-      .spawn(|| {
+      .name(thread.into())
+      .spawn(move || {
         // SAFETY: paired with the `CoUninitialize` below on this thread, and
         // every COM object is dropped inside `query` before it.
         unsafe {
           if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
             return None;
           }
-          let id = query();
+          let id = query(flow);
           CoUninitialize();
           id
         }
@@ -119,16 +162,17 @@ mod win {
       .flatten()
   }
 
-  /// Only on a thread where COM is initialised (`default_render_id`'s).
-  fn query() -> Option<String> {
+  /// Only on a thread where COM is initialised (`default_id`'s).
+  fn query(flow: EDataFlow) -> Option<String> {
     let enumerator: IMMDeviceEnumerator =
       unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.ok()?;
-    let device = match unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) } {
+    let device = match unsafe { enumerator.GetDefaultAudioEndpoint(flow, eConsole) } {
       Ok(device) => device,
       Err(error) => {
         if error.code().0 as u32 != NOT_FOUND {
           log::debug!(
-            "voice: GetDefaultAudioEndpoint(eRender, eConsole): 0x{:08X} {}",
+            "voice: GetDefaultAudioEndpoint({}, eConsole): 0x{:08X} {}",
+            if flow == eCapture { "eCapture" } else { "eRender" },
             error.code().0,
             error.message()
           );
@@ -299,10 +343,12 @@ fn audio_playout_initialised() -> bool {
 }
 
 /// The page's view of the list for `voice_devices` and the `voice-devices`
-/// event: the module's list plus the default, where this shell steers
-/// playout.
+/// event: the module's list plus the defaults, where this shell can name
+/// them -- the output where it steers playout, the input where the list has
+/// no `default` entry of its own (both Windows only).
 pub(crate) fn devices_with_default(audio: &PlatformAudio) -> super::AudioDevices {
   let mut devices = list_devices(audio);
   devices.default_output = default_output();
+  devices.default_input = default_input(audio);
   devices
 }

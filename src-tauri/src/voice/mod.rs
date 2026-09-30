@@ -1263,6 +1263,11 @@ pub struct AudioDevices {
   /// page reads its presence as "this shell can follow the default".
   #[serde(skip_serializing_if = "Option::is_none")]
   default_output: Option<Option<String>>,
+  /// The Windows default input's id, `null` when Windows has none; absent
+  /// where the list names the default itself (macOS's `default` entry). The
+  /// page's "Default" mid-call moves the live call here (`playout.rs`).
+  #[serde(skip_serializing_if = "Option::is_none")]
+  default_input: Option<Option<String>>,
 }
 
 fn list_devices(audio: &PlatformAudio) -> AudioDevices {
@@ -1276,6 +1281,7 @@ fn list_devices(audio: &PlatformAudio) -> AudioDevices {
       .map(|d| AudioDevice { device_id: d.id.as_str().to_string(), label: d.name })
       .collect(),
     default_output: None,
+    default_input: None,
   }
 }
 
@@ -1311,12 +1317,20 @@ fn start_device_poller(app: AppHandle) {
         Some(None) => Some("none".to_string()),
         None => None,
       };
+      // The default input too, so a change of only the Windows default
+      // input reaches the page, whose "Default" reads it.
+      let default_input = match &devices.default_input {
+        Some(Some(id)) => Some(id.clone()),
+        Some(None) => Some("none".to_string()),
+        None => None,
+      };
       let key: Vec<(String, String)> = devices
         .inputs
         .iter()
         .map(|d| (format!("in:{}", d.device_id), d.label.clone()))
         .chain(devices.outputs.iter().map(|d| (format!("out:{}", d.device_id), d.label.clone())))
         .chain(default_output.iter().map(|id| ("default-out".to_string(), id.clone())))
+        .chain(default_input.iter().map(|id| ("default-in".to_string(), id.clone())))
         .collect();
       // The first reading is logged as an inventory rather than skipped as
       // "not a change". Only emitting on a difference is right -- the event
@@ -1329,8 +1343,11 @@ fn start_device_poller(app: AppHandle) {
       last = Some(key);
       // The default only where this shell reads one, so a macOS line is
       // byte-for-byte what it was.
-      let default_note =
-        default_output.as_deref().map(|id| format!(", default output {id}")).unwrap_or_default();
+      let default_note = format!(
+        "{}{}",
+        default_output.as_deref().map(|id| format!(", default output {id}")).unwrap_or_default(),
+        default_input.as_deref().map(|id| format!(", default input {id}")).unwrap_or_default()
+      );
       if first {
         log::info!(
           "voice: devices at start ({} input(s), {} output(s){default_note})",
