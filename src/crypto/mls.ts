@@ -63,7 +63,6 @@ import {
   processMessage,
   type ClientState,
   type Credential,
-  type MLSMessage,
   type Proposal,
 } from "ts-mls";
 import { defaultClientConfig } from "ts-mls/clientConfig.js";
@@ -83,6 +82,7 @@ import {
   saveMlsIdentity,
 } from "./db";
 import { openArchive, openWithHistoryKey, sealWithHistoryKey } from "./keys";
+import { decodeWire } from "./wire";
 import {
   E2EError,
   PROTOCOL_HISTORY_KEY,
@@ -167,22 +167,6 @@ async function persistState(
     state: encodeGroupState(state),
     epoch: Number(state.groupContext.epoch),
   });
-}
-
-/** MLSMessage -> wire bytes and back, with the checks the wire cannot make. */
-function decodeWire(bytes: Uint8Array, expect: string): MLSMessage {
-  const decoded = decodeMlsMessage(bytes, 0);
-  if (!decoded) {
-    throw new E2EError("EPOCH_UNAVAILABLE", "Payload is not an MLS message");
-  }
-  const [message] = decoded;
-  if (message.wireformat !== expect) {
-    throw new E2EError(
-      "EPOCH_UNAVAILABLE",
-      `Expected ${expect}, got ${message.wireformat}`,
-    );
-  }
-  return message;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,7 +310,6 @@ class MlsHandshake implements HandshakeOps {
 
       const proposals: Proposal[] = keyPackages.map((wire) => {
         const message = decodeWire(wire, "mls_key_package");
-        if (message.wireformat !== "mls_key_package") throw new Error("unreachable");
         return { proposalType: "add", add: { keyPackage: message.keyPackage } };
       });
 
@@ -407,20 +390,11 @@ class MlsHandshake implements HandshakeOps {
       // Two legitimate shapes: a member's commit is a private message, and
       // an external commit -- a device joining by itself off the published
       // GroupInfo -- is a public one, per RFC 9420. Same feed, same apply.
-      const decoded = decodeMlsMessage(commit, 0);
-      if (!decoded) {
-        throw new E2EError("EPOCH_UNAVAILABLE", "Payload is not an MLS message");
-      }
-      const [message] = decoded;
-      if (
-        message.wireformat !== "mls_private_message" &&
-        message.wireformat !== "mls_public_message"
-      ) {
-        throw new E2EError(
-          "EPOCH_UNAVAILABLE",
-          `Expected a commit message, got ${message.wireformat}`,
-        );
-      }
+      const message = decodeWire(
+        commit,
+        "mls_private_message",
+        "mls_public_message",
+      );
 
       let result;
       try {
@@ -459,7 +433,6 @@ class MlsHandshake implements HandshakeOps {
     return await withGroupLock(conversationId, async () => {
       const suite = await cs();
       const message = decodeWire(welcome, "mls_welcome");
-      if (message.wireformat !== "mls_welcome") throw new Error("unreachable");
 
       // What this device already has, if anything -- the guard below needs
       // it, and reading it once outside the loop keeps the hot path cheap.
@@ -593,7 +566,6 @@ class MlsHandshake implements HandshakeOps {
       }
 
       const message = decodeWire(groupInfoWire, "mls_group_info");
-      if (message.wireformat !== "mls_group_info") throw new Error("unreachable");
 
       // Resync when a leaf signed by this device's identity key is already
       // in the tree -- the group state behind it is gone but the identity
@@ -607,7 +579,15 @@ class MlsHandshake implements HandshakeOps {
       // identity is left alone -- a plain join adds our live leaf beside
       // it, and device management removes the stale one the day the old
       // device id is revoked.
-      const tree = ratchetTreeFromExtension(message.groupInfo);
+      // The extension is decoded here, from bytes another member
+      // published, so a malformed one is the same E2EError a malformed
+      // GroupInfo is (see crypto/wire.ts), not a codec throw.
+      let tree: ReturnType<typeof ratchetTreeFromExtension>;
+      try {
+        tree = ratchetTreeFromExtension(message.groupInfo);
+      } catch {
+        tree = undefined;
+      }
       if (!tree) {
         throw new E2EError(
           "EPOCH_UNAVAILABLE",
@@ -799,7 +779,6 @@ export class MlsE2EProvider implements E2EProvider {
       }
 
       const message = decodeWire(input.payload, "mls_private_message");
-      if (message.wireformat !== "mls_private_message") throw new Error("unreachable");
 
       let result;
       try {
