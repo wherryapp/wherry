@@ -396,7 +396,25 @@ export async function registerNativeToken(
   }
   if (alerts !== undefined) body.alerts = alerts;
 
-  const answer = await registerNativePush(body);
+  // A queued unregister for this provider (a sign-out's, or a Turn off the
+  // server never heard) must not land after this registration: the server
+  // deletes by (device, provider), so it would take the fresh row with it
+  // (mobile-5, the next sign-in's apns_voip registration racing the start's
+  // flush). So the provider comes off the queue before the request, which
+  // a flush re-reads before each of its own, and a flush already under way
+  // is waited out, so its request cannot overtake this one. A registration
+  // that fails puts the queued unregister back.
+  const queued = readStoredFor(owner)?.pendingUnregister?.includes(provider) === true;
+  if (queued) writeStored(withPending(readStoredFor(owner), owner, provider, false));
+  if (flushing) await flushing.catch(() => {});
+
+  let answer: Awaited<ReturnType<typeof registerNativePush>>;
+  try {
+    answer = await registerNativePush(body);
+  } catch (error) {
+    if (queued) writeStored(withPending(readStoredFor(owner), owner, provider, true));
+    throw error;
+  }
   const { refKey } = answer;
   // The server says what the row now holds; what was sent stands in for a
   // server that does not say.
@@ -563,11 +581,23 @@ function unregisterWorthRetrying(error: unknown): boolean {
  * server never heard (`StoredNative.pendingUnregister`). Each provider comes
  * off the list once the server answers. Run at every start.
  */
-async function flushPendingUnregisters(owner: string): Promise<void> {
+/** The flush under way, if any: `registerNativeToken` waits it out. */
+let flushing: Promise<void> | null = null;
+
+function flushPendingUnregisters(owner: string): Promise<void> {
+  const run = flushQueued(owner).finally(() => {
+    if (flushing === run) flushing = null;
+  });
+  flushing = run;
+  return run;
+}
+
+async function flushQueued(owner: string): Promise<void> {
   const pending = readStoredFor(owner)?.pendingUnregister ?? [];
   for (const provider of pending) {
-    // Re-read: a Turn on since the list was read takes the provider off it,
-    // and its fresh row must not be forgotten.
+    // Re-read: a Turn on or a registration since the list was read takes
+    // the provider off it (`registerNativeToken`, before its request), and
+    // its fresh row must not be forgotten.
     if (!readStoredFor(owner)?.pendingUnregister?.includes(provider)) continue;
     try {
       await unregisterNativePush(provider);

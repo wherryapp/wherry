@@ -123,7 +123,21 @@ const server = {
   registerOffline: false,
   /** A server with P1's routes and without migration 0033 (H7). */
   before0033: false,
+  /** The next request to each of these paths waits until released
+   *  (`holdNext`), and the server acts on it only then. */
+  holds: new Map<string, { release: Promise<void>; arrived: () => void }>(),
 };
+
+/** The next request to `path` waits until the returned `release` is called;
+ *  `arrived` resolves once it has been sent. */
+function holdNext(path: string): { arrived: Promise<void>; release: () => void } {
+  let release!: () => void;
+  let arrive!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const arrived = new Promise<void>((resolve) => (arrive = resolve));
+  server.holds.set(path, { release: released, arrived: arrive });
+  return { arrived, release };
+}
 
 /** A successful POST /auth/logout: forgetNativeTokens(deviceId). */
 function serverLogout(): void {
@@ -156,6 +170,12 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
   const path = String(url);
   if (server.mode === "absent") return reply(404, { error: "NOT_FOUND" });
   const body = init?.body ? (JSON.parse(String(init.body)) as Json) : {};
+  const hold = server.holds.get(path);
+  if (hold) {
+    server.holds.delete(path);
+    hold.arrived();
+    await hold.release;
+  }
   if (path === "/api/push/native" && (init?.method ?? "GET") === "GET") {
     return reply(200, { providers: server.providers });
   }
@@ -304,6 +324,7 @@ beforeEach(() => {
   server.unregisterOffline = false;
   server.registerOffline = false;
   server.before0033 = false;
+  server.holds.clear();
   listeners.length = 0;
   signIn("session-token-1");
 });
@@ -856,6 +877,78 @@ test("turning push on again before the queued forget runs keeps the new registra
   assert.equal(server.unregisters.length, 0);
   assert.equal(server.rows.has("apns"), true);
   assert.equal(states.at(-1), "on");
+  stop();
+});
+
+test("a queued apns_voip unregister never lands after the next sign-in's registration (mobile-5)", async () => {
+  // The calls bridge registers the VoIP token at sign-in, while the start's
+  // flush sends the unregister the sign-out queued. The server deletes by
+  // (device, provider), so an unregister landing second takes the new row.
+  const voip = (): Promise<unknown> =>
+    native.registerNativeToken("apns_voip", "cd".repeat(32), {
+      environment: "sandbox",
+      keys: VOIP_KEYS,
+    });
+
+  // 1. The registration's request is in flight when the flush starts: the
+  //    flush must not send the unregister at all.
+  await quiet(voip);
+  assert.equal(server.rows.has("apns_voip"), true);
+  native.noteSignOut();
+  signIn("session-token-2");
+  const registration = holdNext("/api/push/native/register");
+  const registered = quiet(voip);
+  await registration.arrived;
+  const first = startRecording();
+  await quiet(settle);
+  registration.release();
+  await registered;
+  await quiet(settle);
+  assert.deepEqual(server.unregisters, [], "the registration took the provider off the queue");
+  assert.equal(server.rows.has("apns_voip"), true);
+  first.stop();
+
+  // 2. The flush's unregister is in flight when the registration starts:
+  //    the registration waits for it, so the new row is written last.
+  native.noteSignOut();
+  signIn("session-token-3");
+  server.registers = [];
+  const unregister = holdNext("/api/push/native/unregister");
+  const second = startRecording();
+  await unregister.arrived;
+  const late = quiet(voip);
+  await quiet(settle);
+  assert.equal(server.registers.length, 0, "not sent while the unregister is in flight");
+  unregister.release();
+  await late;
+  await quiet(settle);
+  assert.deepEqual(server.unregisters, [{ provider: "apns_voip" }]);
+  assert.equal(server.rows.has("apns_voip"), true, "the fresh row survives");
+  second.stop();
+});
+
+test("a registration that fails puts the queued unregister back", async () => {
+  await quiet(() =>
+    native.registerNativeToken("apns_voip", "cd".repeat(32), {
+      environment: "sandbox",
+      keys: VOIP_KEYS,
+    }),
+  );
+  native.noteSignOut();
+  signIn("session-token-2");
+  server.registerOffline = true;
+  await assert.rejects(
+    quiet(() =>
+      native.registerNativeToken("apns_voip", "cd".repeat(32), {
+        environment: "sandbox",
+        keys: VOIP_KEYS,
+      }),
+    ),
+  );
+  server.registerOffline = false;
+  const { stop } = startRecording();
+  await quiet(settle);
+  assert.deepEqual(server.unregisters, [{ provider: "apns_voip" }]);
   stop();
 });
 
