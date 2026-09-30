@@ -1836,6 +1836,11 @@ class VoiceSession {
     this.#leaving = true;
     // A join still under way stops at its next check (`JoinAttempt`).
     this.#supersedeJoin(input.tellServer);
+    // A mute still settling against the transport going away must not write
+    // into whatever state comes next. (Not the camera's or the screen's
+    // ticket: the engine switch tears down *inside* a camera or screen
+    // press, which then carries on into the rejoined call.)
+    this.#micAsked += 1;
     this.#micWanted = false;
     this.#micFailure = null;
     this.#encryptionErrors = 0;
