@@ -14,6 +14,7 @@ import {
   CREATION_GRACE_MS,
   WELCOME_ATTEMPTS,
   planJoin,
+  planReconcile,
   planWelcomeFailure,
 } from "./join-plan.ts";
 
@@ -246,5 +247,37 @@ test("a welcome that keeps failing is eventually acknowledged", () => {
   assert.equal(
     planWelcomeFailure({ notInGroup: false, attempts: WELCOME_ATTEMPTS + 3 }),
     "ack",
+  );
+});
+
+test("planReconcile skips readable channels in both passes", () => {
+  const conversations = [
+    { id: "dm", readable: false },
+    { id: "public", readable: true },
+    { id: "invite", readable: true },
+    { id: "private", readable: false },
+  ];
+  assert.deepEqual(
+    planReconcile({ noted: ["public", "private"], conversations, sweeping: true }),
+    { noted: ["private"], swept: ["dm"] },
+  );
+  assert.deepEqual(
+    planReconcile({ noted: ["invite"], conversations, sweeping: false }),
+    { noted: [], swept: [] },
+  );
+});
+
+test("planReconcile does noted ones first, once, and keeps an unknown noted id", () => {
+  const conversations = [
+    { id: "a", readable: false },
+    { id: "b", readable: false },
+  ];
+  assert.deepEqual(
+    planReconcile({ noted: ["b", "new", "b"], conversations, sweeping: true }),
+    { noted: ["b", "new"], swept: ["a"] },
+  );
+  assert.deepEqual(
+    planReconcile({ noted: [], conversations, sweeping: false }),
+    { noted: [], swept: [] },
   );
 });

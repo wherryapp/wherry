@@ -145,3 +145,37 @@ export function planWelcomeFailure(input: {
   if (input.notInGroup) return "ack";
   return input.attempts >= WELCOME_ATTEMPTS ? "ack" : "retry";
 }
+
+/**
+ * Which conversations one tick reconciles, and in what order: the ones a
+ * `mls_commit` frame named first (the server says they moved seconds ago),
+ * then, on a sweep tick, every other stored conversation.
+ *
+ * A readable hub channel (`readable`, the caller's `isServerReadable`) is
+ * in neither list. It has no MLS group by design -- its sends take the v4
+ * path -- and reconciling one had the smallest device create a group, claim
+ * a key package from every member device, commit them all in and seal a
+ * history key to every member, repeated on every later join (sweep 1001,
+ * client-core-3). A noted commit for one still arrives while older clients
+ * keep committing there, and is dropped. A noted id with no stored row is
+ * kept: nothing says it is readable, and a brand-new conversation is
+ * exactly the one a commit frame can name before the list has it.
+ */
+export function planReconcile(input: {
+  noted: Iterable<string>;
+  conversations: readonly { id: string; readable: boolean }[];
+  sweeping: boolean;
+}): { noted: string[]; swept: string[] } {
+  const readable = new Set(
+    input.conversations
+      .filter((conversation) => conversation.readable)
+      .map((conversation) => conversation.id),
+  );
+  const noted = [...new Set(input.noted)].filter((id) => !readable.has(id));
+  if (!input.sweeping) return { noted, swept: [] };
+  const done = new Set(input.noted);
+  const swept = input.conversations
+    .filter((conversation) => !conversation.readable && !done.has(conversation.id))
+    .map((conversation) => conversation.id);
+  return { noted, swept };
+}
