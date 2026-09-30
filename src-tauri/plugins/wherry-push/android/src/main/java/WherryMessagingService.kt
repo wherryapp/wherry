@@ -52,7 +52,7 @@ internal object PushDispatch {
       handleCall(context, kind, data, allowPlaintextRing)
     } else {
       val ref = data["r"]?.takeIf { REF_PATTERN.matches(it) }
-      if (PushState.resumed && PushRenderer.groupFor(kind) != PushRenderer.Group.CALL) {
+      if (PushState.inFront() && PushRenderer.groupFor(kind) != PushRenderer.Group.CALL) {
         // In front: the socket and the timeline carry it. Calls still post
         // (a ring is worth one duplicate), and a missed call must replace
         // its ring.

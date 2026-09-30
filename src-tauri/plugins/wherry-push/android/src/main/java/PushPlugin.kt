@@ -63,9 +63,11 @@ class PushPlugin(private val activity: Activity) : Plugin(activity) {
     if (!PushLifecycle.installed) {
       PushLifecycle.install(activity.application)
       PushState.resumed = activityResumed()
+      PushState.focused = PushState.resumed && activity.hasWindowFocus()
+      main.post { PushLifecycle.watchFocus(activity) }
       PushLifecycle.capture(activity.intent, "launch (late)")
     }
-    Log.i(TAG, "loaded (resumed=${PushState.resumed})")
+    Log.i(TAG, "loaded (resumed=${PushState.resumed}, focused=${PushState.focused})")
     PushRenderer.ensureChannels(activity)
   }
 

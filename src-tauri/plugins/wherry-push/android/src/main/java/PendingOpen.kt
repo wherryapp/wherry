@@ -36,12 +36,26 @@ internal object PushState {
   private const val PREFS = "wherry-push"
   private const val PREF_TOKEN = "fcm.token"
 
-  /** The activity is resumed: messages, mentions and contacts then post
-   *  nothing (the page has them), the same rule as iOS and sw.js. Set by
-   *  PushPlugin from the activity's lifecycle; false while no activity is
-   *  alive, which is what a service woken for a killed app sees. */
+  /** An activity is resumed. Set by PushLifecycle's activity callbacks
+   *  (PushPlugin only in its late-install fallback); false while no
+   *  activity is alive, which is what a service woken for a killed app
+   *  sees. Not by itself "in front": see [inFront]. */
   @Volatile
   var resumed: Boolean = false
+
+  /** The resumed activity's window has input focus (PushLifecycle's focus
+   *  watch). */
+  @Volatile
+  var focused: Boolean = false
+
+  /** The person can see the page: resumed **and** its window focused. Only
+   *  then do messages, mentions and contacts post nothing (the page has
+   *  them), the same rule as iOS and sw.js. Resumed alone is not enough: a
+   *  ring's full-screen intent resumes the activity behind a secure keyguard
+   *  without showing it, and the page's own notifications are off while
+   *  push owns the alerts (`setNativePushOwnsAlerts`), so nothing would
+   *  alert. The calls plugin's `CallLifecycle.inFront` is the same test. */
+  fun inFront(): Boolean = resumed && focused
 
   /** The loaded plugin, for the `token` and `received` events. Null while
    *  the app has no webview (a push that woke a killed process). */

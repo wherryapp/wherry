@@ -26,7 +26,9 @@ import androidx.core.app.NotificationManagerCompat
 internal object PushRenderer {
   private const val TAG = "wherry-push"
 
-  /** The tap's action; PushPlugin reads it in `load` and `onNewIntent`.
+  /** The tap's action; PushLifecycle.capture reads it from each created
+   *  activity's launch intent and every new intent (PushPlugin only in its
+   *  late-install fallback, and as a no-op second reader in `onNewIntent`).
    *  tauri-plugin-notification ignores every action but ACTION_MAIN. */
   const val ACTION_OPEN = "app.wherry.push.OPEN"
   const val EXTRA_KIND = "k"
