@@ -121,8 +121,3 @@ export function startIdleTracking(): void {
     }
   });
 }
-
-/** For tests and devtools: the verdict as last applied. */
-export function isIdleNow(): boolean {
-  return reportedIdle;
-}

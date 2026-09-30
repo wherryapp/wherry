@@ -43,16 +43,3 @@ export function decodeBase64(value: string): Uint8Array {
   }
   return bytes;
 }
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-/** UTF-8 text to bytes, for composing a version 1 message. */
-export function textToBytes(text: string): Uint8Array {
-  return encoder.encode(text);
-}
-
-/** Bytes to UTF-8 text. Only valid once protocolVersion has been checked. */
-export function bytesToText(bytes: Uint8Array): string {
-  return decoder.decode(bytes);
-}

@@ -112,17 +112,6 @@ export class E2EError extends Error {
   }
 }
 
-/**
- * One recipient user's published account key -- what history keys are
- * *wrapped* to (crypto/history.ts). The archive payload itself stopped being
- * sealed per recipient at protocol v3.
- */
-export type ArchiveRecipient = {
-  userId: string;
-  /** The account public key from GET /conversations/:id/recipients. */
-  publicKey: Uint8Array;
-};
-
 /** One archive seal: the whole message under one history-key generation. */
 export type ArchivePayload = {
   generation: number;

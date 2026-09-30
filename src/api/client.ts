@@ -39,7 +39,6 @@ import type {
   HubSummary,
   HubVisibility,
   InboxEnvelope,
-  MessagesPage,
   PasswordWrapWire,
   PublicDevice,
   PublicUser,
@@ -454,21 +453,6 @@ export function sendMessage(input: {
           : {}),
       },
     },
-  );
-}
-
-/** Metadata only. For gap-filling against local storage, never for content. */
-export function listConversationMessages(input: {
-  conversationId: string;
-  cursor?: string | undefined;
-  limit?: number | undefined;
-}): Promise<MessagesPage> {
-  const params = new URLSearchParams();
-  if (input.cursor) params.set("cursor", input.cursor);
-  if (input.limit) params.set("limit", String(input.limit));
-  const query = params.toString();
-  return request<MessagesPage>(
-    `${API}/conversations/${input.conversationId}/messages${query ? `?${query}` : ""}`,
   );
 }
 
