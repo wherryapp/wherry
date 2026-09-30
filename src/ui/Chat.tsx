@@ -14,9 +14,10 @@ import { CallButton } from "./voice/CallButton";
 import { IncomingCall } from "./voice/IncomingCall";
 import { CallPage } from "./voice/CallPage";
 import { VoiceRoom } from "./voice/VoiceRoom";
+import { ScreenPicker } from "./voice/ScreenPicker";
 import { useVoice, useVoiceSignals } from "../voice/hooks";
 import { usePhoneCallBridge } from "../voice/phone-bridge";
-import { voice } from "../voice/session";
+import { voice, type ScreenSource } from "../voice/session";
 import { Presence, Timeline, TypingLine } from "./Timeline";
 import { Composer } from "./Composer";
 import { type EditDraft, type ReplyDraft } from "./drafts";
@@ -417,6 +418,11 @@ export function Chat({
   // it means for push and for the collapsed-hub roll-up: not worth waking
   // anybody for. The store's own unread bookkeeping is untouched by mute.
   const unreadByConversation = useUnread(conversations, session.user.id);
+  // The page's own title (index.html's), read once, so the count is put in
+  // front of the product's name and taken off it again at sign-out. It said
+  // "messenger" here, from before the rename, for as long as anyone was
+  // signed in.
+  const baseTitle = useRef(document.title).current;
   useEffect(() => {
     let total = 0;
     for (const conversation of conversations) {
@@ -424,16 +430,16 @@ export function Chat({
       total += unreadByConversation.get(conversation.id) ?? 0;
     }
     document.title =
-      total > 0 ? `(${total > 99 ? "99+" : total}) messenger` : "messenger";
+      total > 0 ? `(${total > 99 ? "99+" : total}) ${baseTitle}` : baseTitle;
     // The phone's icon badge is the same number, so the two cannot
     // disagree (native-push-plan §7.4: the client owns the badge, because
     // the server cannot tell an operation from a message). A no-op off the
     // phone shells.
     withNativePush((native) => native.setBadge(total));
     return () => {
-      document.title = "messenger";
+      document.title = baseTitle;
     };
-  }, [conversations, unreadByConversation]);
+  }, [conversations, unreadByConversation, baseTitle]);
   // Signed out (the shell unmounts): no number left on the icon.
   useEffect(() => () => withNativePush((native) => native.setBadge(0)), []);
 
@@ -471,6 +477,32 @@ export function Chat({
     onSignOut();
   };
 
+  // The screen shortcut takes the Share button's path (CallControls'
+  // onScreenPress), not a bare toggle: a non-empty `screenSources()` means
+  // this transport opens no picker of its own -- the shell on Windows -- so
+  // ours goes up and the share waits for a choice. A bare toggle there asked
+  // the shell to share nothing in particular and showed its refusal as the
+  // bar's error line. Stopping never asks. No anchor: a keypress has no
+  // button, and the picker's Popover centres itself without one.
+  const [shortcutPicker, setShortcutPicker] = useState<ScreenSource[] | null>(null);
+  // Gone with the call, not kept for the next one.
+  if (shortcutPicker !== null && voiceState.phase !== "connected") setShortcutPicker(null);
+  const shareFromShortcut = async (): Promise<void> => {
+    if (voice.getState().screen.on) {
+      await voice.setScreenShareEnabled(false);
+      return;
+    }
+    const sources = await voice.screenSources();
+    if (sources.length === 0) {
+      await voice.toggleScreenShare();
+      return;
+    }
+    // A ring paints over everything and holds Escape; a picker opened under
+    // it would register above it on the back stack (see the note below).
+    if (rings.length > 0) return;
+    setShortcutPicker(sources);
+  };
+
   // Global keys. Ctrl/Cmd+K opens the switcher from anywhere in the main
   // view, composer included; it stays out of the full-screen panels because
   // they early-return their own trees and the dialog could not render over
@@ -485,7 +517,9 @@ export function Chat({
   // nobody can see and leave the page or ring that is showing, which reads
   // as a dead key (review of W-103's fix, 2026-09-26). Paint order and
   // registration order have to agree for Escape to mean "the thing on top".
-  const coveredByCall = callPageOpen || rings.length > 0;
+  const ringing = rings.length > 0;
+  const coveredByCall = callPageOpen || ringing;
+
   // Every full-screen panel that replaces the main view (the early returns
   // below). Read by the shortcuts and by the read marker.
   const panelOpen =
@@ -526,7 +560,11 @@ export function Chat({
         if (!voiceState.grant?.sources.includes(source)) return;
         if (!voiceState.capabilities[source]) return;
         event.preventDefault();
-        void (camera ? voice.toggleCamera() : voice.toggleScreenShare());
+        if (camera) {
+          void voice.toggleCamera();
+          return;
+        }
+        void shareFromShortcut();
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -557,6 +595,8 @@ export function Chat({
     selected,
     panelOpen,
     coveredByCall,
+    // Read by shareFromShortcut, which the handler closes over.
+    ringing,
     voiceState.grant,
     voiceState.capabilities,
     voiceState.phase,
@@ -856,8 +896,8 @@ export function Chat({
         <div className="min-h-0 flex-1">{screen}</div>
       </div>
       {overlays}
-      {/* The one-time push offer on a phone shell (D4, pending: one line to
-          remove). Before the call page and the ring, so both paint over it. */}
+      {/* The one-time push offer on a phone shell (D4: kept, 2026-09-29).
+          Before the call page and the ring, so both paint over it. */}
       <NotificationNudge deviceId={session.device.id} />
       {features.voice && voiceState.phase === "connected" && callPageOpen && (
         <CallPage
@@ -866,6 +906,19 @@ export function Chat({
           selfName={session.user.displayName}
           selfUserId={session.user.id}
           onClose={() => setCallPageOpen(false)}
+        />
+      )}
+      {/* The screen shortcut's picker: after the call page, which it was
+          opened over and must paint above, and before the ring. */}
+      {shortcutPicker && voiceState.phase === "connected" && (
+        <ScreenPicker
+          sources={shortcutPicker}
+          anchor={null}
+          onCancel={() => setShortcutPicker(null)}
+          onConfirm={(choice) => {
+            setShortcutPicker(null);
+            void voice.setScreenShareEnabled(true, choice);
+          }}
         />
       )}
       {/*
@@ -1034,12 +1087,14 @@ export function Chat({
 
   return withChrome(
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
-      {/* The app header is the LIST's header: a title and two controls, the
-          shape a phone expects, instead of the row of webpage links this
-          used to be. On a phone with a thread open it does not render at
-          all -- the thread's own header is the only chrome -- which is what
-          `showList` already means. Sign out moved into Settings; it is a
-          rare act and was sitting on the most valuable row of the screen. */}
+      {/* The app header is the LIST's header: a title and a few controls
+          (compose, search, friends, the account menu), the shape a phone
+          expects, instead of the row of webpage links this used to be. On a
+          phone with a thread open it does not render at all -- the thread's
+          own header is the only chrome -- which is what `showList` already
+          means. Sign out left this row for the account menu and the bottom
+          of Settings; it is a rare act and was sitting on the most valuable
+          row of the screen. */}
       {showList && (
         <header className="flex items-center justify-between border-b border-neutral-200 bg-white py-2 pl-4 pr-2 dark:border-neutral-800 dark:bg-neutral-900">
           <span className="text-lg font-bold tracking-tight text-neutral-900 dark:text-neutral-100">

@@ -4,9 +4,8 @@
 // listings, an app that stays silent unless somebody finds a toggle in
 // Settings reads as broken -- the maintainer's 2026-09-01 instruction was
 // that the phones get push before either listing, and push nobody turns on
-// is not push. Decision D4 (keep it) is still the maintainer's; until then
-// this stays one self-contained component that `withChrome` renders in one
-// line, so removing it is removing that line.
+// is not push. Decision D4 was "keep it" (2026-09-29). It stays one
+// self-contained component that `withChrome` renders in one line.
 //
 // Shown once per Wherry device (the answer is keyed by the device id, which
 // outlives a sign-out), after the first successful sync
@@ -72,9 +71,9 @@ export function NotificationNudge({ deviceId }: { deviceId: string }) {
           Turn on notifications?
         </h2>
         <p className="text-sm text-neutral-600 dark:text-neutral-300">
-          Get told about new messages and calls while the app is closed. The
-          notification says only that something arrived -- never who sent it
-          or what it says.
+          Get told about new messages and calls while the app is closed. A
+          notification can say who it is from and which chat, never what was
+          said. You can turn names off in Settings.
         </p>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={close} disabled={busy}>
