@@ -333,8 +333,14 @@ function CameraSection({
   const [error, setError] = useState<string | null>(null);
   const element = useRef<HTMLVideoElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
+  // Whether this section is still on screen. The unmount cleanup can only
+  // stop a preview that has *started*; one still opening (a first-time
+  // permission prompt, a slow device) resolved after Settings closed and
+  // left the camera, and its light, on until a reload (client-voice-9).
+  const mounted = useRef(true);
 
   useEffect(() => {
+    mounted.current = true;
     let cancelled = false;
     const load = (): void => {
       void listVideoDevices().then((list) => {
@@ -345,6 +351,7 @@ function CameraSection({
     const off = onDeviceChange(load);
     return () => {
       cancelled = true;
+      mounted.current = false;
       off();
       stopRef.current?.();
     };
@@ -357,6 +364,10 @@ function CameraSection({
       const stream = await navigator.mediaDevices.getUserMedia({
         video: deviceId ? { deviceId: { exact: deviceId } } : true,
       });
+      if (!mounted.current) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
       // The first granted prompt unlocks the labels; re-read the list.
       void listVideoDevices().then(setCameras);
       if (element.current) element.current.srcObject = stream;
@@ -368,6 +379,7 @@ function CameraSection({
         stopRef.current = null;
       };
     } catch (e) {
+      if (!mounted.current) return;
       const name = e instanceof Error ? e.name : "";
       setError(
         name === "NotAllowedError"
@@ -474,8 +486,17 @@ function MicMeter({
   const [level, setLevel] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
+  // As the camera preview's: a test still opening when Settings closes is
+  // stopped when it opens, not left for its five-second timer.
+  const mounted = useRef(true);
 
-  useEffect(() => () => stopRef.current?.(), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      stopRef.current?.();
+    };
+  }, []);
 
   const test = async (): Promise<void> => {
     stopRef.current?.();
@@ -484,6 +505,10 @@ function MicMeter({
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: deviceId ? { deviceId: { exact: deviceId } } : true,
       });
+      if (!mounted.current) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
       // Labels are unlocked by the first granted prompt; refresh the lists.
       onDevicesNamed();
       const context = new AudioContext();
@@ -516,6 +541,7 @@ function MicMeter({
       stopRef.current = stop;
       const timeout = setTimeout(stop, 5_000);
     } catch (e) {
+      if (!mounted.current) return;
       const name = e instanceof Error ? e.name : "";
       setError(
         name === "NotAllowedError"
