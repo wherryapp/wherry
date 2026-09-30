@@ -55,6 +55,14 @@ export function stripReloadMarker(): void {
   const params = new URLSearchParams(window.location.search);
   if (!params.has(MARKER)) return;
   params.delete(MARKER);
-  const query = params.size > 0 ? `?${params}` : "";
-  window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+  // toString, not `params.size`: size shipped in Safari 17, so on iOS 15 and
+  // 16 it is undefined, `undefined > 0` is false, and every other parameter
+  // was dropped (sweep 1001, client-core-17).
+  const rest = params.toString();
+  const query = rest ? `?${rest}` : "";
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${query}${window.location.hash}`,
+  );
 }

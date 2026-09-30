@@ -109,7 +109,16 @@ export class IndexedDbMessageStore implements MessageStore {
   #db: Promise<IDBPDatabase<Schema>> | null = null;
 
   #open(): Promise<IDBPDatabase<Schema>> {
-    this.#db ??= openDB<Schema>(DB_NAME, DB_VERSION, {
+    if (this.#db) return this.#db;
+    // The memoised handle is dropped whenever it stops being usable, so the
+    // next call reopens rather than every call failing until a reload: a
+    // rejected open (a transient refusal must not be cached forever), and a
+    // connection the browser closed abnormally (`terminated` -- WebKit's
+    // "Connection to Indexed Database server lost" is the known case), after
+    // which every transaction throws and every sync pass failed (sweep 1001,
+    // client-core-12). Compared against `opening` so a late callback cannot
+    // drop a newer handle.
+    const opening: Promise<IDBPDatabase<Schema>> = openDB<Schema>(DB_NAME, DB_VERSION, {
       // Every store is created only if absent, and nothing here assumes it is
       // running against an empty database.
       //
@@ -164,9 +173,17 @@ export class IndexedDbMessageStore implements MessageStore {
       blocking: () => {
         void this.#close();
       },
+
+      terminated: () => {
+        if (this.#db === opening) this.#db = null;
+      },
+    }).catch((error: unknown) => {
+      if (this.#db === opening) this.#db = null;
+      throw error;
     });
 
-    return this.#db;
+    this.#db = opening;
+    return opening;
   }
 
   async #close(): Promise<void> {

@@ -39,7 +39,6 @@ import type {
   HubSummary,
   HubVisibility,
   InboxEnvelope,
-  MessagesPage,
   PasswordWrapWire,
   PublicDevice,
   PublicUser,
@@ -454,21 +453,6 @@ export function sendMessage(input: {
           : {}),
       },
     },
-  );
-}
-
-/** Metadata only. For gap-filling against local storage, never for content. */
-export function listConversationMessages(input: {
-  conversationId: string;
-  cursor?: string | undefined;
-  limit?: number | undefined;
-}): Promise<MessagesPage> {
-  const params = new URLSearchParams();
-  if (input.cursor) params.set("cursor", input.cursor);
-  if (input.limit) params.set("limit", String(input.limit));
-  const query = params.toString();
-  return request<MessagesPage>(
-    `${API}/conversations/${input.conversationId}/messages${query ? `?${query}` : ""}`,
   );
 }
 
@@ -954,17 +938,29 @@ export type AttachmentFetch =
   /** 404. No such attachment, or not in that conversation. Also terminal. */
   | { state: "unknown" };
 
+// The server's UUID_PATTERN (server/src/routes/shared.ts); its download
+// route refuses anything else.
+const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 export async function downloadAttachment(
   attachmentId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<AttachmentFetch> {
+  // The id comes from another client's payload and goes into a URL with this
+  // device's bearer token on it. The URL parser resolves dot segments, so an
+  // id of "../account/keys" made the arrival prefetch GET /api/account/keys
+  // (sweep 1001, client-core-16). Nothing that is not an attachment id is
+  // ever requested: the server would refuse it anyway, so it is "unknown",
+  // the terminal answer a 404 gets.
+  if (!UUID.test(attachmentId)) return { state: "unknown" };
+
   const token = currentToken();
   const headers: Record<string, string> = {};
   if (token) headers["authorization"] = `Bearer ${token}`;
 
   let response: Response;
   try {
-    response = await fetch(`${API}/attachments/${attachmentId}`, {
+    response = await fetch(`${API}/attachments/${encodeURIComponent(attachmentId)}`, {
       headers,
       ...(options.signal ? { signal: options.signal } : {}),
     });

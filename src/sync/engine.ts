@@ -71,12 +71,14 @@ import {
 import { Backoff, sleep } from "./backoff";
 import {
   broadcast,
+  hasWebLocks,
   runAsLeader,
   subscribeToBroadcasts,
   type LeaderHandle,
 } from "./leader";
 import { mlsEnabled, mlsSync, type Identity } from "./mls";
 import { SocketManager } from "./socket";
+import { settlePendingDecrypts } from "./pending-decrypt";
 import { isServerReadable } from "../api/hub-class";
 
 // ---------------------------------------------------------------------------
@@ -471,6 +473,17 @@ export class SyncEngine {
   #lastPublicSweep = 0;
   /** A wake (or the reconnect drain) arrived since the last readable sweep. */
   #publicWake = false;
+  /**
+   * The conversation ids the server's last list answered with, or null
+   * before the first answer of this run. The readable sweep reads only
+   * channels in it: stored rows outlive leaving a hub (nothing deletes
+   * them), and the server answers a left channel's archive with an empty
+   * page rather than an error, so the sweep used to fetch every left
+   * channel on every wake, forever (sweep 1001, client-core-9).
+   */
+  #listedConversations: Set<string> | null = null;
+  /** messageId -> reads by the forward archive sync that still failed. */
+  #forwardSyncAttempts = new Map<string, number>();
   #onUnauthorized: (() => void) | null = null;
   /** Per-conversation floor on outgoing typing frames; see sendTyping. */
   #lastTypingSent = new Map<string, number>();
@@ -504,6 +517,36 @@ export class SyncEngine {
   start(options: { onUnauthorized?: () => void } = {}): void {
     if (this.#leader) return;
     this.#onUnauthorized = options.onUnauthorized ?? null;
+
+    // A start is a new session, possibly another account's: sign-out does
+    // not reload the page, so this engine and mlsSync are the same objects
+    // the last sign-in used. Their clocks said "refreshed seconds ago" and
+    // the new session's first passes skipped the conversation list -- an
+    // empty sidebar for up to 30 s -- and mlsSync never published the new
+    // device's key packages until a reload (sweep 1001, client-core-5).
+    this.#lastConversationRefresh = 0;
+    this.#lastForwardSync = 0;
+    this.#lastHistoryKeyRefresh = 0;
+    this.#lastPublicSweep = 0;
+    this.#publicWake = false;
+    this.#listedConversations = null;
+    this.#forwardSyncAttempts.clear();
+    this.#lastTypingSent.clear();
+    this.#pokePending = false;
+    this.#backoff.reset();
+    mlsSync.reset();
+
+    // Without Web Locks nothing here can run safely (see sync/leader.ts),
+    // and a sync that silently never starts is the failure this replaces:
+    // say so on the status line and stay stopped.
+    if (!hasWebLocks()) {
+      console.error("sync not started: this browser has no Web Locks");
+      this.#setStatus({
+        state: "stopped",
+        error: "This browser is too old to sync. Update it to Safari 15.4 or later.",
+      });
+      return;
+    }
 
     this.#setStatus({ state: "follower", error: null });
 
@@ -694,7 +737,8 @@ export class SyncEngine {
       ? { ...base, ...sealed }
       : {
           // Cannot encrypt yet -- no group state (not joined, or the group
-          // is still being created) or no recipient keys. Parked with the
+          // is still being created) or no history key cached yet
+          // (HISTORY_KEY_UNAVAILABLE; see sealForOutbox). Parked with the
           // plaintext; the flush seals it the moment it can. The message
           // still appears instantly, which is the outbox's whole promise.
           ...base,
@@ -811,9 +855,8 @@ export class SyncEngine {
     // leadership change, a fatal 401, a thrown bug -- runs the finally and
     // closes it. The next leader's loop opens its own.
     this.#socket = new SocketManager({
-      // Resolved here rather than by socket.ts's own default: the desktop
-      // build's socket lives on the API origin, not the page's -- base.ts
-      // owns that distinction.
+      // The desktop build's socket lives on the API origin, not the
+      // page's -- base.ts owns that distinction.
       url: socketUrl(),
       getToken: currentToken,
       notify: () => {
@@ -931,8 +974,18 @@ export class SyncEngine {
               : "Something went wrong",
         });
 
+        // The backoff wait is wakeable, like the tick wait: `online`, the
+        // page becoming visible, the socket's reconnect and a message typed
+        // during the outage all poke, and each used to wait out a sleep
+        // that nothing could cut short -- up to a minute at the ceiling,
+        // after the OS had already said the network was back (sweep 1001,
+        // client-core-8). A Retry-After is the exception: the server said
+        // how long, and no local event is evidence it changed its mind.
+        const serverSaid =
+          error instanceof ApiError && Boolean(error.retryAfterSeconds);
         try {
-          await sleep(delay, signal);
+          if (serverSaid) await sleep(delay, signal);
+          else await this.#waitForNextTick(signal, delay);
         } catch {
           return;
         }
@@ -980,16 +1033,20 @@ export class SyncEngine {
    * slow server produces overlapping requests that pile up exactly when it can
    * least afford them. Waiting *after* the work settles cannot do that.
    */
-  #waitForNextTick(signal: AbortSignal): Promise<void> {
+  #waitForNextTick(signal: AbortSignal, backoffMs?: number): Promise<void> {
     // A healthy socket makes the poll a pure fallback; without one the old
     // cadences apply unchanged. Re-evaluated every wait, so a socket dying
     // mid-wait needs only the poke its unhealthy transition fires: the wait
-    // resolves, the pass runs, and this line picks 2 seconds again.
-    const interval = this.#socket?.isHealthy()
-      ? SOCKET_INTERVAL_MS
-      : document.visibilityState === "visible"
-        ? VISIBLE_INTERVAL_MS
-        : HIDDEN_INTERVAL_MS;
+    // resolves, the pass runs, and this line picks 2 seconds again. After a
+    // failed pass the caller passes the backoff instead, and the same
+    // latch and wake cut it short.
+    const interval =
+      backoffMs ??
+      (this.#socket?.isHealthy()
+        ? SOCKET_INTERVAL_MS
+        : document.visibilityState === "visible"
+          ? VISIBLE_INTERVAL_MS
+          : HIDDEN_INTERVAL_MS);
 
     return new Promise<void>((resolve, reject) => {
       if (signal.aborted) {
@@ -1331,6 +1388,9 @@ export class SyncEngine {
 
     const conversations = await listConversations();
     this.#lastConversationRefresh = now;
+    this.#listedConversations = new Set(
+      conversations.map((conversation) => conversation.id),
+    );
 
     await store.putConversations(conversations);
     await this.#refreshEvents(conversations, signal);
@@ -1583,11 +1643,17 @@ export class SyncEngine {
    */
   async #publicChannelSync(signal: AbortSignal): Promise<void> {
     const conversations = await store.listConversations();
-    const channels = conversations.filter((conversation) =>
-      // Every readable channel is delivered by a cursor read over its
-      // archive rows -- there are no envelopes to drain -- so this sweep
-      // covers invite-only channels as well as public ones.
-      isServerReadable(conversation.hubVisibility),
+    const listed = this.#listedConversations;
+    const channels = conversations.filter(
+      (conversation) =>
+        // Every readable channel is delivered by a cursor read over its
+        // archive rows -- there are no envelopes to drain -- so this sweep
+        // covers invite-only channels as well as public ones.
+        isServerReadable(conversation.hubVisibility) &&
+        // And only the ones the account is still in (see
+        // #listedConversations). Before the first list of this run there
+        // is no answer to filter by, so nothing is filtered.
+        (listed === null || listed.has(conversation.id)),
     );
     if (channels.length === 0) return;
 
@@ -2200,11 +2266,15 @@ export class SyncEngine {
       );
       await store.putMessages(messages);
 
-      for (const message of messages) {
-        if (!message.decryptFailed && pending[message.messageId]) {
-          delete pending[message.messageId];
-          healedConversations.add(message.conversationId);
-        }
+      // Healed ids leave the record; one read and still failed is given
+      // a few runs, then dropped, so the next run starts past it -- see
+      // sync/pending-decrypt.ts.
+      for (const conversationId of settlePendingDecrypts(
+        pending,
+        messages,
+        this.#forwardSyncAttempts,
+      )) {
+        healedConversations.add(conversationId);
       }
 
       if (result.entries.length < ARCHIVE_PAGE) break;
@@ -2355,7 +2425,6 @@ export class SyncEngine {
     await this.#refreshConversations(signal);
   }
 
-  /** Forces the next tick to re-read conversations. */
   /**
    * Stores a hubs list the caller already holds -- the answer to a reorder,
    * or the optimistic copy sent ahead of it -- and tells every surface,
@@ -2369,6 +2438,7 @@ export class SyncEngine {
     broadcast({ type: "hubs" });
   }
 
+  /** Forces the next tick to re-read conversations. */
   invalidateConversations(): void {
     this.#lastConversationRefresh = 0;
     this.poke();

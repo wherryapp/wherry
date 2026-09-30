@@ -50,7 +50,16 @@ const MLS_IDENTITY = "mlsIdentity";
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
 function db(): Promise<IDBPDatabase> {
-  dbPromise ??= openDB(DB_NAME, DB_VERSION, {
+  if (dbPromise) return dbPromise;
+  // The same three handlers as the message store (store/indexeddb.ts), for
+  // the same reasons (sweep 1001, client-core-12): a rejected open is not
+  // cached forever, a connection the browser closed abnormally is dropped
+  // and reopened, and a newer tab's upgrade is not blocked by this one --
+  // without `blocking`, the first version bump here would leave every new
+  // tab's openDB pending behind an old one, and the sync pass awaits it
+  // with no timeout. Compared against `opening` so a late callback cannot
+  // drop a newer handle.
+  const opening: Promise<IDBPDatabase> = openDB(DB_NAME, DB_VERSION, {
     upgrade(database) {
       if (!database.objectStoreNames.contains(SECRETS)) {
         database.createObjectStore(SECRETS);
@@ -65,8 +74,24 @@ function db(): Promise<IDBPDatabase> {
         database.createObjectStore(HISTORY_KEYS);
       }
     },
+
+    blocking: () => {
+      if (dbPromise !== opening) return;
+      dbPromise = null;
+      opening.then((database) => database.close()).catch(() => {
+        // Never opened; nothing to close.
+      });
+    },
+
+    terminated: () => {
+      if (dbPromise === opening) dbPromise = null;
+    },
+  }).catch((error: unknown) => {
+    if (dbPromise === opening) dbPromise = null;
+    throw error;
   });
-  return dbPromise;
+  dbPromise = opening;
+  return opening;
 }
 
 export async function saveAccountKeypair(
@@ -323,7 +348,12 @@ export async function clearHistoryKeys(): Promise<void> {
 
 /**
  * The private half of a published key package, waiting for the welcome that
- * consumes it. Kept until a join uses it or it is pruned.
+ * consumes it. Kept until a join uses it; nothing prunes. A package claimed
+ * by a commit that then lost the epoch race never gets a welcome, so those
+ * accumulate, and every welcome tries each in turn. Pruning by age would
+ * need care: a package the server still holds unclaimed can be claimed
+ * months later, and deleting its private half here turns that welcome into
+ * a NOT_IN_GROUP.
  */
 export type StoredKeyPackage = {
   /** The wire-encoded public package, for joinGroup. */

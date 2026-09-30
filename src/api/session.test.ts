@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deviceNameFrom } from "./session";
+import {
+  deviceNameFrom,
+  holdSession,
+  loadSession,
+  persistSession,
+  storedDeviceId,
+} from "./session";
 
 // User agents as each engine sends them. The shells' webviews name no
 // browser of their own; iOS's WKWebView has no "Safari/" token at all.
@@ -40,4 +46,42 @@ test("a browser is still named by its own token, phones before desktops", () => 
   // No token it knows is still a name.
   assert.equal(browser(IPHONE_WKWEBVIEW, 5), "Browser on iPhone");
   assert.equal(browser("curl/8.9"), "Browser");
+});
+
+test("a held session is live for the page but not persisted until persistSession", () => {
+  // The recovery-code screen after registering holds the session: a reload
+  // or a killed app there must come back signed out, not signed in with the
+  // code gone (client-ui-4). The device id is remembered at once, because
+  // the server already made that row.
+  const storage = new Map<string, string>();
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => void storage.set(key, value),
+        removeItem: (key: string) => void storage.delete(key),
+      },
+    },
+  });
+  try {
+    const session = holdSession({
+      token: "t",
+      expiresAt: "2026-10-01T00:00:00.000Z",
+      user: { id: "u" } as never,
+      device: { id: "d" } as never,
+      emailVerified: false,
+    });
+    assert.equal(loadSession()?.token, "t");
+    assert.equal(storedDeviceId(), "d");
+    assert.equal(storage.has("messenger.session"), false);
+
+    persistSession(session);
+    assert.equal(
+      JSON.parse(storage.get("messenger.session") ?? "null")?.token,
+      "t",
+    );
+  } finally {
+    delete (globalThis as Record<string, unknown>)["window"];
+  }
 });

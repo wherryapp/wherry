@@ -26,6 +26,7 @@ import {
 } from "../api/client";
 import type { RecipientsResponse } from "../api/types";
 import { decodeBase64, encodeBase64 } from "../api/base64";
+import { isServerReadable } from "../api/hub-class";
 import { E2EError, e2e } from "../crypto";
 import {
   mintBackfill,
@@ -33,17 +34,18 @@ import {
   saveRotatedKey,
 } from "../crypto/history";
 import { store } from "../store";
-import { planJoin, planWelcomeFailure } from "./join-plan";
+import { planJoin, planReconcile, planWelcomeFailure } from "./join-plan";
 
-/** Cached per conversation so enqueue can seal archive rows offline. */
-export type CachedRecipient = { userId: string; publicKey: string };
-
-const META_RECIPIENTS_PREFIX = "mls.recipients.";
-
-// Replenishment: top up to TARGET when below LOW. Checked once per session
-// and after every sweep that might have consumed packages elsewhere.
+// Replenishment: top up to TARGET when below LOW. Counted on the first tick
+// of a session, on the tick after any welcome arrives (a welcome is the
+// moment a package was spent), and otherwise every KEY_PACKAGE_RECHECK_MS:
+// a claim whose commit then lost the epoch race spends a package with no
+// welcome ever arriving, and a shell or installed PWA stays loaded for days.
+// Once the stock is gone nobody can add this device, and it depends on
+// external join, which waits whenever GroupInfo is behind.
 const KEY_PACKAGE_TARGET = 20;
 const KEY_PACKAGE_LOW = 10;
+const KEY_PACKAGE_RECHECK_MS = 15 * 60_000;
 
 // The sweep hits /recipients (and possibly /commits) once per conversation,
 // so it runs on the conversation-refresh cadence, not the poll cadence.
@@ -55,44 +57,11 @@ export function mlsEnabled(): boolean {
   return e2e.handshake !== undefined;
 }
 
-export async function cachedRecipients(
-  conversationId: string,
-): Promise<CachedRecipient[] | undefined> {
-  return await store.getMeta<CachedRecipient[]>(
-    META_RECIPIENTS_PREFIX + conversationId,
-  );
-}
-
-/**
- * The cache, or a live fetch that fills it, or null when neither works.
- * Enqueue calls this: the cache keeps composing offline-capable once the
- * sweep has run at least once, and the live fetch covers a brand-new
- * conversation the sweep has not seen.
- */
-export async function ensureRecipients(
-  conversationId: string,
-): Promise<CachedRecipient[] | null> {
-  const cached = await cachedRecipients(conversationId);
-  if (cached) return cached;
-
-  try {
-    const recipients = await fetchRecipients(conversationId);
-    const usable = recipients.members
-      .filter((member) => member.accountPublicKey !== null)
-      .map((member) => ({
-        userId: member.userId,
-        publicKey: member.accountPublicKey!,
-      }));
-    await store.setMeta(META_RECIPIENTS_PREFIX + conversationId, usable);
-    return usable;
-  } catch {
-    return null;
-  }
-}
-
 export class MlsSync {
   #lastReconcile = 0;
-  #publishedThisSession = false;
+  /** When the key package stock was last counted; 0 means "on the next
+   * tick". See KEY_PACKAGE_RECHECK_MS. */
+  #keyPackagesCheckedAt = 0;
   /**
    * conversationId -> the timestamp a rate-limited conversation may be
    * retried again. Without this, a new device joining N groups at once
@@ -143,6 +112,24 @@ export class MlsSync {
   }
 
   /**
+   * Forgets everything this session learned. The engine calls it from
+   * `start()`, because sign-out does not reload the page: the next sign-in
+   * -- possibly another account, on a new device -- runs in the same module
+   * instance, and it used to inherit "already published" and never publish
+   * its own identity key or key packages until a reload (sweep 1001,
+   * client-core-5).
+   */
+  reset(): void {
+    this.#lastReconcile = 0;
+    this.#keyPackagesCheckedAt = 0;
+    this.#reconcileCooldownUntil.clear();
+    this.#welcomeFailures.clear();
+    this.#missingGroupSince.clear();
+    this.#goneConversations.clear();
+    this.#notedCommits.clear();
+  }
+
+  /**
    * "This conversation's group moved" -- from the socket, via engine.ts.
    * Cheap and idempotent: it only marks, and the tick that follows the
    * frame's poke does the work.
@@ -163,9 +150,9 @@ export class MlsSync {
     const handshake = e2e.handshake;
     if (!handshake) return [];
 
-    if (!this.#publishedThisSession) {
+    if (Date.now() - this.#keyPackagesCheckedAt >= KEY_PACKAGE_RECHECK_MS) {
       await this.#ensurePublished(me);
-      this.#publishedThisSession = true;
+      this.#keyPackagesCheckedAt = Date.now();
     }
 
     // Welcomes drain every tick -- they are how this device starts reading
@@ -186,29 +173,41 @@ export class MlsSync {
         .map((entry) => entry.conversationId),
     );
 
-    // Told first, swept second. A noted conversation is one the server says
-    // moved seconds ago; the sweep is a periodic check that usually finds
-    // nothing.
-    const noted = new Set(this.#notedCommits);
-    for (const conversationId of noted) {
+    // Told first, swept second, and readable hub channels in neither: see
+    // planReconcile. The ids a tick takes are removed from the noted set as
+    // they are taken, not in a batch at the end: an abort mid-pass must
+    // leave the untried ones for the next tick.
+    // Snapshotted before the await: a frame landing while the list is read
+    // belongs to the next tick, not to this one's "dropped" set.
+    const notedNow = [...this.#notedCommits];
+    const conversations = await store.listConversations();
+    const plan = planReconcile({
+      noted: notedNow,
+      conversations: conversations.map((conversation) => ({
+        id: conversation.id,
+        readable: isServerReadable(conversation.hubVisibility),
+      })),
+      sweeping,
+    });
+    for (const conversationId of notedNow) {
+      if (!plan.noted.includes(conversationId)) {
+        this.#notedCommits.delete(conversationId);
+      }
+    }
+    for (const conversationId of plan.noted) {
       if (signal.aborted) break;
-      // Removed as it is taken, not in a batch at the end: an abort mid-pass
-      // must leave the untried ones for the next tick.
       this.#notedCommits.delete(conversationId);
       await this.#reconcileOne(conversationId, me, pending.has(conversationId), now);
     }
 
     if (sweeping) {
       this.#lastReconcile = now;
-      const conversations = await store.listConversations();
-      for (const conversation of conversations) {
+      for (const conversationId of plan.swept) {
         if (signal.aborted) break;
-        // Just done above, on better information.
-        if (noted.has(conversation.id)) continue;
         await this.#reconcileOne(
-          conversation.id,
+          conversationId,
           me,
-          pending.has(conversation.id),
+          pending.has(conversationId),
           now,
         );
       }
@@ -313,6 +312,10 @@ export class MlsSync {
     const { welcomes } = await fetchWelcomes({ signal });
     if (welcomes.length === 0) return [];
 
+    // Each welcome spent one of this device's key packages: count the stock
+    // again on the next tick rather than at the next recheck.
+    this.#keyPackagesCheckedAt = 0;
+
     const acked: string[] = [];
     const joined: string[] = [];
     for (const welcome of welcomes) {
@@ -366,7 +369,9 @@ export class MlsSync {
    *
    * Deliberately kind-blind, like everything in this sweep: a direct
    * conversation, a group, and any future hub channel reconcile and rotate
-   * identically. No `kind` check may appear here.
+   * identically. No `kind` check may appear here. Class is not kind: a
+   * readable hub channel has no group and never reaches this function
+   * (`tick` skips it through planReconcile).
    */
   async reconcileConversation(
     conversationId: string,
@@ -382,20 +387,6 @@ export class MlsSync {
   ): Promise<void> {
     const handshake = e2e.handshake!;
     const recipients = await fetchRecipients(conversationId);
-
-    // Cache the roster's account keys. Since v3 the archive seal no longer
-    // reads these (one AEAD under the history key replaced the per-user
-    // fan-out), but the cache stays warm for anything that needs the roster
-    // offline. Members without account keys are cached as absent.
-    await store.setMeta(
-      META_RECIPIENTS_PREFIX + conversationId,
-      recipients.members
-        .filter((member) => member.accountPublicKey !== null)
-        .map((member) => ({
-          userId: member.userId,
-          publicKey: member.accountPublicKey!,
-        })) satisfies CachedRecipient[],
-    );
 
     let localEpoch = await handshake.epoch(conversationId);
 

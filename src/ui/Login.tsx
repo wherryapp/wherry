@@ -9,7 +9,9 @@ import {
   defaultDeviceName,
   deviceDescriptor,
   forgetDevice,
-  saveSession,
+  holdSession,
+  persistSession,
+  storedDeviceId,
 } from "../api/session";
 import { clearDeviceCrypto } from "../crypto/db";
 import type { StoredSession } from "../api/session";
@@ -68,6 +70,12 @@ export function Login({
   const [error, setError] = useState<string | null>(null);
   const [postAuth, setPostAuth] = useState<PostAuth | null>(null);
 
+  /** The one way out of this screen: persist the held session, then go. */
+  function enter(session: StoredSession) {
+    persistSession(session);
+    onSignedIn(session);
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -85,6 +93,22 @@ export function Login({
       }
 
       const device = deviceDescriptor(defaultDeviceName());
+      // The device this browser's MLS state (identity key, key packages,
+      // group state) was built for. Read before the auth call, which
+      // replaces the stored id.
+      const priorDeviceId = storedDeviceId();
+      // MLS state belongs to one device row. When the server issues a
+      // different one -- every registration does, whatever id is sent, and
+      // so does a login that carried no id -- the state left here by the
+      // last device (possibly another account's, on a shared browser) must
+      // not become the new device's: its identity key would be published
+      // as the new device's own, and in a conversation both share the new
+      // device would act as the old one's leaf (sweep 1001, client-core-7).
+      // A same-device sign-in keeps its state, as it must: the device row
+      // survived and its leaves are still its own.
+      const forgetOtherDevice = async (issuedDeviceId: string) => {
+        if (issuedDeviceId !== priorDeviceId) await clearDeviceCrypto();
+      };
 
       if (mode === "register") {
         // The keypair, the recovery code and both wraps, computed before the
@@ -100,13 +124,15 @@ export function Login({
           email: email.trim(),
           accountKeys: keys.wire,
         });
+        await forgetOtherDevice(result.device.id);
         await persistKeypair(keys.keypair);
         // Not signed in yet: the recovery code screen stands between the
         // account existing and the app opening, because it is shown once.
+        // Held, not persisted, until Continue -- see holdSession.
         setPostAuth({
           kind: "show-code",
           code: keys.recoveryCode,
-          session: saveSession(result),
+          session: holdSession(result),
         });
         return;
       }
@@ -136,7 +162,11 @@ export function Login({
           device: deviceDescriptor(defaultDeviceName()),
         });
       }
-      const session = saveSession(result);
+      await forgetOtherDevice(result.device.id);
+      // Held while the account key is unlocked: a recovery may yet mint a
+      // new code to show once, and the session is persisted only when this
+      // sign-in actually completes (enter, below).
+      const session = holdSession(result);
 
       // While the password is still in hand. Never kept beyond this.
       const unlock = await unlockAccountKey(password);
@@ -145,7 +175,7 @@ export function Login({
         return;
       }
 
-      onSignedIn(session);
+      enter(session);
     } catch (caught) {
       // Match on the code, never the message -- docs/api.md is explicit that
       // the text is for humans and will change.
@@ -177,7 +207,7 @@ export function Login({
     return (
       <RecoveryCodeScreen
         code={postAuth.code}
-        onDone={() => onSignedIn(postAuth.session)}
+        onDone={() => enter(postAuth.session)}
       />
     );
   }
@@ -193,7 +223,7 @@ export function Login({
             session: postAuth.session,
           })
         }
-        onSkip={() => onSignedIn(postAuth.session)}
+        onSkip={() => enter(postAuth.session)}
       />
     );
   }

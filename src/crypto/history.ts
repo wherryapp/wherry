@@ -13,6 +13,7 @@
 // conversation a key belongs to, or how many members it has.
 
 import {
+  HISTORY_KEY_BYTES,
   generateHistoryKey,
   openArchive,
   sealForUser,
@@ -71,6 +72,14 @@ export async function ingestWrappedKeys(
     if (held.has(`${entry.conversationId}:${entry.generation}`)) continue;
     try {
       const key = await openArchive(keypair.privateKey, entry.wrappedKey);
+      // A member can wrap anything; only a 32-byte key is a history key.
+      // Anything else would be cached and then fail every row under it.
+      if (key.length !== HISTORY_KEY_BYTES) {
+        throw new KeysError(
+          "WRONG_SECRET",
+          `Unwrapped history key is ${key.length} bytes, not ${HISTORY_KEY_BYTES}`,
+        );
+      }
       await saveHistoryKey(entry.conversationId, entry.generation, key);
       fresh.push({
         conversationId: entry.conversationId,

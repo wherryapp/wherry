@@ -115,6 +115,29 @@ test("openArchive refuses an unknown format byte", async () => {
   );
 });
 
+test("openArchive turns a malformed enc into WRONG_SECRET, whatever the HPKE throw", async () => {
+  // The wrapped key is whatever a member posted. A short enc threw
+  // DeserializeError and an all-zero one DecapError, both outside the try,
+  // and the history-key ingest skips only KeysError (sweep 1001,
+  // client-core-4).
+  const keypair = await generateAccountKeypair();
+  const zeroEnc = new Uint8Array(1 + 32 + 48);
+  zeroEnc[0] = 0x01;
+  const inputs = [
+    new Uint8Array([0x01]),
+    new Uint8Array([0x01, 1, 2, 3]),
+    zeroEnc,
+  ];
+  for (const sealed of inputs) {
+    await assert.rejects(
+      openArchive(keypair.privateKey, sealed),
+      (error: unknown) =>
+        error instanceof KeysError && error.code === "WRONG_SECRET",
+      `length ${sealed.length}`,
+    );
+  }
+});
+
 test("sealWithHistoryKey round-trips through openWithHistoryKey", async () => {
   const key = generateHistoryKey();
   const sealed = await sealWithHistoryKey(
@@ -159,6 +182,20 @@ test("openWithHistoryKey with the wrong key throws WRONG_SECRET", async () => {
     (error: unknown) =>
       error instanceof KeysError && error.code === "WRONG_SECRET",
   );
+});
+
+test("openWithHistoryKey with a key of the wrong length throws WRONG_SECRET", async () => {
+  const sealed = await sealWithHistoryKey(
+    generateHistoryKey(),
+    encoder.encode("secret"),
+  );
+  for (const key of [new Uint8Array(0), new Uint8Array(5)]) {
+    await assert.rejects(
+      openWithHistoryKey(key, sealed),
+      (error: unknown) =>
+        error instanceof KeysError && error.code === "WRONG_SECRET",
+    );
+  }
 });
 
 test("recovery codes have the documented shape and survive sloppy re-entry", () => {

@@ -129,15 +129,19 @@ export async function decryptBlob(
     );
   }
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    fromBase64(ref.key) as BufferSource,
-    "AES-GCM",
-    false,
-    ["decrypt"],
-  );
-
+  // The key and nonce came in the sender's payload, so decoding and
+  // importing them is inside the try as well: a key that is not base64, or
+  // not 16/32 bytes, is the same verdict as a wrong one -- this attachment
+  // will not open -- and must not throw a DOMException that ends the
+  // prefetch pass for every ref behind it.
   try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      fromBase64(ref.key) as BufferSource,
+      "AES-GCM",
+      false,
+      ["decrypt"],
+    );
     return new Uint8Array(
       await crypto.subtle.decrypt(
         { name: "AES-GCM", iv: fromBase64(ref.nonce) as BufferSource },

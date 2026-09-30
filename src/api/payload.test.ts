@@ -197,3 +197,86 @@ test("an unsupported kind counts as unread — the constraint on any future kind
     assert.equal(isMessageOp(decodeContent(encodeOp(op))), true);
   }
 });
+
+// Attachment refs are another client's data. Every field the type admits is
+// checked, because a consumer that trusts the type will call string methods
+// on it during render (sweep 1001, client-core-2: `name: 5` blanked the app).
+function refsOf(attachments: unknown[]): unknown {
+  const decoded = decodeContent(structured({ text: "x", attachments }));
+  assert.ok(typeof decoded === "object" && !isMessageOp(decoded));
+  return decoded.attachments;
+}
+
+const base = { id: "a1", mediaType: "application/pdf", byteSize: 1 };
+const sealed = {
+  key: "q83vEjRWeJA=",
+  nonce: "AAAAAAAAAAAAAAAA",
+  digest: "3q2+7w==",
+};
+
+test("a non-string attachment name is dropped, and the attachment kept", () => {
+  for (const name of [5, null, {}, ["a"], true]) {
+    assert.deepEqual(refsOf([{ ...base, name }]), [base]);
+  }
+  assert.deepEqual(refsOf([{ ...base, name: "report.pdf" }]), [
+    { ...base, name: "report.pdf" },
+  ]);
+});
+
+test("width and height survive only as finite positive numbers", () => {
+  for (const bad of ["100", -1, 0, Number.NaN, null, {}]) {
+    assert.deepEqual(refsOf([{ ...base, width: bad, height: bad }]), [base]);
+  }
+  // JSON cannot carry Infinity or NaN, but a hand-built payload can say 1e999,
+  // which parses to Infinity.
+  const huge = new TextEncoder().encode(
+    '\u0001{"text":"x","attachments":[{"id":"a1","mediaType":"image/png","byteSize":1,"width":1e999}]}',
+  );
+  const decoded = decodeContent(huge);
+  assert.ok(typeof decoded === "object" && !isMessageOp(decoded));
+  assert.deepEqual(decoded.attachments, [
+    { id: "a1", mediaType: "image/png", byteSize: 1 },
+  ]);
+  assert.deepEqual(refsOf([{ ...base, width: 640, height: 480 }]), [
+    { ...base, width: 640, height: 480 },
+  ]);
+});
+
+test("a malformed required field rejects the ref", () => {
+  assert.deepEqual(
+    refsOf([
+      { ...base, id: 5 },
+      { ...base, id: "" },
+      { ...base, mediaType: 7 },
+      { ...base, byteSize: "1" },
+      { ...base, byteSize: -1 },
+      null,
+      "a1",
+    ]),
+    [],
+  );
+});
+
+test("the crypto fields come as a base64 set of three or not at all", () => {
+  assert.deepEqual(refsOf([{ ...base, ...sealed }]), [{ ...base, ...sealed }]);
+  assert.deepEqual(
+    refsOf([
+      { ...base, key: sealed.key },
+      { ...base, ...sealed, nonce: undefined },
+      // Present but not a string: before, a non-string did not count toward
+      // the set, so `key: 5` alone passed as a plaintext-era ref.
+      { ...base, key: 5 },
+      { ...base, ...sealed, key: 5 },
+      // Not base64: `atob` would throw a DOMException in the download path.
+      { ...base, ...sealed, key: "not base64!" },
+      { ...base, ...sealed, digest: "abc" },
+    ]),
+    [],
+  );
+});
+
+test("a ref is rebuilt, so nothing the sender added rides along", () => {
+  assert.deepEqual(refsOf([{ ...base, extra: "x", __proto__: { y: 1 } }]), [
+    base,
+  ]);
+});

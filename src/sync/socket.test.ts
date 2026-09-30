@@ -262,6 +262,28 @@ test("reconnectNow leaves a healthy socket alone", () => {
   manager.stop();
 });
 
+test("reconnectNow during a handshake closes the pending socket and opens one", () => {
+  // The pending socket used to be abandoned open, its handlers inert
+  // (sweep 1001, client-core-15).
+  const { manager, sockets } = harness({ backoffMs: 60_000 });
+  manager.start();
+  sockets[0]!.fire("open", {});
+
+  manager.reconnectNow();
+  assert.equal(sockets.length, 2);
+  assert.equal(sockets[0]!.closed.length, 1, "the pending socket is closed");
+  assert.equal(sockets[1]!.closed.length, 0);
+  assert.equal(manager.isHealthy(), false);
+
+  // The new one completes its handshake as usual; the old one's close did
+  // not schedule a reconnect on top of it.
+  sockets[1]!.fire("open", {});
+  sockets[1]!.fire("message", { data: '{"type":"ready"}' });
+  assert.equal(manager.isHealthy(), true);
+  assert.equal(sockets.length, 2);
+  manager.stop();
+});
+
 test("reconnectNow after stop stays stopped", () => {
   const { manager, sockets } = harness({ backoffMs: 60_000 });
   manager.start();

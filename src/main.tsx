@@ -79,10 +79,6 @@ function render(): void {
   );
 }
 
-// Dev-only diagnostics (crypto tracing, dev auto-login), loaded before the
-// first render so a traced sign-in captures everything from the first
-// crypto call. The guarded dynamic import means production bundles contain
-// none of it. See devtools.ts.
 /**
  * In the Tauri shells, ask the OS keychain for anything the webview's
  * storage lost to eviction *before* the first render -- loadSession is
@@ -102,6 +98,10 @@ async function restoreThenRender(): Promise<void> {
   render();
 }
 
+// Dev-only diagnostics (crypto tracing, dev auto-login), loaded before the
+// first render so a traced sign-in captures everything from the first
+// crypto call. The guarded dynamic import means production bundles contain
+// none of it. See devtools.ts.
 if (import.meta.env.DEV) {
   // The shells hand devtools the vault restore to run first: the dev
   // auto-login and auto-call read the session, and in a shell it may only

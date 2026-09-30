@@ -158,11 +158,11 @@ export type MessageOp = ReactionOp | EditOp | RetractOp;
  * any new kind does, precisely because it only protects clients that already
  * have it.
  */
+export type DecodedContent = RenderableContent | MessageOp;
+
 /** What the timeline can put in a bubble: everything decode produces except
  * an operation, which is aggregated onto its target instead of rendered. */
 export type RenderableContent = MessageContent | "unsupported";
-
-export type DecodedContent = RenderableContent | MessageOp;
 
 /**
  * Discriminates an operation from renderable content. `MessageContent` never
@@ -264,7 +264,10 @@ export function decodeContent(payload: Uint8Array): DecodedContent {
     const content: MessageContent = {
       text: typeof shape.text === "string" ? shape.text : "",
       attachments: Array.isArray(shape.attachments)
-        ? shape.attachments.filter(isAttachmentRef)
+        ? shape.attachments.flatMap((value: unknown) => {
+            const ref = toAttachmentRef(value);
+            return ref ? [ref] : [];
+          })
         : [],
     };
     // A malformed replyTo is dropped rather than failing the message: the
@@ -326,29 +329,69 @@ function isReplyContext(value: unknown): value is ReplyContext {
   );
 }
 
+// Standard base64, padded -- what crypto/blob.ts's toBase64 writes. A key,
+// nonce or digest that is not this is not a ref this build sealed, and
+// letting it through surfaces as a DOMException from `atob` deep in the
+// download path rather than as a malformed ref here.
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 /**
- * Checked rather than asserted.
+ * Checked rather than asserted, and rebuilt rather than passed through.
  *
  * This is data off the wire that another client wrote, and a malformed
  * reference that reached the render layer would be a crash in a component
- * rather than a message that quietly shows less than it should.
+ * rather than a message that quietly shows less than it should. That
+ * happened: `name: 5` got through when only the required fields were
+ * checked, and `displayFileName(5)` threw during render with no error
+ * boundary above it -- a blank app for every recipient who opened the
+ * conversation (sweep 1001, client-core-2). So every field the type admits
+ * is checked here, and the ref handed on is a fresh object holding only
+ * those fields: nothing the sender added rides along to a consumer that
+ * trusts the type.
+ *
+ * Two treatments, by what the field is for. A malformed *required* or
+ * crypto field rejects the ref -- it cannot be fetched or opened. A
+ * malformed *decorative* one (`name`, `width`, `height`) is dropped and the
+ * attachment still renders, the way a ref from before the field existed
+ * does.
  */
-function isAttachmentRef(value: unknown): value is AttachmentRef {
-  if (typeof value !== "object" || value === null) return false;
+function toAttachmentRef(value: unknown): AttachmentRef | null {
+  if (typeof value !== "object" || value === null) return null;
   const ref = value as Record<string, unknown>;
+
+  const id = ref["id"];
+  const mediaType = ref["mediaType"];
+  const byteSize = ref["byteSize"];
+  if (typeof id !== "string" || id.length === 0) return null;
+  if (typeof mediaType !== "string") return null;
+  if (!isFiniteNumber(byteSize) || byteSize < 0) return null;
 
   // The crypto fields come as a set or not at all. A reference with a key
   // but no nonce is not "partially encrypted", it is malformed, and letting
-  // it through would surface as a baffling decrypt error later.
+  // it through would surface as a baffling decrypt error later. Present
+  // means present with any value: a numeric key is as malformed as a
+  // missing nonce.
   const cryptoFields = [ref["key"], ref["nonce"], ref["digest"]];
-  const cryptoCount = cryptoFields.filter(
-    (field) => typeof field === "string",
-  ).length;
-  if (cryptoCount !== 0 && cryptoCount !== 3) return false;
+  const present = cryptoFields.filter((field) => field !== undefined);
+  if (present.length !== 0 && present.length !== 3) return null;
+  if (!present.every((field) => typeof field === "string" && BASE64.test(field))) {
+    return null;
+  }
 
-  return (
-    typeof ref["id"] === "string" &&
-    typeof ref["mediaType"] === "string" &&
-    typeof ref["byteSize"] === "number"
-  );
+  const out: AttachmentRef = { id, mediaType, byteSize };
+  if (typeof ref["name"] === "string") out.name = ref["name"];
+  const width = ref["width"];
+  const height = ref["height"];
+  if (isFiniteNumber(width) && width > 0) out.width = width;
+  if (isFiniteNumber(height) && height > 0) out.height = height;
+  if (present.length === 3) {
+    out.key = ref["key"] as string;
+    out.nonce = ref["nonce"] as string;
+    out.digest = ref["digest"] as string;
+  }
+  return out;
 }
