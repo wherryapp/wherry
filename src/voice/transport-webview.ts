@@ -39,8 +39,16 @@ import {
 } from "livekit-client";
 import { devRelayOnly } from "./relay";
 import { parseRoute, type RouteRaw } from "./route";
-import { keyIndexFor, KEYRING_SIZE, type EchoReport, type VideoQualityRequest, type VideoSource } from "./rules";
 import {
+  keyIndexFor,
+  KEYRING_SIZE,
+  type EchoReport,
+  type LocalMedia,
+  type VideoQualityRequest,
+  type VideoSource,
+} from "./rules";
+import {
+  defaultInputId,
   publishErrorMessage,
   screenAudioCapture,
   screenAudioPublish,
@@ -326,14 +334,52 @@ export class WebviewTransport implements VoiceTransport {
     this.#elements.clear();
   }
 
+  async startMicrophone(muted: boolean): Promise<void> {
+    const room = this.#room;
+    if (!room) return;
+    if (!muted) {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      return;
+    }
+    // Muted from the first frame: the track is created (the permission
+    // prompt, the device, the room's capture defaults), muted, and only then
+    // published, so its AddTrackRequest says muted and no unmuted audio ever
+    // leaves. The SDK's own `setMicrophoneEnabled(true)` publishes first and
+    // mutes after. A later unmute finds this publication by its source and
+    // unmutes it in place.
+    const [track] = await room.localParticipant.createTracks({ audio: true });
+    if (!track) return;
+    try {
+      await track.mute();
+      if (this.#room !== room) throw new Error("the call ended while the microphone was starting");
+      await room.localParticipant.publishTrack(track, { source: Track.Source.Microphone });
+    } catch (error) {
+      track.stop();
+      throw error;
+    }
+  }
+
   async setMicrophoneEnabled(on: boolean): Promise<void> {
     const room = this.#room;
     if (!room) return;
     await room.localParticipant.setMicrophoneEnabled(on);
   }
 
-  async setInputDevice(deviceId: string): Promise<void> {
-    await this.#room?.switchActiveDevice("audioinput", deviceId);
+  async setInputDevice(deviceId: string | null): Promise<void> {
+    const room = this.#room;
+    if (!room) return;
+    let id = deviceId;
+    if (id === null) {
+      // "Default" mid-call moves the live call, as a named device does. The
+      // browser has no "the default" handle outside Chromium's `default`
+      // entry, so the enumeration says which (transport-rules.ts).
+      const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(
+        (device) => device.kind === "audioinput",
+      );
+      id = defaultInputId({ inputs, firstIsDefault: true });
+      if (id === null) return;
+    }
+    await room.switchActiveDevice("audioinput", id);
   }
 
   async setOutputDevice(deviceId: string | null): Promise<void> {
@@ -376,6 +422,14 @@ export class WebviewTransport implements VoiceTransport {
     if (!room) return;
     const ceiling = this.#video.camera;
     try {
+      // A camera already published keeps its device through the SDK's
+      // `setCameraEnabled`, which then only unmutes and ignores `deviceId`.
+      // A different camera asked for mid-call -- the flip, which is how a
+      // phone reaches its back camera -- is a device switch first.
+      const published = room.localParticipant.getTrackPublication(Track.Source.Camera);
+      if (on && deviceId && published?.track && room.getActiveDevice("videoinput") !== deviceId) {
+        await room.switchActiveDevice("videoinput", deviceId);
+      }
       await room.localParticipant.setCameraEnabled(on, {
         ...(deviceId ? { deviceId } : {}),
         ...(ceiling ? { resolution: presetFor(ceiling) } : {}),
@@ -566,6 +620,20 @@ export class WebviewTransport implements VoiceTransport {
       });
     }
     return list;
+  }
+
+  localMedia(): LocalMedia {
+    const local = this.#room?.localParticipant;
+    if (!local) return { micOpen: false, camera: false, screen: false };
+    const mic = local.getTrackPublication(Track.Source.Microphone);
+    const camera = local.getTrackPublication(Track.Source.Camera);
+    return {
+      micOpen: mic !== undefined && !mic.isMuted,
+      // A camera turned off is a muted publication (see TransportParticipant).
+      camera: camera !== undefined && !camera.isMuted,
+      // A screen is unpublished when it stops, never muted.
+      screen: local.getTrackPublication(Track.Source.ScreenShare) !== undefined,
+    };
   }
 
   localAudioLevel(): number {
@@ -809,8 +877,21 @@ export class WebviewTransport implements VoiceTransport {
         if (publication.kind !== Track.Kind.Audio) ev().videoChanged?.();
         ev().rosterChanged?.();
       })
-      .on(RoomEvent.TrackMuted, () => ev().rosterChanged?.())
-      .on(RoomEvent.TrackUnmuted, () => ev().rosterChanged?.())
+      // A local mute is this device's own -- or a moderator's, which the SDK
+      // applies to the local publication (`EngineEvent.RemoteMute`) and
+      // which nothing else reports.
+      .on(RoomEvent.TrackMuted, (_publication: TrackPublication, participant: Participant) => {
+        if (participant.isLocal) ev().localChanged?.();
+        ev().rosterChanged?.();
+      })
+      .on(RoomEvent.TrackUnmuted, (_publication: TrackPublication, participant: Participant) => {
+        if (participant.isLocal) ev().localChanged?.();
+        ev().rosterChanged?.();
+      })
+      // The browser's own "Stop sharing" ends the screen track, and the SDK
+      // unpublishes it (`handleTrackEnded`) without the page asking.
+      .on(RoomEvent.LocalTrackUnpublished, () => ev().localChanged?.())
+      .on(RoomEvent.LocalTrackPublished, () => ev().localChanged?.())
       .on(RoomEvent.ActiveSpeakersChanged, () => ev().speakersChanged?.())
       .on(RoomEvent.ParticipantEncryptionStatusChanged, () => ev().rosterChanged?.())
       .on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {

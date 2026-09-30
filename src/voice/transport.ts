@@ -24,14 +24,14 @@
 // in this file.
 
 import type { RouteRaw } from "./route";
-import type { EchoReport, VideoQualityRequest, VideoSource } from "./rules";
+import type { EchoReport, LocalMedia, VideoQualityRequest, VideoSource } from "./rules";
 
 // `VideoSource` and `VideoQualityRequest` live in rules.ts, beside the
 // pure decision that produces one (`subscriptionFor`), and are re-exported
 // here so a caller that only knows the seam does not have to know that.
 // The direction of the dependency is the same as `EchoReport`'s and
 // `keyIndexFor`'s: rules.ts is the leaf and imports no transport.
-export type { VideoQualityRequest, VideoSource } from "./rules";
+export type { LocalMedia, VideoQualityRequest, VideoSource } from "./rules";
 
 /**
  * What this transport can actually do with video, asked after connect and
@@ -259,6 +259,15 @@ export type TransportEvents = {
    *  re-attach. Separate from `rosterChanged` because a tile remounting
    *  is expensive where a name changing is not. */
   videoChanged?: () => void;
+  /**
+   * This device's own microphone, camera or screen changed: re-read
+   * `localMedia()`. Fired for every change, the page's own included, and
+   * there for the ones the page did not make -- a moderator's mute or
+   * stop-video, and the browser's "Stop sharing" bar -- which otherwise
+   * never reach the buttons (rules.ts's `localMediaPatch` decides).
+   * Identical on both transports.
+   */
+  localChanged?: () => void;
 };
 
 export type VoiceQuality = "excellent" | "good" | "poor" | "lost" | "unknown";
@@ -378,8 +387,20 @@ export interface VoiceTransport {
   /** Idempotent; safe to call when never connected. */
   disconnect(): Promise<void>;
 
+  /**
+   * Publish the microphone for the first time, muted or not. A refused
+   * permission throws here, which is why the join publishes at all when it
+   * joins muted. `muted` publishes it muted from its first frame: a room that
+   * joins everybody muted must never carry this device's voice, not even for
+   * the round trip a publish-then-mute took (Connor's decision, 2026-10-01).
+   */
+  startMicrophone(muted: boolean): Promise<void>;
+  /** Mute or unmute; `true` also publishes where nothing has been. */
   setMicrophoneEnabled(on: boolean): Promise<void>;
-  setInputDevice(deviceId: string): Promise<void>;
+  /** `deviceId` null is "Default" chosen mid-call: the live call moves to
+   *  the platform's default input, as it does to a named one
+   *  (transport-rules.ts's `defaultInputId`). */
+  setInputDevice(deviceId: string | null): Promise<void>;
   /** `deviceId` null is "Default" chosen mid-call: the native engine then
    *  follows the platform's default output where its shell can
    *  (transport-rules.ts's `playoutAfterDeviceChange`); the webview engine
@@ -451,6 +472,9 @@ export interface VoiceTransport {
   playbackBlocked(): boolean;
 
   participants(): TransportParticipant[];
+  /** This device's own media as the transport has it now; see
+   *  `TransportEvents.localChanged`. */
+  localMedia(): LocalMedia;
   /** 0..1, the SFU's reading of this device's own signal. */
   localAudioLevel(): number;
   quality(): VoiceQuality;

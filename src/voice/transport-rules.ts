@@ -41,29 +41,76 @@ export function userIdFromMetadata(metadata: string | undefined, identity: strin
  * the person "The camera could not be started." A new code in the shell
  * needs a case here, or it says nothing it knows.
  *
- * The microphone still has no "refused": macOS does not fail a capture it
- * has denied, it delivers silence, so a refusal cannot be told apart from a
- * quiet room. The camera is not like that -- AVFoundation reports the
- * authorization status before a session starts, and Windows will fail the
- * source outright (there is no prompt there, only a privacy setting), which
- * is why `camera_denied` is a code and `permission` covers only the mic.
+ * The microphone has no "refused": macOS does not fail a capture it has
+ * denied, it delivers silence, so a refusal cannot be told apart from a
+ * quiet room, and the shell raises no code for one (a `permission` case once
+ * sat here for it; nothing ever emitted it). The camera is not like that --
+ * AVFoundation reports the authorization status before a session starts, and
+ * Windows will fail the source outright (there is no prompt there, only a
+ * privacy setting), which is why `camera_denied` is a code.
+ *
+ * `SourceGoneError` is not a DOM name. No browser error means "the window
+ * you picked has closed" -- `getDisplayMedia` picks and captures in one step
+ * -- and our own picker made that reachable on Windows (capture.rs's
+ * `screen_gone`), so it is given a name of its own for
+ * `publishErrorMessage` to word.
  */
 export function nativeErrorName(
   code: string,
-): "NotFoundError" | "NotAllowedError" | "UnknownError" {
+): "NotFoundError" | "NotAllowedError" | "SourceGoneError" | "UnknownError" {
   switch (code) {
     case "no_microphone":
     case "no_camera":
       return "NotFoundError";
-    case "permission":
     case "camera_denied":
     // Cancelling the picker is a decision, not a fault, and
     // `publishErrorMessage` already words it as "refused or cancelled".
     case "screen_cancelled":
       return "NotAllowedError";
+    case "screen_gone":
+      return "SourceGoneError";
     default:
       return "UnknownError";
   }
+}
+
+/**
+ * Whether a refused `voice_connect` should close whatever call the shell
+ * holds. It should not when the refusal is `already_connected`: that call --
+ * running, or still connecting -- is not this transport's but the page's
+ * before a reload, which `session.ts`'s join-time check adopts or closes by
+ * its own rule. Closing it here would end it with no leave sent, or, with its
+ * connect still in flight, cancel it in the shell (`voice_disconnect`
+ * honours an in-flight connect). Any other refusal is this connect's own,
+ * and closing is the tidy-up.
+ */
+export function connectFailureClosesShell(code: string | null): boolean {
+  return code !== "already_connected";
+}
+
+/**
+ * The input device "Default" means when it is chosen in the middle of a
+ * call, from one engine's list: the id to switch the live call to, or null
+ * when this list cannot say which device the platform's default is.
+ *
+ * In order: the default a shell reports outright (`defaultInput`, for a
+ * shell whose list has no entry for it); the entry whose id *is* `default`
+ * (Chromium's enumeration, and the macOS shell's, whose device module lists
+ * the default as a device of its own under that id); and otherwise the first input, which is
+ * the default in Safari's and Firefox's enumerations (livekit-client makes
+ * the same assumption when a default moves). `firstIsDefault` is false for a
+ * list where the first entry is only the first -- the Windows shell's -- and
+ * there the answer is null rather than a guess.
+ */
+export function defaultInputId(input: {
+  inputs: readonly { deviceId: string }[];
+  defaultInput?: string | null;
+  firstIsDefault: boolean;
+}): string | null {
+  if (input.defaultInput) return input.defaultInput;
+  if (input.inputs.some((device) => device.deviceId === "default")) return "default";
+  if (!input.firstIsDefault) return null;
+  return input.inputs[0]?.deviceId || null;
 }
 
 /**
@@ -713,15 +760,25 @@ export function publishErrorMessage(error: unknown, source: "camera" | "screen")
   const name = error instanceof Error ? error.name : "";
   const message = error instanceof Error ? error.message : String(error);
   const thing = source === "camera" ? "camera" : "screen";
-  if (/permission|not allowed|insufficient/i.test(message) && /publish|source|track/i.test(message)) {
-    return `This call does not allow ${thing} video.`;
-  }
+  // The device's own refusal first, by name. The SFU's refusal is matched on
+  // its words, and a device refusal can use the same words: the Windows
+  // shell once wrote `camera access is not allowed (creating the source
+  // reader)`, which matched both patterns below and told a person with the
+  // camera blocked in Windows' privacy settings that the call did not allow
+  // video. An SFU refusal never carries a DOM refusal's name.
   switch (name) {
     case "NotAllowedError":
     case "SecurityError":
       return source === "camera"
         ? "Camera access was refused."
         : "Screen sharing was refused or cancelled.";
+  }
+  if (/permission|not allowed|insufficient/i.test(message) && /publish|source|track/i.test(message)) {
+    return `This call does not allow ${thing} video.`;
+  }
+  switch (name) {
+    case "SourceGoneError":
+      return "The window or screen you chose is no longer there.";
     case "NotFoundError":
       return source === "camera" ? "No camera was found." : "No screen was available to share.";
     case "NotReadableError":

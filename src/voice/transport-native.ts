@@ -43,7 +43,7 @@
 // renders and cannot capture. `rules.ts`'s `nativeEngine` is what tells it
 // from a phone.
 
-import { keyIndexFor, type VideoQualityRequest, type VideoSource } from "./rules";
+import { keyIndexFor, type LocalMedia, type VideoQualityRequest, type VideoSource } from "./rules";
 import { nativeMediaProbe } from "./native-media";
 import { settledShellReading, type ShellReading } from "./handoff";
 import { probeRoom } from "./room-probe";
@@ -67,12 +67,15 @@ import type {
   VoiceTransport,
 } from "./transport";
 import {
+  connectFailureClosesShell,
   connectionFromWord,
+  defaultInputId,
   isEncryptionFailure,
   knownDeviceId,
   nativeErrorName,
   nativeGainFor,
   playbackEnabledFor,
+  publishErrorMessage,
   playoutAfterDeviceChange,
   playoutReadingChanged,
   qualityFromWord,
@@ -119,6 +122,9 @@ type NativeEvent = { session: number } & (
   // The SFU's refreshed token; a shell built before 2026-09-27 never sends
   // it, and its calls are probed with the join token (15 minutes).
   | { kind: "token"; token: string }
+  // This device's own media, read by the shell when a local track was muted,
+  // unmuted or unpublished -- a moderator's included (mod.rs `Event::Local`).
+  | { kind: "local"; micOpen: boolean; camera: boolean; screen: boolean }
 );
 
 type NativeDevices = {
@@ -127,6 +133,11 @@ type NativeDevices = {
   /** The Windows default output, null when there is none; absent from a
    *  shell that leaves playout to the platform (voice/playout.rs). */
   defaultOutput?: string | null;
+  /** The platform's default input, where the shell can say and its list has
+   *  no `default` entry for it (Windows). No shell sends it yet; until one
+   *  does, "Default" mid-call there moves nothing (transport-rules.ts's
+   *  `defaultInputId`). */
+  defaultInput?: string | null;
 };
 
 type ConnectResult = { session: number; connectMs: number; roster: NativeRoster };
@@ -221,6 +232,23 @@ export async function findNativeOrphan(): Promise<OrphanedTransport | null> {
 /** How often a tile's rect is re-read when nothing observable moved it. */
 const RECT_POLL_MS = 500;
 
+/** The shell's `VoiceError.code`, or null for any other rejection. */
+function errorCode(error: unknown): string | null {
+  if (error && typeof error === "object" && "code" in error) {
+    const { code } = error as { code?: unknown };
+    return typeof code === "string" ? code : null;
+  }
+  return null;
+}
+
+/** What `connect` throws when `disconnect` ran during it: a hang-up while
+ *  the call was connecting, which the session has already dealt with. */
+function hungUp(): Error {
+  const error = new Error("the call was hung up while it connected");
+  error.name = "AbortError";
+  return error;
+}
+
 /**
  * A command's rejection: the shell's `VoiceError`, or something else.
  *
@@ -296,24 +324,52 @@ export class NativeTransport implements VoiceTransport {
   #watching = false;
   #watchTimer: ReturnType<typeof setTimeout> | null = null;
   #episode = 0;
+  /** `disconnect` has run since the last `connect` or `adopt` began. A
+   *  connect checks it after every await: the shell answers a disconnect
+   *  that arrives while `voice_connect` is still running with "no call", and
+   *  that connect then stores a live room -- so a hang-up during
+   *  "Connecting…" left a call up with its microphone about to be published
+   *  and nothing on the page able to end it (client-voice-1). */
+  #closed = false;
+  /** The number on every microphone, camera and screen command, so the
+   *  shell can act on the latest the page sent rather than the latest that
+   *  arrived: Tauri's IPC does not keep two commands in order, and an "off"
+   *  overtaken by the "on" before it left the camera on (the rig, 4 of 5,
+   *  2026-10-01). One counter for all three; the shell compares within one
+   *  kind. The shell forgets the numbering when a new page adopts the call. */
+  #seq = 0;
+  /** This device's own media as the shell last reported it (`local` events;
+   *  at adoption, the shell's reading). */
+  #local: LocalMedia = { micOpen: false, camera: false, screen: false };
 
   async connect(options: TransportConnectOptions, events: TransportEvents): Promise<void> {
+    this.#closed = false;
     this.#events = events;
     this.#echoCancellation = options.processing.echoCancellation;
     this.#video = options.video;
     this.#endpoint = { url: options.url, token: options.token };
     this.#ended = false;
+    this.#local = { micOpen: false, camera: false, screen: false };
     const [core, event] = await Promise.all([
       import("@tauri-apps/api/core"),
       import("@tauri-apps/api/event"),
     ]);
+    // After every await from here to the end, `#closed` says a hang-up came
+    // while this waited. Before `voice_connect` there is nothing in the shell
+    // to close; after it, there may be.
+    if (this.#closed) throw hungUp();
     const invoke: Invoke = (command, args) => core.invoke(command, args);
     this.#invoke = invoke;
     this.#pending = [];
     // Listening before connecting, so nothing the shell says about this
     // call is missed; the session id on every event keeps another call's
     // tail out.
-    this.#unlisten = await event.listen<NativeEvent>("voice", (e) => this.#onEvent(e.payload));
+    const unlisten = await event.listen<NativeEvent>("voice", (e) => this.#onEvent(e.payload));
+    if (this.#closed) {
+      unlisten();
+      throw hungUp();
+    }
+    this.#unlisten = unlisten;
 
     let devices: NativeDevices = { inputs: [], outputs: [] };
     try {
@@ -321,8 +377,10 @@ export class NativeTransport implements VoiceTransport {
     } catch {
       // No devices to check against: both ids fall back to the default.
     }
+    if (this.#closed) throw hungUp();
+    let result: ConnectResult;
     try {
-      const result = await invoke<ConnectResult>("voice_connect", {
+      result = await invoke<ConnectResult>("voice_connect", {
         args: {
           url: options.url,
           token: options.token,
@@ -337,6 +395,35 @@ export class NativeTransport implements VoiceTransport {
           handoff: options.handoff,
         },
       });
+    } catch (error) {
+      // A hang-up during the connect: `disconnect` already closed what there
+      // was, and the shell refused this connect because of it (`cancelled`).
+      if (this.#closed) throw hungUp();
+      // Refused because a call is already there: not this transport's to
+      // close (rust-shell-4). Anything else is this connect's own failure.
+      if (connectFailureClosesShell(errorCode(error))) {
+        await this.disconnect();
+      } else {
+        // Closed without a word to the shell, and marked so: the session's
+        // teardown then calls `disconnect`, which must not ask the shell to
+        // close the call that refused this one.
+        this.#closed = true;
+        this.#release();
+      }
+      throw nativeError(error);
+    }
+    if (this.#closed) {
+      // The shell stored this call after its own `voice_disconnect` had
+      // answered "no call" -- a shell whose disconnect does not wait on a
+      // connect in flight. Nothing but this side can close it now.
+      try {
+        await invoke("voice_disconnect");
+      } catch {
+        // Already gone.
+      }
+      throw hungUp();
+    }
+    try {
       this.#session = result.session;
       this.#roster = result.roster;
       this.#speakerChoice = options.speakerDeviceId;
@@ -352,11 +439,18 @@ export class NativeTransport implements VoiceTransport {
       // with Settings closed. Registered after the replay, so no call event
       // is reordered around this await -- and so after the connect, which is
       // why the catch-up read follows it.
-      this.#unlistenDevices = await event.listen<NativeDevices>("voice-devices", (e) =>
+      const unlistenDevices = await event.listen<NativeDevices>("voice-devices", (e) =>
         this.#onDevices(e.payload),
       );
+      if (this.#closed) {
+        // `disconnect` ran during the listen and closed the shell's call.
+        unlistenDevices();
+        throw hungUp();
+      }
+      this.#unlistenDevices = unlistenDevices;
       void this.#catchUpDevices(invoke, devices);
     } catch (error) {
+      if (this.#closed) throw hungUp();
       await this.disconnect();
       throw nativeError(error);
     }
@@ -374,6 +468,7 @@ export class NativeTransport implements VoiceTransport {
    * page's sliders show. Throws when the shell no longer runs that session.
    */
   async adopt(session: number, options: AdoptOptions, events: TransportEvents): Promise<OrphanedCall> {
+    this.#closed = false;
     this.#events = events;
     this.#video = options.video;
     this.#ended = false;
@@ -393,6 +488,11 @@ export class NativeTransport implements VoiceTransport {
       }
       this.#session = session;
       this.#roster = current.roster;
+      this.#local = {
+        micOpen: current.micPublished && current.micOpen,
+        camera: current.camera,
+        screen: current.screen,
+      };
       this.#quality = qualityFromWord(current.quality);
       this.#echoCancellation = current.echoCancellation;
       this.#endpoint = { url: current.url, token: current.token };
@@ -426,7 +526,25 @@ export class NativeTransport implements VoiceTransport {
   }
 
   async disconnect(): Promise<void> {
+    // Once per connect: a second call has nothing of this transport's left to
+    // close, and asking the shell again could close -- or, while it is
+    // connecting, cancel -- the *next* call's room.
+    if (this.#closed) return;
+    this.#closed = true;
     const invoke = this.#invoke;
+    this.#release();
+    if (invoke) {
+      try {
+        await invoke("voice_disconnect");
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+
+  /** Everything `disconnect` does on this side of the IPC, without asking
+   *  the shell to close anything. */
+  #release(): void {
     this.#unlisten?.();
     this.#unlisten = null;
     this.#unlistenDevices?.();
@@ -442,12 +560,24 @@ export class NativeTransport implements VoiceTransport {
     // are ours to stop.
     for (const tile of this.#tiles.values()) tile.stop();
     this.#tiles.clear();
-    if (invoke) {
-      try {
-        await invoke("voice_disconnect");
-      } catch {
-        // Already gone.
-      }
+    this.#local = { micOpen: false, camera: false, screen: false };
+  }
+
+  /**
+   * The join's first publish. Unmuted, it is `setMicrophoneEnabled(true)`
+   * itself (which `devtools.ts`'s `?devnomic=1` patches). Muted, the shell
+   * publishes the track muted with the microphone gate left closed, so the
+   * device never records and nothing unmuted is ever sent (mod.rs
+   * `voice_set_mic`, `publish_muted`).
+   */
+  async startMicrophone(muted: boolean): Promise<void> {
+    if (!muted) return this.setMicrophoneEnabled(true);
+    const invoke = this.#invoke;
+    if (!invoke || this.#session === null) return;
+    try {
+      await invoke("voice_set_mic", { enabled: false, publishMuted: true, seq: ++this.#seq });
+    } catch (error) {
+      throw nativeError(error, true);
     }
   }
 
@@ -455,14 +585,27 @@ export class NativeTransport implements VoiceTransport {
     const invoke = this.#invoke;
     if (!invoke || this.#session === null) return;
     try {
-      await invoke("voice_set_mic", { enabled: on });
+      await invoke("voice_set_mic", { enabled: on, seq: ++this.#seq });
     } catch (error) {
       throw nativeError(error, true);
     }
   }
 
-  async setInputDevice(deviceId: string): Promise<void> {
-    await this.#invoke?.("voice_set_input_device", { deviceId });
+  async setInputDevice(deviceId: string | null): Promise<void> {
+    let id = deviceId;
+    if (id === null) {
+      // "Default" mid-call moves the live call, as a named device does. The
+      // shell's list names the default on macOS (`default`); on Windows it
+      // does not, and without the shell's `defaultInput` there is no telling
+      // which device that is, so nothing moves (transport-rules.ts).
+      id = defaultInputId({
+        inputs: this.#devices.inputs,
+        defaultInput: this.#devices.defaultInput,
+        firstIsDefault: false,
+      });
+      if (id === null) return;
+    }
+    await this.#invoke?.("voice_set_input_device", { deviceId: id });
   }
 
   async setOutputDevice(deviceId: string | null): Promise<void> {
@@ -611,10 +754,13 @@ export class NativeTransport implements VoiceTransport {
           deviceId,
           maxHeight: ceiling?.maxHeight ?? 720,
           maxFps: ceiling?.maxFps ?? 30,
+          seq: ++this.#seq,
         },
       });
     } catch (error) {
-      throw nativeError(error, true);
+      // Worded here, as the webview transport words its own, so the session
+      // shows the same sentence whichever engine failed (client-voice-8).
+      throw new Error(publishErrorMessage(nativeError(error, true), "camera"));
     }
   }
 
@@ -644,10 +790,11 @@ export class NativeTransport implements VoiceTransport {
           // share uses follows what was picked, and the shell receives it
           // already chosen (transport-rules.ts's screenAudioMode).
           audioMode: choice ? screenAudioMode(choice.sourceId) : null,
+          seq: ++this.#seq,
         },
       });
     } catch (error) {
-      throw nativeError(error, true);
+      throw new Error(publishErrorMessage(nativeError(error, true), "screen"));
     }
   }
 
@@ -774,6 +921,10 @@ export class NativeTransport implements VoiceTransport {
     });
   }
 
+  localMedia(): LocalMedia {
+    return this.#local;
+  }
+
   localAudioLevel(): number {
     return this.#roster.localLevel;
   }
@@ -848,6 +999,10 @@ export class NativeTransport implements VoiceTransport {
         // The join token expires after 15 minutes; a probe of a longer
         // call with it would read 401, which decides nothing.
         if (this.#endpoint) this.#endpoint = { ...this.#endpoint, token: payload.token };
+        break;
+      case "local":
+        this.#local = { micOpen: payload.micOpen, camera: payload.camera, screen: payload.screen };
+        events.localChanged?.();
         break;
     }
   }

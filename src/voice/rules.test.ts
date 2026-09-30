@@ -6,6 +6,7 @@ import {
   callerIsRinging,
   callKeyContext,
   cameraOnVisibility,
+  localMediaPatch,
   grantLine,
   echoLine,
   echoState,
@@ -828,4 +829,67 @@ test("a saved camera that is gone reads as the default", () => {
 test("there is nothing to flip to with fewer than two cameras", () => {
   assert.equal(nextCameraId([], null), null);
   assert.equal(nextCameraId(["only"], "only"), null);
+});
+
+test("localMediaPatch: a moderator's mute and stop-video reach the buttons", () => {
+  const state = { micMuted: false, camera: { on: true, paused: false }, screen: { on: false } };
+  const idle = { mic: false, camera: false, screen: false };
+  assert.deepEqual(
+    localMediaPatch({ reading: { micOpen: false, camera: false, screen: false }, state, busy: idle }),
+    { micMuted: true, camera: { on: false, paused: false } },
+  );
+});
+
+test("localMediaPatch: the browser's Stop sharing clears the share", () => {
+  const state = { micMuted: true, camera: { on: false, paused: false }, screen: { on: true } };
+  assert.deepEqual(
+    localMediaPatch({
+      reading: { micOpen: false, camera: false, screen: false },
+      state,
+      busy: { mic: false, camera: false, screen: false },
+    }),
+    { screen: { on: false } },
+  );
+});
+
+test("localMediaPatch: a reading that agrees changes nothing", () => {
+  assert.equal(
+    localMediaPatch({
+      reading: { micOpen: true, camera: true, screen: true },
+      state: { micMuted: false, camera: { on: true, paused: false }, screen: { on: true } },
+      busy: { mic: false, camera: false, screen: false },
+    }),
+    null,
+  );
+});
+
+test("localMediaPatch: a paused camera reads off and stays paused", () => {
+  assert.equal(
+    localMediaPatch({
+      reading: { micOpen: true, camera: false, screen: false },
+      state: { micMuted: false, camera: { on: true, paused: true }, screen: { on: false } },
+      busy: { mic: false, camera: false, screen: false },
+    }),
+    null,
+  );
+});
+
+test("localMediaPatch: a source the page is changing is left to that change", () => {
+  const state = { micMuted: false, camera: { on: true, paused: false }, screen: { on: false } };
+  assert.equal(
+    localMediaPatch({
+      reading: { micOpen: false, camera: false, screen: true },
+      state,
+      busy: { mic: true, camera: true, screen: true },
+    }),
+    null,
+  );
+  assert.deepEqual(
+    localMediaPatch({
+      reading: { micOpen: false, camera: false, screen: false },
+      state,
+      busy: { mic: true, camera: false, screen: false },
+    }),
+    { camera: { on: false, paused: false } },
+  );
 });

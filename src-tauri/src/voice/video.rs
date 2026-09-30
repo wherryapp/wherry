@@ -105,6 +105,10 @@ struct ScreenAudioPublication {
   /// The loopback capture pushing into `source`; `None` while no share
   /// carries sound.
   capture: Option<ScreenAudio>,
+  /// The screen instruction (`VideoState::screen_asked`) whose share started
+  /// `capture`, so a start taking down its own share stops its own sound and
+  /// never a later share's.
+  capture_ticket: u64,
 }
 
 struct TileEntry {
@@ -129,7 +133,18 @@ struct VideoState {
   /// tell whether a later instruction arrived meanwhile. Tauri runs each
   /// command as its own task, so a mute can land while a switch is opening
   /// the new device; the latest instruction is the one that stands.
+  ///
+  /// "Latest" is the page's order, not arrival order, where the page numbers
+  /// its instructions (`CameraArgs::seq`): Tauri's IPC can deliver an "off"
+  /// ahead of the "on" sent just before it, and numbered on arrival that left
+  /// the camera on (the rig, 4 of 5 tries, 2026-10-01).
   camera_asked: u64,
+  /// The screen's twin of `camera_asked`, bumped (or set from
+  /// `ScreenArgs::seq`) by every `voice_set_screen`. A start that finds it
+  /// moved when it is ready to store its share -- a stop, or another start,
+  /// arrived while it waited on the picker -- takes its share down instead
+  /// of storing it over whatever is there (rust-shell-2).
+  screen_asked: u64,
   tiles: HashMap<u64, TileEntry>,
   next_tile: u64,
   covered: HashSet<String>,
@@ -144,6 +159,35 @@ fn with_state<T>(session: u64, f: impl FnOnce(&mut VideoState) -> T) -> T {
     *state = VideoState { session, ..VideoState::default() };
   }
   f(state)
+}
+
+/// `with_state` for a command resuming after an await: `None` once the call
+/// it started in is over -- `teardown` took its state, or a newer call's
+/// replaced it -- rather than a fresh state made for a dead session, which
+/// would also have thrown away a newer call's tiles unclosed.
+fn with_live_state<T>(session: u64, f: impl FnOnce(&mut VideoState) -> T) -> Option<T> {
+  let mut guard = VIDEO.lock().unwrap();
+  match guard.as_mut() {
+    Some(state) if state.session == session => Some(f(state)),
+    _ => None,
+  }
+}
+
+/// Take a ticket for an instruction: the page's own number where it sent one
+/// (`None` back if an instruction numbered later has already arrived, so this
+/// one is stale), else the next number on arrival, as before page numbers.
+fn take_ticket(asked: &mut u64, seq: Option<u64>) -> Option<u64> {
+  match seq {
+    Some(seq) if seq <= *asked => None,
+    Some(seq) => {
+      *asked = seq;
+      Some(seq)
+    }
+    None => {
+      *asked += 1;
+      Some(*asked)
+    }
+  }
 }
 
 fn source_of(word: &str) -> VoiceResult<TrackSource> {
@@ -276,6 +320,10 @@ pub struct CameraArgs {
   pub device_id: Option<String>,
   pub max_height: u32,
   pub max_fps: u32,
+  /// The page's number for this instruction (`camera_asked`); absent from a
+  /// page that numbers none.
+  #[serde(default)]
+  pub seq: Option<u64>,
 }
 
 fn open_camera(
@@ -328,11 +376,18 @@ pub fn dev_open_camera(max_height: u32) {
 #[tauri::command]
 pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<()> {
   let (session, room, shared) = current()?;
-  let (ticket, existing) = with_state(session, |state| {
-    state.camera_asked += 1;
+  let taken = with_state(session, |state| {
+    let ticket = take_ticket(&mut state.camera_asked, args.seq)?;
     let existing = state.camera.as_ref().map(|c| (c.capture.is_some(), c.device_id.clone(), c.source.clone()));
-    (state.camera_asked, existing)
+    Some((ticket, existing))
   });
+  let Some((ticket, existing)) = taken else {
+    log::info!(
+      "voice: camera {} arrived after a later instruction -- stale, dropped",
+      if args.enabled { "on" } else { "off" }
+    );
+    return Ok(());
+  };
 
   if let Some((capturing, device, source)) = existing {
     if !args.enabled {
@@ -364,7 +419,7 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
     }
     // Checked before the open as well as after, so a mute that arrived while
     // the old device was closing does not light the camera at all.
-    if with_state(session, |state| state.camera_asked != ticket) {
+    if with_live_state(session, |state| state.camera_asked != ticket).unwrap_or(true) {
       log::info!("voice: camera switch superseded before opening");
       return Ok(());
     }
@@ -379,17 +434,22 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
     // mute found no capture to close and muted the publication; unmuting it
     // here would undo that, so the fresh device is closed instead. A later
     // switch opens its own device and installs that.
-    let stale = with_state(session, |state| {
+    // Held outside the closure so that a call which ended while the device
+    // opened (no live state, the closure never runs) still gets it back to
+    // close: a `Source` has no `Drop`, and one dropped running keeps its
+    // capture thread for the life of the process.
+    let mut fresh = Some(capture);
+    with_live_state(session, |state| {
       if state.camera_asked != ticket {
-        return Some(capture);
+        return;
       }
       if let Some(c) = state.camera.as_mut() {
-        c.capture = Some(capture);
+        c.capture = fresh.take();
         c.device_id = args.device_id.clone();
         c.publication.unmute();
       }
-      None
     });
+    let stale = fresh;
     if let Some(stale) = stale {
       tauri::async_runtime::spawn_blocking(move || stale.stop()).await.ok();
       log::info!("voice: camera switch superseded while opening, device closed");
@@ -414,8 +474,9 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
   .await
   .map_err(|e| VoiceError::new("camera_failed", e.to_string()))??;
   // A mute that arrived while the device opened found no camera to mute;
-  // nothing is published yet, so honouring it is closing the device.
-  if with_state(session, |state| state.camera_asked != ticket) {
+  // nothing is published yet, so honouring it is closing the device. So is a
+  // call that ended meanwhile.
+  if with_live_state(session, |state| state.camera_asked != ticket).unwrap_or(true) {
     tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
     log::info!("voice: camera superseded while opening, device closed");
     return Ok(());
@@ -459,12 +520,15 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
   // never be muted or unpublished -- but if something was asked while it
   // published, it is recorded muted with its device closed, as a mute that
   // had found it would have left it.
-  let stale = with_state(session, |state| {
+  // A call that ended while this published has no state to record it in;
+  // its room is closed, and the device is closed below all the same.
+  let mut fresh = Some(capture);
+  let recorded = with_live_state(session, |state| {
     let superseded = state.camera_asked != ticket;
     if superseded {
       publication.mute();
     }
-    let (installed, stale) = if superseded { (None, Some(capture)) } else { (Some(capture), None) };
+    let installed = if superseded { None } else { fresh.take() };
     state.camera = Some(Published {
       publication,
       track,
@@ -473,10 +537,13 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
       slot: None,
       device_id: args.device_id,
     });
-    stale
   });
-  if let Some(stale) = stale {
+  if let Some(stale) = fresh {
     tauri::async_runtime::spawn_blocking(move || stale.stop()).await.ok();
+    if recorded.is_none() {
+      log::info!("voice: the call ended while the camera published; device closed");
+      return Ok(());
+    }
     log::info!("voice: camera superseded while publishing, published muted with the device closed");
   }
   rebind_tiles(session, &room);
@@ -504,6 +571,9 @@ pub struct ScreenArgs {
   /// far end, and an unrecognised include has no target anyway.
   #[serde(default)]
   pub audio_mode: Option<String>,
+  /// The page's number for this instruction (`VideoState::screen_asked`).
+  #[serde(default)]
+  pub seq: Option<u64>,
 }
 
 // **A capture with no consent interface is the thing to keep impossible
@@ -533,46 +603,14 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   };
 
   let (session, room, shared) = current()?;
-  // Sound first on the way out, so the last thing a viewer loses is the
-  // sound of a picture that has already stopped rather than the reverse.
-  // Muted with its capture stopped, and kept (`ScreenAudioPublication`).
-  let sound = with_state(session, |state| {
-    state.screen_audio.as_mut().and_then(|audio| {
-      let capture = audio.capture.take();
-      if capture.is_some() {
-        audio.publication.mute();
-      }
-      capture
-    })
-  });
-  if sound.is_some() {
-    // That mute was the last unmuted stream on the share's transceiver, and
-    // libwebrtc answers that by stopping the device's recording -- the
-    // microphone's -- inside the mute (row D-68; the rig's log has the
-    // `StopRecording` before the line below). Put it back before anything
-    // else, so the microphone loses milliseconds rather than the time the
-    // capture thread takes to stop. mod.rs, above `set_microphone_gate`.
-    super::ensure_microphone_recording("after the share's sound was muted");
-  }
-  let stopped_a_share = sound.is_some();
-  if let Some(capture) = sound {
-    let frames = capture.frames();
-    tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
-    log::info!("voice: screen audio muted after {frames} frame(s), kept published");
-  }
-  let existing = with_state(session, |state| state.screen.take());
-  let stopped_a_share = stopped_a_share || existing.is_some();
-  if let Some(published) = existing {
-    if let Err(error) = room.local_participant().unpublish_track(&published.publication.sid()).await {
-      log::warn!("voice: unpublish screen: {error}");
-    }
-    if let Some(capture) = published.capture {
-      tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
-    }
-    log::info!("voice: screen unpublished");
-    rebind_tiles(session, &room);
-  }
-  if stopped_a_share {
+  let Some(ticket) = with_state(session, |state| take_ticket(&mut state.screen_asked, args.seq)) else {
+    log::info!(
+      "voice: screen {} arrived after a later instruction -- stale, dropped",
+      if args.enabled { "start" } else { "stop" }
+    );
+    return Ok(());
+  };
+  if stop_share(session, &room).await {
     // Whichever step stops the microphone, it is back after this: the
     // picture's unpublish renegotiates about 150 ms after it returns, and the
     // look again at +1 s and +3 s is after that. The rig's log has shown no
@@ -606,6 +644,13 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
     .await
     .map_err(|e| VoiceError::new("screen_failed", e.to_string()))??
   };
+  // A stop or another start arrived while the person was choosing, or the
+  // call ended: this share is not wanted, and nothing of it is published yet.
+  if screen_superseded(session, ticket) {
+    tauri::async_runtime::spawn_blocking(move || screen.stop()).await.ok();
+    log::info!("voice: screen share superseded while its picker was open; capture stopped, nothing published");
+    return Ok(());
+  }
 
   // Fit the grant: a display or window taller than the ceiling is scaled by
   // the capture thread before it reaches the encoder, so the encoder never
@@ -639,13 +684,26 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
       return Err(VoiceError::new("screen_failed", format!("publish: {error}")));
     }
   };
+  let published = Published {
+    publication,
+    track,
+    source,
+    capture: Some(Source::Screen(screen)),
+    slot: Some(slot),
+    device_id: None,
+  };
+  if screen_superseded(session, ticket) {
+    take_down(session, &room, published).await;
+    log::info!("voice: screen share superseded while publishing; taken down again");
+    return Ok(());
+  }
   // The share's sound, if it was asked for. A failure here costs the audio
   // and never the picture: somebody who pressed Share is sharing, and a
   // platform that cannot capture sound (or a window that closed between the
   // pick and the publish) is a line in the log rather than a share that
   // did not happen.
   let audio = if args.audio {
-    match start_screen_audio(session, &room, &args, picked).await {
+    match start_screen_audio(session, &room, &args, picked, ticket).await {
       Ok(sid) => {
         // Publishing or unmuting the share's sound is an unmuted stream on
         // its transceiver, which libwebrtc answers by starting the device's
@@ -676,7 +734,7 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   let cryptors = apply_key_index(&room, index);
   log::info!(
     "voice: screen published as {} at {width}x{height} (captured {}x{}){}, {cryptors} cryptor(s) on index {index}",
-    publication.sid(),
+    published.publication.sid(),
     captured.0,
     captured.1,
     match &audio {
@@ -684,19 +742,104 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
       None => String::new(),
     }
   );
-  with_state(session, |state| {
-    state.screen = Some(Published {
-      publication,
-      track,
-      source,
-      capture: Some(Source::Screen(screen)),
-      slot: Some(slot),
-      device_id: None,
-    });
-  });
+  // Stored only if it is still the latest instruction and the call is still
+  // this one. Before this the store was unconditional, so a second start
+  // that finished after the first overwrote it -- dropping a `Published`
+  // whose track stayed published and whose capture thread ran on, with
+  // nothing left that could stop either (rust-shell-2).
+  let mut fresh = Some(published);
+  let replaced = with_live_state(session, |state| {
+    if state.screen_asked != ticket {
+      return None;
+    }
+    fresh.take().and_then(|published| state.screen.replace(published))
+  })
+  .flatten();
+  if let Some(stale) = fresh {
+    // Superseded while its sound started: the picture comes down, and the
+    // sound this start began is muted again and its capture stopped.
+    take_down(session, &room, stale).await;
+    if stop_share_sound(session, Some(ticket)).await {
+      super::recheck_microphone("after a superseded share's sound was stopped");
+    }
+    log::info!("voice: screen share superseded before it was stored; taken down again");
+    return Ok(());
+  }
+  if let Some(replaced) = replaced {
+    // Nothing should be here (the stop above took any share, and a later
+    // start moves the ticket), but a share replaced is a share taken down,
+    // never one left published with no owner.
+    log::warn!("voice: a stored screen share was replaced -- taking the old one down");
+    take_down(session, &room, replaced).await;
+  }
   let _ = &app;
   rebind_tiles(session, &room);
   Ok(())
+}
+
+/// Whether the screen instruction `ticket` is no longer the one to act on: a
+/// later stop or start arrived, or the call it belongs to ended.
+fn screen_superseded(session: u64, ticket: u64) -> bool {
+  with_live_state(session, |state| state.screen_asked != ticket).unwrap_or(true)
+}
+
+/// Stop whatever share is running: its sound muted and its capture stopped
+/// (the publication stays: `ScreenAudioPublication`), then the picture
+/// unpublished and its capture stopped. Sound first on the way out, so the
+/// last thing a viewer loses is the sound of a picture that has already
+/// stopped rather than the reverse. True if there was anything to stop.
+async fn stop_share(session: u64, room: &Room) -> bool {
+  let stopped_sound = stop_share_sound(session, None).await;
+  let existing = with_live_state(session, |state| state.screen.take()).flatten();
+  let stopped_picture = existing.is_some();
+  if let Some(published) = existing {
+    take_down(session, room, published).await;
+  }
+  stopped_sound || stopped_picture
+}
+
+/// The share's sound muted and its capture stopped, if one is running -- and,
+/// with `only`, only if that screen instruction started it. True if one was.
+async fn stop_share_sound(session: u64, only: Option<u64>) -> bool {
+  let sound = with_live_state(session, |state| {
+    state.screen_audio.as_mut().and_then(|audio| {
+      if only.is_some_and(|ticket| ticket != audio.capture_ticket) {
+        return None;
+      }
+      let capture = audio.capture.take();
+      if capture.is_some() {
+        audio.publication.mute();
+      }
+      capture
+    })
+  })
+  .flatten();
+  let Some(capture) = sound else { return false };
+  // That mute was the last unmuted stream on the share's transceiver, and
+  // libwebrtc answers that by stopping the device's recording -- the
+  // microphone's -- inside the mute (row D-68; the rig's log has the
+  // `StopRecording` before the line below). Put it back before anything
+  // else, so the microphone loses milliseconds rather than the time the
+  // capture thread takes to stop. mod.rs, above `set_microphone_gate`.
+  super::ensure_microphone_recording("after the share's sound was muted");
+  let frames = capture.frames();
+  tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+  log::info!("voice: screen audio muted after {frames} frame(s), kept published");
+  true
+}
+
+/// A share's picture taken down: unpublished, its capture stopped, and the
+/// tiles that drew it unbound. Its own, and never left to a drop: a
+/// `Source` has no `Drop`, so one dropped running keeps its thread.
+async fn take_down(session: u64, room: &Room, published: Published) {
+  if let Err(error) = room.local_participant().unpublish_track(&published.publication.sid()).await {
+    log::warn!("voice: unpublish screen: {error}");
+  }
+  if let Some(capture) = published.capture {
+    tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+  }
+  log::info!("voice: screen unpublished");
+  rebind_tiles(session, room);
 }
 
 /// The share's own sound: a fresh capture into the call's screen-audio
@@ -711,11 +854,16 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
 /// is four times a speech bitrate because music needs it. They are
 /// **copied**, not derived — this file must not become a second place the
 /// webview's numbers live — and they have to be changed together.
+///
+/// `ScreenAudio::start` runs through `spawn_blocking`, as `Screen::start`
+/// does: it waits up to 8 s for the loopback to be ready, which on an async
+/// worker stalled every other command queued behind it (rust-shell-6).
 async fn start_screen_audio(
   session: u64,
   room: &Room,
   args: &ScreenArgs,
   picked: Option<capture::PickedSource>,
+  ticket: u64,
 ) -> VoiceResult<TrackSid> {
   let mode = args
     .audio_mode
@@ -727,27 +875,39 @@ async fn start_screen_audio(
   let window = picked
     .filter(|p| p.kind == capture::ScreenKind::Window)
     .map(|p| p.id);
+  let start = |source: NativeAudioSource| async move {
+    tauri::async_runtime::spawn_blocking(move || ScreenAudio::start(mode, window, source))
+      .await
+      .map_err(|e| VoiceError::new("screen_audio_failed", e.to_string()))?
+  };
 
   // An earlier share this call: the same source and publication, and a
   // fresh capture, since the mode and the window can differ from last time.
-  let parked = with_state(session, |state| state.screen_audio.as_ref().map(|audio| audio.source.clone()));
+  let parked = with_live_state(session, |state| state.screen_audio.as_ref().map(|audio| audio.source.clone())).flatten();
   if let Some(source) = parked {
-    let capture = ScreenAudio::start(mode, window, source)?;
-    let resumed = with_state(session, |state| match state.screen_audio.as_mut() {
-      Some(audio) => {
-        audio.capture = Some(capture);
-        audio.publication.unmute();
-        Ok(audio.publication.sid())
+    let capture = start(source).await?;
+    let mut fresh = Some(capture);
+    let resumed = with_live_state(session, |state| {
+      if state.screen_asked != ticket {
+        return None;
       }
-      None => Err(capture),
-    });
-    return match resumed {
-      Ok(sid) => Ok(sid),
-      Err(capture) => {
-        tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
-        Err(VoiceError::new("screen_audio_failed", "the call ended while the sound was starting"))
-      }
-    };
+      let audio = state.screen_audio.as_mut()?;
+      audio.capture = fresh.take();
+      audio.capture_ticket = ticket;
+      audio.publication.unmute();
+      Some(audio.publication.sid())
+    })
+    .flatten();
+    if let Some(sid) = resumed {
+      return Ok(sid);
+    }
+    if let Some(capture) = fresh {
+      tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+    }
+    return Err(VoiceError::new(
+      "screen_audio_failed",
+      "the share was stopped, or the call ended, while the sound was starting",
+    ));
   }
 
   // Requirement 2 is met by construction: a pushed source never passes
@@ -763,7 +923,7 @@ async fn start_screen_audio(
     2,
     0,
   );
-  let capture = ScreenAudio::start(mode, window, source.clone())?;
+  let capture = start(source.clone()).await?;
   let track =
     LocalAudioTrack::create_audio_track("screen-audio", RtcAudioSource::Native(source.clone()));
   let options = TrackPublishOptions {
@@ -776,10 +936,40 @@ async fn start_screen_audio(
   match room.local_participant().publish_track(LocalTrack::Audio(track), options).await {
     Ok(publication) => {
       let sid = publication.sid();
-      with_state(session, |state| {
-        state.screen_audio = Some(ScreenAudioPublication { publication, source, capture: Some(capture) });
+      // Kept whatever happens next, while the call lasts: a published share
+      // sound is never unpublished mid-call (row S-18). If a stop or another
+      // start came meanwhile it is kept muted with its capture stopped, as a
+      // stop would have left it; if another start already stored one, this
+      // one stays published, muted, with nothing holding it until the room
+      // closes -- the one shape the page's own one-request-at-a-time rule
+      // (session.ts) keeps from arising.
+      let mut fresh = Some(capture);
+      let kept = with_live_state(session, |state| {
+        let current = state.screen_asked == ticket && state.screen_audio.is_none();
+        if !current {
+          publication.mute();
+        }
+        if state.screen_audio.is_none() {
+          state.screen_audio = Some(ScreenAudioPublication {
+            publication,
+            source,
+            capture: if current { fresh.take() } else { None },
+            capture_ticket: ticket,
+          });
+        }
+        current
       });
-      Ok(sid)
+      if let Some(capture) = fresh {
+        tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+      }
+      match kept {
+        Some(true) => Ok(sid),
+        Some(false) => {
+          super::recheck_microphone("after a superseded share's sound was muted");
+          Err(VoiceError::new("screen_audio_failed", "the share was stopped while the sound was starting"))
+        }
+        None => Err(VoiceError::new("screen_audio_failed", "the call ended while the sound was starting")),
+      }
     }
     Err(error) => {
       tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
@@ -1024,13 +1214,40 @@ pub fn on_video_event(app: &AppHandle, session: u64, room: &Room) {
   emit(app, session, Event::VideoChanged);
 }
 
-/// What this device is sending, for `voice_current`: a camera that is
-/// capturing (a muted one is not), and a published screen.
+/// What this device is sending, for `voice_current` and `Event::Local`: a
+/// camera that is capturing and unmuted (a camera turned off, or stopped by a
+/// moderator, is neither), and a published screen.
 pub fn local_video(session: u64) -> (bool, bool) {
-  with_state(session, |state| {
-    let camera = state.camera.as_ref().is_some_and(|c| c.capture.is_some());
+  with_live_state(session, |state| {
+    let camera = state
+      .camera
+      .as_ref()
+      .is_some_and(|c| c.capture.is_some() && !c.publication.is_muted());
     (camera, state.screen.is_some())
   })
+  .unwrap_or((false, false))
+}
+
+/// The SFU muted this device's camera -- a moderator's stop-video
+/// (`moderateVoice`); the page's own mutes close the device in the same step
+/// as the mute, so a muted camera still capturing is someone else's doing.
+/// The SDK has muted the publication; this closes the device, as
+/// livekit-client's own mute of a camera does, so the camera light goes off.
+/// The page learns it from `Event::Local` and turns the camera on again the
+/// ordinary way.
+pub fn on_camera_muted_remotely(session: u64) {
+  let capture = with_live_state(session, |state| {
+    state
+      .camera
+      .as_mut()
+      .filter(|c| c.publication.is_muted())
+      .and_then(|c| c.capture.take())
+  })
+  .flatten();
+  if let Some(capture) = capture {
+    log::info!("voice: camera muted by the SFU -- device closed");
+    tauri::async_runtime::spawn_blocking(move || capture.stop());
+  }
 }
 
 /// `voice_forget_page`'s video half: destroy every tile and forget which
@@ -1039,6 +1256,11 @@ pub fn local_video(session: u64) -> (bool, bool) {
 pub fn forget_page(session: u64) -> usize {
   let tiles: Vec<TileEntry> = with_state(session, |state| {
     state.covered.clear();
+    // The new page numbers its instructions from one (`take_ticket`). A
+    // command of the old page's still in flight compares unequal and stands
+    // down, which is what a command superseded by a newer one does anyway.
+    state.camera_asked = 0;
+    state.screen_asked = 0;
     state.tiles.drain().map(|(_, entry)| entry).collect()
   });
   let count = tiles.len();
@@ -1212,5 +1434,35 @@ pub async fn teardown() {
       }
     })
     .await;
+  }
+}
+
+#[cfg(test)]
+mod ticket_tests {
+  use super::take_ticket;
+
+  #[test]
+  fn an_off_overtaken_by_the_on_before_it_is_dropped() {
+    // The rig's case: the page sent on (#1) then off (#2), and the off arrived
+    // first. The on is stale; the camera stays off.
+    let mut asked = 0;
+    assert_eq!(take_ticket(&mut asked, Some(2)), Some(2));
+    assert_eq!(take_ticket(&mut asked, Some(1)), None);
+    assert_eq!(asked, 2);
+  }
+
+  #[test]
+  fn in_order_instructions_each_take_their_own_number() {
+    let mut asked = 0;
+    assert_eq!(take_ticket(&mut asked, Some(1)), Some(1));
+    assert_eq!(take_ticket(&mut asked, Some(3)), Some(3));
+    assert_eq!(take_ticket(&mut asked, Some(3)), None);
+  }
+
+  #[test]
+  fn an_unnumbered_instruction_is_numbered_on_arrival() {
+    let mut asked = 4;
+    assert_eq!(take_ticket(&mut asked, None), Some(5));
+    assert_eq!(take_ticket(&mut asked, None), Some(6));
   }
 }
