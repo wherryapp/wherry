@@ -31,7 +31,11 @@ import {
   type AttachmentUsage,
 } from "../api/client";
 import { markAvatarHue, markAvatarKey, type StoredSession } from "../api/session";
-import { changePasswordWithRewrap } from "../crypto/account";
+import {
+  changePasswordWithRewrap,
+  regenerateRecoveryCode,
+} from "../crypto/account";
+import { KeysError } from "../crypto/keys";
 import {
   clearDiagnostics,
   readDiagnostics,
@@ -56,6 +60,7 @@ import { useAnnouncements, useAvatarUrl } from "./hooks";
 import { useConfirmedSignOut } from "./sign-out";
 import { prepareAvatar } from "./media";
 import { HuePicker } from "./HuePicker";
+import { RecoveryCodeScreen } from "./RecoveryCodeScreen";
 import {
   TEXT_SCALES,
   TEXT_SCALE_LABELS,
@@ -240,6 +245,11 @@ export function Settings({
   // (ui/sign-out.ts). The Devices list's "Sign out" (this device) and
   // "Revoke" do not ask yet; whether they should is not decided.
   const { requestSignOut, signOutDialog } = useConfirmedSignOut(onSignedOut);
+  // A recovery code just minted by RecoveryCodeSection, held only until the
+  // person confirms they have written it down. Never persisted: leaving
+  // Settings before Continue loses it, and the answer to that is to make
+  // another one, which the section below always offers.
+  const [issuedCode, setIssuedCode] = useState<string | null>(null);
 
   // Opening Settings with the section visible is what "seen" means. Keyed on
   // the newest id so a new announcement published while the panel is open is
@@ -447,6 +457,24 @@ export function Settings({
     }
   }
 
+  if (issuedCode !== null) {
+    // Registration's screen, inside the panel so Back still leaves Settings
+    // the way it always does.
+    return (
+      <Panel title="Settings" onClose={onClose}>
+        <RecoveryCodeScreen
+          code={issuedCode}
+          replacesOld
+          onDone={() => {
+            setIssuedCode(null);
+            setError(null);
+            setNote("New recovery code saved. The old one no longer works.");
+          }}
+        />
+      </Panel>
+    );
+  }
+
   return (
     <Panel title="Settings" onClose={onClose}>
       <div>
@@ -641,6 +669,8 @@ export function Settings({
         </PanelSection>
 
         <PasswordSection onDone={setNote} onError={setError} />
+
+        <RecoveryCodeSection onIssued={setIssuedCode} />
 
         <PanelSection
           title="Read receipts"
@@ -884,6 +914,97 @@ function PasswordSection({
           Change password
         </Button>
       </form>
+    </PanelSection>
+  );
+}
+
+/**
+ * "Make a new recovery code": for somebody who lost theirs, never wrote it
+ * down, or left the app while it was on screen. The password is asked for
+ * because the server requires it to replace the key row (and because a
+ * borrowed, signed-in laptop must not be enough to swap the code that
+ * restores history). What it costs -- the old code stops working at once --
+ * is said before the button that does it, not after.
+ */
+function RecoveryCodeSection({
+  onIssued,
+}: {
+  onIssued: (code: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function close() {
+    setOpen(false);
+    setPassword("");
+    setError(null);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const { recoveryCode } = await regenerateRecoveryCode(password);
+      close();
+      onIssued(recoveryCode);
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : caught instanceof KeysError && caught.code === "WRONG_SECRET"
+            ? // No local key, and the password did not open the wrap: a
+              // mistyped password, or a key this device never unlocked.
+              "That password did not unlock your account key. Check it and try again."
+            : "Could not make a new recovery code.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <PanelSection
+      title="Recovery code"
+      description="Brings your message history back after a password reset. Making a new one stops the old one working immediately."
+    >
+      {open ? (
+        <form onSubmit={submit} className="space-y-2">
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Current password"
+            autoComplete="current-password"
+            autoFocus
+          />
+          {error && <ErrorText>{error}</ErrorText>}
+          <div className="flex gap-2">
+            <Button
+              type="submit"
+              size="sm"
+              loading={busy}
+              disabled={password.length === 0}
+            >
+              Replace recovery code
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={close}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
+          Make a new recovery code
+        </Button>
+      )}
     </PanelSection>
   );
 }
