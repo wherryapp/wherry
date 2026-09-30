@@ -292,6 +292,9 @@ export type VoiceDiagnostics = {
 };
 
 const LOCK_NAME = "messenger.voice";
+/** A join where the browser has no Web Locks. The same words as the sync
+ *  engine's, which will not start there either. */
+const NO_WEB_LOCKS = "This browser is too old for calls. Update it to Safari 15.4 or later.";
 /** How long a page picking up a call waits for the reloaded page's hold on
  *  the voice lock to drain. A document's locks go with the document, but
  *  the new one can be running before that has happened. */
@@ -926,10 +929,15 @@ class VoiceSession {
     // publish is recorded and applied by it (setMicMuted).
     this.#micStarting = attempt;
     const micAskedAtStart = this.#micAsked;
-    if (!(await this.#acquireLock())) {
+    const lock = await this.#acquireLock();
+    if (lock !== true) {
       if (!attempt.live) return;
       this.#supersedeJoin(false);
-      this.#set({ ...IDLE, phase: "elsewhere", error: "You are in a call in another window." });
+      this.#set(
+        lock === "unsupported"
+          ? { ...IDLE, error: NO_WEB_LOCKS }
+          : { ...IDLE, phase: "elsewhere", error: "You are in a call in another window." },
+      );
       return;
     }
     if (!attempt.live) return;
@@ -1166,7 +1174,11 @@ class VoiceSession {
     // voice lock. Not this one yet: the reloaded page's hold drains with its
     // document. A lock that stays held is another window's, and so is the
     // call -- nothing here touches it.
-    if (!(await this.#acquireLock(lockWaitMs))) return "lock-busy";
+    const lock = await this.#acquireLock(lockWaitMs);
+    // Unsupported: nothing here can tell whose call it is, so it is left
+    // alone, and not retried -- asking again will not add the API.
+    if (lock === "unsupported") return "settled";
+    if (!lock) return "lock-busy";
     const decision = orphanDecision({ orphan: found.call, userId: this.#callHolder });
     if (decision.kind === "adopt") {
       await this.#adopt(found, decision.handoff);
@@ -1348,7 +1360,7 @@ class VoiceSession {
     joined();
   }
 
-  async #acquireLock(waitMs = 0): Promise<boolean> {
+  async #acquireLock(waitMs = 0): Promise<boolean | "unsupported"> {
     // Already held by this session, so do not ask again.
     //
     // The engine switch (`switchEngineForThisCall`) tears the transport
@@ -1359,7 +1371,11 @@ class VoiceSession {
     // happening in another window and the switch failed every time. Found by
     // D-28 on 2026-09-08, the first run of that row.
     if (this.#releaseLock) return true;
-    if (typeof navigator === "undefined" || !("locks" in navigator)) return true;
+    // Web Locks are a hard requirement (Safari and iOS 15.4+; the sync
+    // engine will not start without them either, `hasWebLocks`). Without
+    // one there is no telling whether another window of this profile holds
+    // a call, so a join fails plainly rather than running uncoordinated.
+    if (typeof navigator === "undefined" || !navigator.locks) return "unsupported";
     // `waitMs`: queue for the lock that long, rather than asking once.
     const options: LockOptions =
       waitMs > 0 && typeof AbortSignal.timeout === "function"
