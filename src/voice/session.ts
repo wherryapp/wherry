@@ -378,6 +378,12 @@ class VoiceSession {
   /** The join in progress (`JoinAttempt`); null once it finished or was
    *  superseded. */
   #attempt: JoinAttempt | null = null;
+  /** Bumped by every `leave()`. A join reads it at its start and gives up if
+   *  it moved before the join has an attempt a teardown could supersede:
+   *  `#join` awaits the orphan check (and a room switch's teardown) first, and
+   *  a leave in that gap found no attempt, so the join carried on into a live
+   *  call with the microphone published (mac-1001 F3). */
+  #leaves = 0;
   /** Bumped by every setCameraEnabled, the background pause and resume, and
    *  a change the transport reported; see setCameraEnabled. */
   #cameraAsked = 0;
@@ -481,6 +487,7 @@ class VoiceSession {
 
   /** Leave, telling the server; also the starter's cancel while ringing. */
   async leave(): Promise<void> {
+    this.#leaves += 1;
     await this.#teardown({ tellServer: true, error: null });
   }
 
@@ -820,9 +827,11 @@ class VoiceSession {
   async switchEngineForThisCall(): Promise<void> {
     const plan = this.#plan;
     if (!plan || this.#state.engineOverride === "webview") return;
+    // Read before the teardown: a hang-up while it runs ends the switch too.
+    const leaves = this.#leaves;
     await this.#teardown({ tellServer: false, error: null, keepPlan: true });
     this.#set({ engineOverride: "webview" });
-    await this.#join(plan, "webview");
+    await this.#join(plan, "webview", leaves);
   }
 
   /** From a tap: the browser's autoplay policy needs one. */
@@ -904,7 +913,13 @@ class VoiceSession {
 
   // -- joining -------------------------------------------------------------
 
-  async #join(plan: JoinPlan, engineOverride: "webview" | null = null): Promise<void> {
+  /** `leaves`: `#leaves` when the join was asked for; a `leave()` since then
+   *  and before this join has its `JoinAttempt` ends it. */
+  async #join(
+    plan: JoinPlan,
+    engineOverride: "webview" | null = null,
+    leaves = this.#leaves,
+  ): Promise<void> {
     if (this.#orphanCheck) {
       await this.#orphanCheck;
       // And again now (a no-op while this page holds a call, including
@@ -918,12 +933,17 @@ class VoiceSession {
       await this.#checkOrphan(0).catch(() => {
         // As at load: a failed check leaves things as they were.
       });
+      // Hung up while the checks ran, with no attempt yet to supersede.
+      if (this.#leaves !== leaves) return;
     }
     if (this.#state.phase !== "idle" && this.#state.phase !== "elsewhere") {
       if (this.#state.conversationId === plan.conversation.id) return;
       // Switching rooms: out of the old one first, then in.
       await this.#teardown({ tellServer: true, error: null });
     }
+    // And after that teardown, or the engine switch's before this join: the
+    // last point where a leave can have found no attempt.
+    if (this.#leaves !== leaves) return;
     // From here every await is followed by a check that nothing superseded
     // this join (`JoinAttempt`) -- the pattern `#adopt` already had. Without
     // it a hang-up during "Connecting…" only looked like one: the join woke up
