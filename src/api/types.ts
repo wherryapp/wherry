@@ -493,6 +493,14 @@ export type HubEventKind =
   | "message_unpinned"
   | "invite_created"
   | "invite_revoked"
+  /** A voice channel's join-mute threshold; title is the number or null. */
+  | "channel_join_muted"
+  /** Voice and video moderation; target is the participant. */
+  | "voice_muted"
+  | "voice_disconnected"
+  | "video_stopped"
+  /** The hub's video cap was set or cleared. No target, no title. */
+  | "video_cap_changed"
   // The server may add kinds this build has never heard of; render nothing
   // rather than crash, same posture as ApiErrorCode.
   | (string & {});
