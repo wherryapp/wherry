@@ -46,8 +46,8 @@ import {
   useAnnouncements,
   useConversations,
   useHubs,
+  useNewestMessageId,
   useSyncStatus,
-  useTimeline,
   useUnread,
   useFeatures,
 } from "./hooks";
@@ -217,20 +217,11 @@ function UpdateBanner() {
  * and there is no need to track whether this call would be one.
  */
 function useMarkRead(conversationId: string | null, selfUserId: string): void {
-  const { items } = useTimeline(conversationId, selfUserId);
-
-  // The newest *stored* message. Outbox entries are excluded: they have no
+  // The newest *stored* message. Outbox entries are not in it: they have no
   // server id yet, and marking your own unsent message read means nothing.
-  // So are rows from another conversation: useTimeline's items lag a switch
-  // by a render, and the effect below fires on the new id with the old
-  // conversation's newest message. The server ignores a message from another
-  // conversation, but the local marker took it until the next refresh.
-  let newest: string | null = null;
-  for (const item of items) {
-    if (item.kind === "sent" && item.message.conversationId === conversationId) {
-      newest = item.message.messageId;
-    }
-  }
+  // The hook answers only for the conversation it was asked about, so an
+  // answer still in flight from the previous one is never marked here.
+  const newest = useNewestMessageId(conversationId);
 
   useEffect(() => {
     if (!conversationId || !newest) return;
@@ -316,9 +307,12 @@ export function Chat({
   const [friendsOpen, setFriendsOpen] = useState(false);
   /** The compose panel (new conversation, or a hub) -- a Friends-shaped panel. */
   const [composeOpen, setComposeOpen] = useState(false);
-  const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
+  /** Which group's details panel is open, by conversation id. An id rather
+   *  than a flag, so a panel whose group leaves the list (removed, deleted
+   *  elsewhere) cannot come back over whatever is selected next. */
+  const [groupDetailsFor, setGroupDetailsFor] = useState<string | null>(null);
   /** Which hub's panel is open, by hub id -- the channel-class sibling of
-   *  groupDetailsOpen. */
+   *  groupDetailsFor. */
   const [hubDetailsFor, setHubDetailsFor] = useState<string | null>(null);
   /** Which channel's pin list is open. */
   const [pinsFor, setPinsFor] = useState<string | null>(null);
@@ -349,13 +343,40 @@ export function Chat({
   // Edit shares the composer's context-bar slot, so the two are exclusive:
   // starting either clears the other.
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
-  useEffect(() => {
+  // Reset during render, not in an effect. The composer is keyed by the
+  // conversation (below), so a switch mounts a fresh one -- and a child's
+  // mount effects run before its parent's effects. Reset in an effect, the
+  // new composer mounted with the *old* edit draft and its own effect
+  // copied that text into the field; the reset then cleared the edit bar
+  // and left the text, which Enter sent to the new conversation as a
+  // message. Adjusting state during render re-renders before any child
+  // commits, so the new composer never sees the old draft.
+  const [draftsFor, setDraftsFor] = useState(selected);
+  if (draftsFor !== selected) {
+    setDraftsFor(selected);
     setReplyDraft(null);
     setEditDraft(null);
-  }, [selected]);
+  }
   const [muteBusy, setMuteBusy] = useState(false);
   const { conversations } = useConversations();
   const { hubs } = useHubs();
+  const current = conversations.find((c) => c.id === selected);
+
+  // A details or pins panel is drawn only while its conversation is the
+  // selected one and still in the list. When it stops being either -- the
+  // group was left or deleted elsewhere, a profile card's "Message" moved the
+  // selection -- the flag is dropped here, during render, rather than left
+  // set: a stale flag used to bring the panel back over the next conversation
+  // selected (a DM got GroupDetails), and kept the shortcuts' `panelOpen`
+  // true with nothing on screen.
+  const groupDetailsShown =
+    groupDetailsFor !== null &&
+    current?.id === groupDetailsFor &&
+    current.kind === "group";
+  if (groupDetailsFor !== null && !groupDetailsShown) setGroupDetailsFor(null);
+  const pinsShown = pinsFor !== null && current?.id === pinsFor && !!current.hubId;
+  if (pinsFor !== null && !pinsShown) setPinsFor(null);
+
   const isDesktop = useIsDesktop();
   // Voice: the flag gates every affordance; the signals hook is the one
   // self-heal read (rings, open calls, room occupancy) for the whole tree.
@@ -465,15 +486,17 @@ export function Chat({
   // as a dead key (review of W-103's fix, 2026-09-26). Paint order and
   // registration order have to agree for Escape to mean "the thing on top".
   const coveredByCall = callPageOpen || rings.length > 0;
+  // Every full-screen panel that replaces the main view (the early returns
+  // below). Read by the shortcuts and by the read marker.
+  const panelOpen =
+    settingsOpen ||
+    friendsOpen ||
+    composeOpen ||
+    groupDetailsShown ||
+    hubDetailsFor !== null ||
+    pinsShown ||
+    searchOpen;
   useEffect(() => {
-    const panelOpen =
-      settingsOpen ||
-      friendsOpen ||
-      composeOpen ||
-      groupDetailsOpen ||
-      hubDetailsFor !== null ||
-      pinsFor !== null ||
-      searchOpen;
     const onKey = (event: KeyboardEvent) => {
       // Ctrl/Cmd+Shift+M toggles the microphone while in a call. Escape
       // never hangs up -- leaving a call is a deliberate click.
@@ -532,13 +555,7 @@ export function Chat({
   }, [
     isDesktop,
     selected,
-    settingsOpen,
-    friendsOpen,
-    composeOpen,
-    groupDetailsOpen,
-    hubDetailsFor,
-    pinsFor,
-    searchOpen,
+    panelOpen,
     coveredByCall,
     voiceState.grant,
     voiceState.capabilities,
@@ -559,9 +576,18 @@ export function Chat({
     escape: "outside-fields",
   });
 
-  // Only when a thread is actually on screen. On a phone that is the same
-  // thing as being selected; on desktop both panes are visible at once.
-  useMarkRead(selected, session.user.id);
+  // Only when a thread is actually on screen. Being selected is not enough:
+  // a panel (Settings, Friends, Search, Pins, Compose, a group's or hub's
+  // details) replaces the thread while `selected` stays set, and the call
+  // page and an invite landing page cover it. Marking through any of those
+  // sent read receipts for messages nobody saw and cleared their
+  // notifications. When the cover goes the id comes back, and the hook's
+  // effect marks what is now on screen.
+  const threadOnScreen =
+    !panelOpen &&
+    !inviteToken &&
+    !(features.voice && voiceState.phase === "connected" && callPageOpen);
+  useMarkRead(threadOnScreen ? selected : null, session.user.id);
 
   // Open the newest conversation on first load, so the app does not start on
   // an empty panel when there is something to show.
@@ -604,7 +630,7 @@ export function Chat({
     const closePanels = (): void => {
       setSettingsOpen(false);
       setComposeOpen(false);
-      setGroupDetailsOpen(false);
+      setGroupDetailsFor(null);
       setHubDetailsFor(null);
       setPinsFor(null);
       setSearchOpen(false);
@@ -645,8 +671,6 @@ export function Chat({
       cancelled = true;
     };
   }, [openRequest, conversations]);
-
-  const current = conversations.find((c) => c.id === selected);
 
   // The channel's hub-side settings and the viewer's role, from the hubs
   // summary the engine keeps -- the mirror of the server's matrix, for
@@ -771,7 +795,7 @@ export function Chat({
             // Whatever panel the card was opened over, the conversation is
             // the destination now.
             setFriendsOpen(false);
-            setGroupDetailsOpen(false);
+            setGroupDetailsFor(null);
             setHubDetailsFor(null);
             setComposeOpen(false);
             setSelected(id);
@@ -884,11 +908,11 @@ export function Chat({
     );
   }
 
-  if (pinsFor !== null && current?.hubId) {
+  if (pinsShown && current?.hubId) {
     return withChrome(
       <PinsPanel
         hubId={current.hubId}
-        conversationId={pinsFor}
+        conversationId={current.id}
         canModerate={canModerate}
         onClose={() => setPinsFor(null)}
         onJump={(pin) => {
@@ -973,12 +997,12 @@ export function Chat({
     );
   }
 
-  if (groupDetailsOpen && current) {
+  if (groupDetailsShown && current) {
     return withChrome(
       <GroupDetails
         conversation={current}
         selfUserId={session.user.id}
-        onClose={() => setGroupDetailsOpen(false)}
+        onClose={() => setGroupDetailsFor(null)}
       />
     );
   }
@@ -1078,6 +1102,9 @@ export function Chat({
         {showList && (
           <ConversationList
             session={session}
+            conversations={conversations}
+            hubs={hubs}
+            unread={unreadByConversation}
             selected={selected}
             onSelect={setSelected}
             onOpenHub={setHubDetailsFor}
@@ -1208,7 +1235,7 @@ export function Chat({
                   {current?.kind === "group" && (
                     <Button
                       variant="ghost"
-                      onClick={() => setGroupDetailsOpen(true)}
+                      onClick={() => setGroupDetailsFor(current.id)}
                       className="shrink-0"
                     >
                       Details
@@ -1270,6 +1297,17 @@ export function Chat({
                   </div>
                 ) : (
                   <Composer
+                    // One composer per conversation. Without the key the
+                    // desktop kept a single instance across switches (both
+                    // panes stay up, so the tree's shape never changed) and
+                    // the typed text, the picked attachments and the busy
+                    // spinner followed you into the next conversation -- a
+                    // photo picked in one thread was sent to another. A
+                    // phone always remounted here, because leaving a thread
+                    // unmounts its pane; this gives the desktop the same.
+                    // An in-flight send survives the remount by design
+                    // (sending.ts), and writes nothing into the new one.
+                    key={selected}
                     conversationId={selected}
                     publicChannel={isServerReadable(current?.hubVisibility)}
                     members={(current?.members ?? [])

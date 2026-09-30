@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { encodeContent, encodeOp, type MessageOp } from "../api/payload.ts";
 import {
   containsAnyTerm,
+  OpFold,
   parseQuery,
   SearchFold,
   snippet,
@@ -201,4 +202,45 @@ test("a snippet of long text starts near the match and says it was cut", () => {
   assert.equal(parts[parts.length - 1]?.text.endsWith("…"), true);
   assert.equal(parts.some((part) => part.hit && part.text === "needle"), true);
   assert.deepEqual(snippet("   ", ["x"]), []);
+});
+
+// OpFold is the rule the sidebar preview uses as well (ui/hooks.ts's
+// useLatestMessages), so it is pinned on its own, unsent ops included.
+
+test("OpFold: the target sender's newest edit wins, and nobody else's counts", () => {
+  const fold = new OpFold(ME);
+  // Newest first: Bob's edit (no authority), then Alice's second, then her first.
+  fold.record({ kind: "edit", target: "m1", text: "bob's" }, BOB);
+  fold.record({ kind: "edit", target: "m1", text: "second" }, ALICE);
+  fold.record({ kind: "edit", target: "m1", text: "first" }, ALICE);
+  assert.deepEqual(fold.resolve("m1", ALICE), { retracted: false, editedText: "second" });
+});
+
+test("OpFold: a retraction counts only from the target's sender", () => {
+  const fold = new OpFold(ME);
+  fold.record({ kind: "retract", target: "m1" }, BOB);
+  assert.equal(fold.resolve("m1", ALICE).retracted, false);
+  fold.record({ kind: "retract", target: "m1" }, ALICE);
+  assert.equal(fold.resolve("m1", ALICE).retracted, true);
+});
+
+test("OpFold: an unsent Delete applies at once, and the newest unsent edit wins", () => {
+  const fold = new OpFold(ME);
+  fold.applyPending([
+    op({ kind: "edit", target: "mine", text: "older unsent" }),
+    op({ kind: "edit", target: "mine", text: "newer unsent" }),
+    op({ kind: "retract", target: "gone" }),
+    text("an ordinary unsent message is not an op"),
+  ]);
+  // A stored edit is older than anything unsent, so it must not win.
+  fold.record({ kind: "edit", target: "mine", text: "stored" }, ME);
+  assert.equal(fold.resolve("mine", ME).editedText, "newer unsent");
+  assert.equal(fold.resolve("gone", ME).retracted, true);
+  assert.equal(fold.resolve("gone", ALICE).retracted, false);
+});
+
+test("OpFold: reactions change nothing it reports", () => {
+  const fold = new OpFold(ME);
+  fold.record({ kind: "reaction", target: "m1", emoji: "👍" }, ALICE);
+  assert.deepEqual(fold.resolve("m1", ALICE), { retracted: false, editedText: undefined });
 });

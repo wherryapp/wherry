@@ -99,7 +99,8 @@ export function Composer({
    *
    * A prop rather than a second useFeatures() call in here: that hook
    * fetches /account/settings on mount, and this component remounts on every
-   * conversation switch. Chat.tsx already holds the answer.
+   * conversation switch (Chat.tsx keys it by the conversation, on every
+   * layout). Chat.tsx already holds the answer.
    */
   gifsEnabled: boolean;
 }) {
@@ -155,12 +156,23 @@ export function Composer({
   // "@Name " and remember name -> id here; at send time only the names still
   // present in the text become the payload's mentions, so deleting a name
   // un-mentions the person without any bookkeeping.
+  // Nothing resets these on a conversation switch because nothing has to:
+  // the component is keyed by the conversation, so a switch is a new one.
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const mentionsPicked = useRef(new Map<string, string>());
+
+  // Whether this composer is still the one on screen. A send outlives its
+  // composer (sending.ts), and when it finishes after a switch, the one
+  // write that would land somewhere else is `onClearReply`: the reply draft
+  // is the shell's, and by then it is the *next* conversation's draft. The
+  // component's own setters are harmless after unmount; that callback is not.
+  const mounted = useRef(true);
   useEffect(() => {
-    mentionsPicked.current.clear();
-    setMentionQuery(null);
-  }, [conversationId]);
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const mentionMatches =
     mentionQuery === null
@@ -224,7 +236,8 @@ export function Composer({
   // picks and reconsiders is held in memory until the page is reloaded.
   // `remove` and the send path already revoke each item's URL as it leaves
   // `pending`; this effect only has to catch what's still pending when the
-  // composer itself goes away (switching conversations, say). Through a ref
+  // composer itself goes away (switching conversations, which remounts it,
+  // or leaving the thread for a panel). Through a ref
   // kept current every render, because depending on `pending` directly ran
   // this cleanup -- and revoked -- on every change to the list, which killed
   // the preview of whatever was already picked the moment a second file was
@@ -580,7 +593,8 @@ export function Composer({
       setText("");
       for (const item of pending) URL.revokeObjectURL(item.url);
       setPending([]);
-      if (reply) onClearReply();
+      // Only while this is still the composer on screen: see `mounted`.
+      if (reply && mounted.current) onClearReply();
 
       // Only the names still present count -- see the mention state above.
       const mentionIds = [...mentionsPicked.current]

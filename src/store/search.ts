@@ -100,17 +100,22 @@ function termPattern(term: string, flags: string): RegExp {
 }
 
 /**
- * Folds a newest-first walk of stored messages into search hits.
+ * The edit and retract half of the op fold, for any newest-first walk.
+ *
+ * One copy of the rule three readers need -- search below, the sidebar's
+ * preview (`useLatestMessages`), and anything else that shows a message as a
+ * person sees it: the target sender's newest edit is the text, an edit or a
+ * retraction from anybody else is ignored, and a retraction beats any edit.
+ * `useTimeline` keeps its own fold because it aggregates reactions as well
+ * and walks oldest first; it applies the same authority rule.
  *
  * **Newest first is a requirement, not a preference.** An op is always newer
  * than the message it targets, so walking newest first means every op has
  * been seen by the time its target arrives, and the first edit seen from a
- * sender is that sender's latest. `useLatestMessages` relies on the same
- * property. An implementation that cannot walk in that order must collect the
- * ops before offering any message.
+ * sender is that sender's latest. A walk that cannot go in that order must
+ * collect the ops before resolving any message.
  */
-export class SearchFold {
-  readonly #patterns: RegExp[];
+export class OpFold {
   readonly #selfUserId: string;
   /** target -> sender -> that sender's newest edit text. Per sender, so an
    *  edit from somebody without authority cannot shadow the real one. */
@@ -118,22 +123,74 @@ export class SearchFold {
   /** target -> the senders who retracted it. */
   readonly #retractions = new Map<string, Set<string>>();
 
-  constructor(terms: readonly string[], selfUserId: string) {
-    this.#patterns = terms.map((term) => termPattern(term, "iu"));
+  /** `selfUserId` is who this device's unsent ops belong to. */
+  constructor(selfUserId: string) {
     this.#selfUserId = selfUserId;
   }
 
   /**
    * This device's unsent ops, oldest first as `listOutbox` returns them.
    * Applied before the walk because they are newer than anything stored --
-   * the reason an unsent Delete takes a message out of results at once, the
-   * way it tombstones in the timeline.
+   * the reason an unsent Delete takes effect at once, the way it tombstones
+   * in the timeline.
    */
   applyPending(contents: readonly Uint8Array[]): void {
     for (let i = contents.length - 1; i >= 0; i -= 1) {
       const decoded = decodeContent(contents[i]!);
-      if (isMessageOp(decoded)) this.#record(decoded, this.#selfUserId);
+      if (isMessageOp(decoded)) this.record(decoded, this.#selfUserId);
     }
+  }
+
+  /** One op from the walk, newest first. Reactions change nothing here. */
+  record(op: MessageOp, senderUserId: string): void {
+    if (op.kind === "edit") {
+      let bySender = this.#edits.get(op.target);
+      if (!bySender) {
+        bySender = new Map();
+        this.#edits.set(op.target, bySender);
+      }
+      if (!bySender.has(senderUserId)) bySender.set(senderUserId, op.text);
+    } else if (op.kind === "retract") {
+      let senders = this.#retractions.get(op.target);
+      if (!senders) {
+        senders = new Set();
+        this.#retractions.set(op.target, senders);
+      }
+      senders.add(senderUserId);
+    }
+  }
+
+  /**
+   * What the ops seen so far do to one message: retracted by its own
+   * sender, or that sender's newest edit text (undefined when unedited).
+   */
+  resolve(
+    messageId: string,
+    senderUserId: string,
+  ): { retracted: boolean; editedText: string | undefined } {
+    return {
+      retracted: this.#retractions.get(messageId)?.has(senderUserId) ?? false,
+      editedText: this.#edits.get(messageId)?.get(senderUserId),
+    };
+  }
+}
+
+/**
+ * Folds a newest-first walk of stored messages into search hits: `OpFold`'s
+ * rule, then the match. The ordering requirement is `OpFold`'s.
+ */
+export class SearchFold {
+  readonly #patterns: RegExp[];
+  readonly #ops: OpFold;
+
+  constructor(terms: readonly string[], selfUserId: string) {
+    this.#patterns = terms.map((term) => termPattern(term, "iu"));
+    this.#ops = new OpFold(selfUserId);
+  }
+
+  /** This device's unsent ops, oldest first -- see `OpFold.applyPending`. */
+  applyPending(contents: readonly Uint8Array[]): void {
+    this.#ops.applyPending(contents);
   }
 
   /** One stored message, offered newest first. A hit, or null. */
@@ -142,15 +199,16 @@ export class SearchFold {
     if (message.decryptFailed) return null;
     const decoded = decodeContent(message.payload);
     if (isMessageOp(decoded)) {
-      this.#record(decoded, message.senderUserId);
+      this.#ops.record(decoded, message.senderUserId);
       return null;
     }
     if (decoded === "unsupported" || this.#patterns.length === 0) return null;
-    if (this.#retractions.get(message.messageId)?.has(message.senderUserId)) {
-      return null;
-    }
+    const { retracted, editedText: edit } = this.#ops.resolve(
+      message.messageId,
+      message.senderUserId,
+    );
+    if (retracted) return null;
 
-    const edit = this.#edits.get(message.messageId)?.get(message.senderUserId);
     const text = (edit ?? decoded.text).normalize("NFC");
     const filenames = decoded.attachments.flatMap((attachment) =>
       attachment.name ? [attachment.name.normalize("NFC")] : [],
@@ -173,25 +231,6 @@ export class SearchFold {
       filenames,
       edited: edit !== undefined,
     };
-  }
-
-  #record(op: MessageOp, senderUserId: string): void {
-    // Reactions change nothing a search reads.
-    if (op.kind === "edit") {
-      let bySender = this.#edits.get(op.target);
-      if (!bySender) {
-        bySender = new Map();
-        this.#edits.set(op.target, bySender);
-      }
-      if (!bySender.has(senderUserId)) bySender.set(senderUserId, op.text);
-    } else if (op.kind === "retract") {
-      let senders = this.#retractions.get(op.target);
-      if (!senders) {
-        senders = new Set();
-        this.#retractions.set(op.target, senders);
-      }
-      senders.add(senderUserId);
-    }
   }
 }
 

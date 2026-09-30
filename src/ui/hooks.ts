@@ -35,7 +35,9 @@ import {
   type StoredEvent,
   type StoredMessage,
 } from "../store/types";
+import { OpFold } from "../store/search";
 import { sync, type SyncEvent, type SyncStatus } from "../sync/engine";
+import { markSeenTarget } from "./announcement-seen";
 import { selfStatus, type SelfStatus } from "../sync/self-status";
 import { broadcast, subscribeToBroadcasts } from "../sync/leader";
 
@@ -243,7 +245,24 @@ export function useTimeline(
   const [limit, setLimit] = useState(PAGE);
   const { messages, events, pending, hasMore } = page;
 
+  // A switch starts from one page again. Adjusted during render rather than
+  // in an effect: as an effect, the first read after a switch ran at the
+  // previous conversation's grown limit and a second at PAGE, and whichever
+  // landed last won -- a page of 150 rows under a limit of 50 made the next
+  // "Load older" shrink it.
+  const [limitFor, setLimitFor] = useState(conversationId);
+  if (limitFor !== conversationId) {
+    setLimitFor(conversationId);
+    setLimit(PAGE);
+  }
+
+  // Latest wins. IndexedDB does not promise that two reads resolve in the
+  // order they were asked, so each read carries a number and only the
+  // newest one asked for may land.
+  const readSeq = useRef(0);
+
   const reload = useCallback(() => {
+    const seq = ++readSeq.current;
     if (!conversationId) {
       setPage({ messages: [], events: [], pending: [], hasMore: false });
       return;
@@ -256,6 +275,7 @@ export function useTimeline(
       store.getConversationEvents(conversationId),
       store.listOutbox(conversationId),
     ]).then(([rows, storedEvents, outbox]) => {
+      if (seq !== readSeq.current) return;
       setPage({
         // The store returns newest first because that is the efficient
         // direction to walk the index. A timeline reads the other way.
@@ -405,8 +425,6 @@ export function useTimeline(
 
   const loadOlder = useCallback(() => setLimit((n) => n + PAGE), []);
 
-  useEffect(() => setLimit(PAGE), [conversationId]);
-
   return { items, hasMore, loadOlder };
 }
 
@@ -489,12 +507,15 @@ export type ConversationPreview = {
  * Walks a small newest-first window rather than taking the newest row,
  * because the newest row may be an op -- and "reacted 👍" is not what the
  * preview line is for. Ops seen on the way down are applied to the anchor
- * they land on: a retracted latest message previews as deleted instead of
+ * they land on through store/search.ts's `OpFold`, the one copy of the
+ * authority rule: a retracted latest message previews as deleted instead of
  * leaking the text it no longer shows, and an edited one previews its
- * current text. Same authority rule as the timeline.
+ * current text. This device's unsent ops apply first, as they do in the
+ * timeline and in search, so an unsent Delete clears the preview at once.
  */
 export function useLatestMessages(
   conversations: readonly StoredConversation[],
+  selfUserId: string,
 ): Map<string, ConversationPreview> {
   const [latest, setLatest] = useState<Map<string, ConversationPreview>>(
     new Map(),
@@ -503,63 +524,60 @@ export function useLatestMessages(
 
   const reload = useCallback(() => {
     const list = ids ? ids.split(",") : [];
-    void Promise.all(
-      list.map(async (id) => {
-        const page = await store.getConversationPage(id, {
-          limit: PREVIEW_WINDOW,
-        });
+    void (async () => {
+      // One read of the whole outbox rather than one per conversation: it
+      // is a handful of rows, and this runs on every `messages` event.
+      const outbox = await store.listOutbox();
+      const pendingByConversation = new Map<string, Uint8Array[]>();
+      for (const entry of outbox) {
+        const contents = pendingByConversation.get(entry.conversationId) ?? [];
+        contents.push(entry.content);
+        pendingByConversation.set(entry.conversationId, contents);
+      }
 
-        // Newest first, so ops are seen before the targets they modify (an
-        // op is always newer than its target). The first edit seen per
-        // target *from each sender* is that sender's newest -- kept per
-        // sender, so a newer edit from somebody without authority cannot
-        // hide the real one (store/search.ts folds the same way).
-        const retractedBy = new Map<string, Set<string>>();
-        const editSeen = new Map<string, string>();
-        const editKey = (target: string, sender: string) => `${target} ${sender}`;
-        for (const message of page) {
-          const content = message.decryptFailed
-            ? null
-            : decodeContent(message.payload);
+      const pairs = await Promise.all(
+        list.map(async (id) => {
+          const page = await store.getConversationPage(id, {
+            limit: PREVIEW_WINDOW,
+          });
+          const fold = new OpFold(selfUserId);
+          fold.applyPending(pendingByConversation.get(id) ?? []);
 
-          if (content !== null && isMessageOp(content)) {
-            if (content.kind === "retract") {
-              const senders = retractedBy.get(content.target) ?? new Set();
-              senders.add(message.senderUserId);
-              retractedBy.set(content.target, senders);
-            } else if (content.kind === "edit") {
-              const key = editKey(content.target, message.senderUserId);
-              if (!editSeen.has(key)) editSeen.set(key, content.text);
+          for (const message of page) {
+            const content = message.decryptFailed
+              ? null
+              : decodeContent(message.payload);
+
+            if (content !== null && isMessageOp(content)) {
+              fold.record(content, message.senderUserId);
+              continue;
             }
-            continue;
-          }
 
-          // The anchor: the newest message that is itself renderable.
-          const retracted =
-            retractedBy.get(message.messageId)?.has(message.senderUserId) ??
-            false;
-          const editedText = editSeen.get(
-            editKey(message.messageId, message.senderUserId),
-          );
-          const withEdit =
-            content !== null &&
-            content !== "unsupported" &&
-            editedText !== undefined
-              ? { ...content, text: editedText }
-              : content;
-          return [
-            id,
-            { message, content: withEdit, retracted } satisfies ConversationPreview,
-          ] as const;
-        }
-        return [id, undefined] as const;
-      }),
-    ).then((pairs) => {
+            // The anchor: the newest message that is itself renderable.
+            const { retracted, editedText } = fold.resolve(
+              message.messageId,
+              message.senderUserId,
+            );
+            const withEdit =
+              content !== null &&
+              content !== "unsupported" &&
+              editedText !== undefined
+                ? { ...content, text: editedText }
+                : content;
+            return [
+              id,
+              { message, content: withEdit, retracted } satisfies ConversationPreview,
+            ] as const;
+          }
+          return [id, undefined] as const;
+        }),
+      );
+
       const next = new Map<string, ConversationPreview>();
       for (const [id, preview] of pairs) if (preview) next.set(id, preview);
       setLatest(next);
-    });
-  }, [ids]);
+    })();
+  }, [ids, selfUserId]);
 
   useEffect(reload, [reload]);
   useSyncEvents((event) => {
@@ -567,6 +585,54 @@ export function useLatestMessages(
   });
 
   return latest;
+}
+
+/**
+ * The id of the newest message this device has stored for a conversation,
+ * or null -- what the read marker is moved to.
+ *
+ * One row, not a timeline: the marker needs no decoding, and running a
+ * second full `useTimeline` beside the open thread's own decoded and folded
+ * the whole page twice on every message. The newest row may be an op; that
+ * is fine as a marker, because unread counting skips ops (`countUnread`,
+ * `ui/unread.ts`) and the server only ever moves a marker forward.
+ *
+ * Tagged with the conversation it was read for, so an answer that lands
+ * after a switch is never reported for the new one, and latest-wins within
+ * a conversation.
+ */
+export function useNewestMessageId(conversationId: string | null): string | null {
+  const [newest, setNewest] = useState<{
+    conversationId: string;
+    messageId: string | null;
+  } | null>(null);
+  const readSeq = useRef(0);
+
+  const reload = useCallback(() => {
+    const seq = ++readSeq.current;
+    if (!conversationId) return;
+    void store
+      .getConversationPage(conversationId, { limit: 1 })
+      .then((rows) => {
+        if (seq !== readSeq.current) return;
+        setNewest({ conversationId, messageId: rows[0]?.messageId ?? null });
+      });
+  }, [conversationId]);
+
+  useEffect(reload, [reload]);
+  useSyncEvents((event) => {
+    if (
+      event.type === "messages" &&
+      conversationId !== null &&
+      event.conversationIds.includes(conversationId)
+    ) {
+      reload();
+    }
+  });
+
+  return newest !== null && newest.conversationId === conversationId
+    ? newest.messageId
+    : null;
 }
 
 /**
@@ -967,17 +1033,25 @@ export function useAnnouncements(): {
     (entry) => lastSeen === null || entry.id > lastSeen,
   ).length;
 
+  // Keyed on the newest id and the stored "seen", never on the array. The
+  // array is fresh on every reload, and a caller that marks from an effect
+  // (Settings does) re-ran it on every new identity: the write notified the
+  // listeners, the reload produced a new array, and round it went -- a
+  // setMeta, four reads and a broadcast per pass, re-rendering the app, for
+  // as long as Settings stayed open (sweep 1001, client-ui-2). Idempotent as
+  // well: marking what is already seen writes and notifies nothing.
+  const newestId = announcements[0]?.id;
   const markSeen = useCallback(() => {
-    const newest = announcements[0]?.id;
-    if (!newest) return;
-    setLastSeen(newest);
-    void store.setMeta(META_ANNOUNCEMENTS_SEEN, newest).then(() => {
+    const target = markSeenTarget(newestId, lastSeen);
+    if (target === null) return;
+    setLastSeen(target);
+    void store.setMeta(META_ANNOUNCEMENTS_SEEN, target).then(() => {
       // After the write, not before: a listener re-reads the store, and
       // notifying first would race it into reading the old value.
       for (const listener of announcementListeners) listener();
       broadcast({ type: "announcements" });
     });
-  }, [announcements]);
+  }, [newestId, lastSeen]);
 
   return { announcements, unread, markSeen };
 }

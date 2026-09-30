@@ -15,14 +15,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { StoredSession } from "../../api/session";
-import {
-  useConversations,
-  useHubs,
-  useLatestMessages,
-  useMentions,
-  useSidebarPresence,
-  useUnread,
-} from "../hooks";
+import type { HubSummary } from "../../api/types";
+import type { StoredConversation } from "../../store/types";
+import { useLatestMessages, useMentions, useSidebarPresence } from "../hooks";
 import {
   avatarHue,
   avatarKey,
@@ -44,25 +39,34 @@ import { rankConversations, recencyRanker, seedHubOrder } from "./rank";
 
 export function ConversationList({
   session,
+  conversations,
+  hubs,
+  unread,
   selected,
   onSelect,
   onOpenHub,
   voiceOccupancy,
 }: {
   session: StoredSession;
+  /**
+   * The list, the hubs and the unread counts, from the shell's own hooks.
+   * Props rather than a second subscription here: each of those hooks
+   * re-reads IndexedDB on every `messages` event (the unread one walks every
+   * conversation), and the shell already runs them for the tab title.
+   */
+  conversations: readonly StoredConversation[];
+  hubs: HubSummary[];
+  unread: Map<string, number>;
   selected: string | null;
   onSelect: (id: string) => void;
   onOpenHub: (hubId: string) => void;
   /** Who is in each voice channel (voice_presence), for the hub rows. */
   voiceOccupancy: ReadonlyMap<string, readonly string[]>;
 }) {
-  const { conversations } = useConversations();
-  const { hubs } = useHubs();
   // Unread and previews are computed over everything -- channels included,
   // for the hub section's badges -- but the direct/group rows below exclude
   // channels, which render nested under their hub instead.
-  const latest = useLatestMessages(conversations);
-  const unread = useUnread(conversations, session.user.id);
+  const latest = useLatestMessages(conversations, session.user.id);
   const mentions = useMentions(conversations, session.user.id);
   const muted = new Set(
     conversations.filter((c) => c.muted).map((c) => c.id),
