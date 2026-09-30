@@ -13,9 +13,22 @@ RUN corepack enable
 # pnpm-workspace.yaml rides along because it carries the allowBuilds entry
 # for esbuild -- without it pnpm 11 refuses the build script and the
 # install fails, which is exactly what took deploy #514 down.
+#
+# Which pnpm: corepack reads package.json's `packageManager`, the version CI
+# pins (deploy.yml, release.yml); bump them together. Before the pin the
+# client had none, so corepack took whatever was newest -- deploy #514's pnpm
+# 11, and pnpm 12.4.2 in the 2026-09-18 deploy while CI checked the lockfile
+# with 11.
+#
+# Frozen, with no fallback. `|| pnpm install` used to retry any failure
+# unfrozen, resolving the ^ ranges afresh on the VPS: production could ship
+# versions CI never ran, and a drifted ts-mls would build without the
+# patch patchedDependencies pins to 1.6.4 (MLS on Safari and Android
+# WebView). A lockfile problem now fails the build, the old containers keep
+# serving, and the deploy goes red -- the same fail-closed shape as migrate.
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
 COPY patches ./patches
-RUN pnpm install --frozen-lockfile || pnpm install
+RUN pnpm install --frozen-lockfile
 
 COPY tsconfig*.json vite.config.ts index.html ./
 COPY public ./public
