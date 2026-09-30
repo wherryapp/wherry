@@ -52,7 +52,8 @@ import {
   saveNotificationPrefs,
   subscribeNotificationPrefs,
 } from "../sync/native-push-prefs";
-import { useAnnouncements, useAvatarUrl, useFeatures } from "./hooks";
+import { useAnnouncements, useAvatarUrl } from "./hooks";
+import { useConfirmedSignOut } from "./sign-out";
 import { prepareAvatar } from "./media";
 import { HuePicker } from "./HuePicker";
 import {
@@ -230,7 +231,15 @@ export function Settings({
   // face is a UI-reform design question -- this is the framework's proof it
   // works, not the presentation.
   const { announcements, markSeen } = useAnnouncements();
-  const features = useFeatures();
+  // The voice flags, from this panel's own /account/settings read below
+  // rather than a useFeatures() of its own, which made a second identical
+  // request on every open. Off until it answers, as useFeatures is.
+  const [features, setFeatures] = useState({ voice: false, voiceQuality: false });
+
+  // Bottom-of-page sign-out asks first, in the account menu's words
+  // (ui/sign-out.ts). The Devices list's "Sign out" (this device) and
+  // "Revoke" do not ask yet; whether they should is not decided.
+  const { requestSignOut, signOutDialog } = useConfirmedSignOut(onSignedOut);
 
   // Opening Settings with the section visible is what "seen" means. Keyed on
   // the newest id so a new announcement published while the panel is open is
@@ -259,6 +268,11 @@ export function Settings({
         setDevices(deviceList.devices);
         setUsage(attachmentUsage);
         setTipJarEnabled(settings.features.tipJar);
+        // Older servers answer no `voice` at all: off, never undefined.
+        setFeatures({
+          voice: settings.features.voice === true,
+          voiceQuality: settings.features.voiceQuality === true,
+        });
         setCameraLimit(
           settings.videoLimits?.sources.includes("camera")
             ? (settings.videoLimits.camera ?? null)
@@ -774,10 +788,14 @@ export function Settings({
         {/* Last, where every app keeps it. It used to be a header link on the
             main screen -- prime space for the rarest action in the app. */}
         <div className="px-4 py-5">
-          <Button variant="secondary" onClick={() => onSignedOut()} className="w-full">
+          <Button variant="secondary" onClick={requestSignOut} className="w-full">
             Sign out
           </Button>
         </div>
+        {/* Inside the Panel, as GroupDetails renders its confirm: the
+            dialog's own back layer sits above the Panel's, so Escape or Back
+            cancels only the question and leaves Settings open. */}
+        {signOutDialog}
 
         {/* Below sign-out, not beside it -- this is trivia, not a control.
             Absent entirely before tagging starts (APP_VERSION is "unknown"
@@ -1024,8 +1042,9 @@ function NotificationNamesSetting() {
       </label>
       <p className="text-xs text-neutral-500 dark:text-neutral-400">
         Show who a message or call is from and which chat it is in, never what
-        was said. Names come from this phone, not from the server, and are
-        hidden while the phone is locked.
+        was said. Names come from this phone, not from the server. Whether
+        they show on the lock screen follows your phone's own setting for
+        hiding sensitive notification content.
       </p>
     </div>
   );
