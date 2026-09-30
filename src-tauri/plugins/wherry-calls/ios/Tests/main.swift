@@ -272,5 +272,43 @@ do {
   check(full.count == 0, "removeAll empties it")
 }
 
+// MARK: - DeclineToken (the push's three signed fields, kept together)
+
+do {
+  let call = "0199aaaa-0000-7000-8000-0000000000c1"
+  let dev = "0199aaaa-0000-7000-8000-00000000d001"
+  let sig = String(repeating: "A", count: 43)
+  let newer = String(repeating: "B", count: 43)
+  let push = RingPush(
+    callId: call, conversationId: nil, deviceId: dev, group: false, exp: 1_790_000_045, dsig: sig)
+
+  let token = DeclineToken(push)
+  check(token == DeclineToken(deviceId: dev, exp: 1_790_000_045, sig: sig), "the push's own exp")
+  check(
+    DeclineToken(
+      RingPush(
+        callId: call, conversationId: nil, deviceId: dev, group: false, exp: 1_790_000_045,
+        dsig: nil)) == nil,
+    "no dsig, no token")
+  check(
+    DeclineToken(
+      RingPush(
+        callId: call, conversationId: nil, deviceId: nil, group: false, exp: 1_790_000_045,
+        dsig: sig)) == nil,
+    "no dev, no token")
+
+  // The socket's report came first: nothing held, the push's token whole.
+  check(DeclineToken.merged(token, over: nil) == token, "a first token is taken whole")
+  // A repeated push with nothing to sign keeps the held token.
+  check(DeclineToken.merged(nil, over: token) == token, "no token keeps the held one")
+  // A newer push replaces all three fields, never one of them.
+  let later = DeclineToken(deviceId: dev, exp: 1_790_000_050, sig: newer)
+  check(DeclineToken.merged(later, over: token) == later, "a newer token replaces it whole")
+
+  check(!token!.expired(now: 1_790_000_044), "live before exp")
+  check(token!.expired(now: 1_790_000_045), "expired at exp")
+  check(token!.expired(now: 1_790_000_100), "expired after exp")
+}
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -30,6 +30,52 @@ struct RingPush: Equatable {
   let dsig: String?
 }
 
+/// The signed decline token (plan §2.5), exactly as the server signed it:
+/// the HMAC covers the call, this device and **this** `exp`, so the three
+/// travel together and are never mixed with another source's values -- the
+/// Android half's `DeclineToken` (Ring.kt), for the same defect. The page's
+/// `reportIncoming` carries its own `exp` (`ringExpiry`, the phone's clock
+/// at receipt plus the ring window), which differs from the push's whenever
+/// receipt crosses a second or the clocks disagree; beside the push's `dsig`
+/// that is a token that does not verify, and the route answers 204 whatever
+/// happened, so nothing would say the decline was dropped.
+struct DeclineToken: Equatable {
+  /// This device's id as the server signed it (`dev`).
+  let deviceId: String
+  /// The `exp` the server signed, seconds since the epoch.
+  let exp: Int64
+  /// `dsig`: HMAC-SHA256, unpadded base64url.
+  let sig: String
+
+  /// The token a ring push carries, or nil when it carries none (a server
+  /// without CALL_ACTION_SECRET, or a field of the wrong shape).
+  init?(_ push: RingPush) {
+    guard let deviceId = push.deviceId, let sig = push.dsig else { return nil }
+    self.deviceId = deviceId
+    self.exp = push.exp
+    self.sig = sig
+  }
+
+  init(deviceId: String, exp: Int64, sig: String) {
+    self.deviceId = deviceId
+    self.exp = exp
+    self.sig = sig
+  }
+
+  /// Past its `exp`: the server would refuse it silently (204), so it is not
+  /// sent, and the page's own decline (the `decline` action) carries the
+  /// press instead.
+  func expired(now: Int64) -> Bool {
+    return exp <= now
+  }
+
+  /// A ring for a call already held: the newer push's token whole, else the
+  /// one already held. Never a field of one beside a field of the other.
+  static func merged(_ newer: DeclineToken?, over held: DeclineToken?) -> DeclineToken? {
+    return newer ?? held
+  }
+}
+
 enum RingMessage: Equatable {
   case ring(RingPush)
   /// `why` is the server's reason: answered, answered_elsewhere,

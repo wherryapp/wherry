@@ -91,10 +91,13 @@ final class TrackedCall {
   let uuid: UUID
   let callId: String
   var conversationId: String?
-  /// The recipient device the ring's signature names.
-  var deviceId: String?
+  /// When the ring window closes here, seconds since the epoch: the expiry
+  /// timer's value and EndedCalls' only. Never sent with the decline -- the
+  /// page's `reportIncoming` sets it from the phone's own clock.
   var exp: Int64
-  var dsig: String?
+  /// The push's signed decline token, whole (DeclineToken); nil until a
+  /// VoIP push with one arrives, and never taken from the page.
+  var token: DeclineToken?
   /// Answered in CallKit: its End is a hang-up, not a decline.
   var answered = false
   /// The page named it in `setActive(true)`: its web call is running, so the
@@ -264,7 +267,10 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   }
 
   /// { apiBase, deviceId }: where the lock screen's decline goes. Kept in
-  /// UserDefaults so a PushKit launch with no page still has it.
+  /// UserDefaults so a PushKit launch with no page still has it. The device
+  /// id is stored and read by nothing: a signed decline names the device its
+  /// token was signed for (DeclineToken). It stays in the command because
+  /// PC1 fixed `configure`'s shape on both phones (phone-calls.ts).
   @objc public func configure(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ConfigureArgs.self)
     onMain {
@@ -544,10 +550,11 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     if let call = calls[uuid] {
       // Known: the socket's report got here first, or the push repeated.
       // Report again (callUUIDAlreadyExists) so the push counts as
-      // reported, and keep what only the push carries: the signature.
+      // reported, and keep what only the push carries: the decline token,
+      // its three fields together (never the push's signature beside the
+      // page's `exp`, which would not verify).
       call.conversationId = call.conversationId ?? push.conversationId
-      call.deviceId = push.deviceId ?? call.deviceId
-      call.dsig = push.dsig ?? call.dsig
+      call.token = DeclineToken.merged(DeclineToken(push), over: call.token)
       report(uuid, label: label(for: call.conversationId)) { _ in
         completion()
         if expired && !call.answered { self.endReported(uuid, .unanswered) }
@@ -569,8 +576,7 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     }
     let call = TrackedCall(uuid: uuid, callId: push.callId, exp: push.exp)
     call.conversationId = push.conversationId
-    call.deviceId = push.deviceId
-    call.dsig = push.dsig
+    call.token = DeclineToken(push)
     calls[uuid] = call
     report(uuid, label: label(for: push.conversationId)) { error in
       completion()
@@ -824,15 +830,20 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + Self.unclaimedAnswerSeconds, execute: work)
   }
 
-  /// The lock screen's Decline, when the ring carried a signature. The page,
-  /// if it is running, declines too through its own session (the `decline`
-  /// action); the second decline is a no-op on the server.
+  /// The lock screen's Decline, when the ring's push carried a token. The
+  /// page, if it is running, declines too through its own session (the
+  /// `decline` action); the second decline is a no-op on the server.
   private func declineSigned(_ call: TrackedCall) {
     let defaults = UserDefaults.standard
-    guard let dsig = call.dsig, let deviceId = call.deviceId,
-      let apiBase = defaults.string(forKey: Self.defaultsApiBase)
+    guard let token = call.token, let apiBase = defaults.string(forKey: Self.defaultsApiBase)
     else {
       NSLog("[wherry] calls: no signed decline for %@ (the page declines)", call.callId)
+      return
+    }
+    if token.expired(now: Self.nowSeconds()) {
+      // The server would refuse it and answer 204 all the same; the page's
+      // `decline` action, live or queued, carries the press instead.
+      NSLog("[wherry] calls: decline token for %@ expired (the page declines)", call.callId)
       return
     }
     // A few seconds of background time: the End action is often the last
@@ -843,7 +854,8 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       task = .invalid
     }
     SignedDecline.post(
-      apiBase: apiBase, callId: call.callId, deviceId: deviceId, exp: call.exp, sig: dsig
+      apiBase: apiBase, callId: call.callId, deviceId: token.deviceId, exp: token.exp,
+      sig: token.sig
     ) { status in
       DispatchQueue.main.async {
         NSLog(
