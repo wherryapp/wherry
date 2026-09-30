@@ -66,3 +66,24 @@ test("openAttachmentBytes decrypts a keyed reference", async () => {
   const opened = await openAttachmentBytes(ref, ciphertext);
   assert.deepEqual(opened, original);
 });
+
+test("a key or nonce that is not base64, or the wrong length, is DECRYPT_FAILED", async () => {
+  const { ciphertext, ref } = await encryptBlob(new Uint8Array([1, 2, 3]));
+  // Each of these threw a DOMException from atob or importKey before the
+  // try, which ended the arrival prefetch for every ref behind it
+  // (sweep 1001, client-core-16).
+  const bad = [
+    { ...ref, key: "not base64!" },
+    { ...ref, key: "AAAA" },
+    { ...ref, nonce: "%%%%" },
+    { ...ref, nonce: "" },
+  ];
+  for (const candidate of bad) {
+    await assert.rejects(
+      decryptBlob(ciphertext, candidate),
+      (error: unknown) =>
+        error instanceof BlobCryptoError && error.code === "DECRYPT_FAILED",
+      JSON.stringify(candidate),
+    );
+  }
+});
