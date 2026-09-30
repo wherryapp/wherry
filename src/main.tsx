@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
+import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { restoreFromVault } from "./api/session";
 import { isTauriShell } from "./api/shell";
 import { startStallDetector } from "./diagnostics";
@@ -74,7 +75,12 @@ if (!root) throw new Error("#root is missing from index.html");
 function render(): void {
   createRoot(root!).render(
     <StrictMode>
-      <App />
+      {/* Outermost below StrictMode, so a render throw anywhere -- the
+          version wall and the login screen included -- ends on a reload
+          link instead of a blank page. See ui/ErrorBoundary.tsx. */}
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </StrictMode>,
   );
 }
