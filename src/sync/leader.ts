@@ -29,9 +29,19 @@
 // timeout to tune, and no stale-leader state to detect, because the browser
 // already knows exactly when a page is gone and we do not.
 //
-// Available everywhere current (Safari 15.4+). Where it is missing the
-// fallback is to run anyway, which is the pre-existing behaviour of every tab
-// polling -- degraded, not broken.
+// A hard requirement, not an enhancement: the MLS provider serialises every
+// group operation on a Web Lock too (crypto/mls.ts), and so does the voice
+// session. Available everywhere this runs -- Safari and WKWebView 15.4+,
+// which is the iOS minimum. There used to be a "run without coordination"
+// fallback here; it never called the task, so where Web Locks were missing
+// sync silently never started (sweep 1001, client-core-14). It is gone:
+// `hasWebLocks` lets the engine say so on screen instead, and runAsLeader
+// throws rather than returning a handle for a loop that is not running.
+
+/** Whether this browser has the Web Locks API every tab election needs. */
+export function hasWebLocks(): boolean {
+  return typeof navigator !== "undefined" && navigator.locks !== undefined;
+}
 
 export type LeaderTask = (signal: AbortSignal) => Promise<void>;
 
@@ -42,14 +52,6 @@ export type LeaderHandle = {
   isLeader(): boolean;
 };
 
-/**
- * Runs `task` in exactly one tab at a time.
- *
- * The task is handed an AbortSignal and is expected to run until it fires --
- * a poll loop, not a one-shot. Returning early releases the lock and promotes
- * another tab, which is the correct behaviour if the task decides it is done
- * (a dead session, say).
- */
 // How often the leader says it is alive, and how long a follower waits in
 // silence before concluding the holder is wedged.
 //
@@ -82,20 +84,10 @@ const REFUSED_RETRY_MAX_MS = 30_000;
  * (a dead session, say).
  */
 export function runAsLeader(name: string, task: LeaderTask): LeaderHandle {
-  const locks = navigator.locks;
-
-  if (!locks) {
-    // No Web Locks. Run without coordination rather than not at all.
-    const solo = new AbortController();
-    return {
-      stop: () => {
-        if (!solo.signal.aborted) {
-          solo.abort(new DOMException("stopped", "AbortError"));
-        }
-      },
-      isLeader: () => !solo.signal.aborted,
-    };
+  if (!hasWebLocks()) {
+    throw new Error("Web Locks are required (Safari or iOS 15.4 or later)");
   }
+  const locks = navigator.locks;
 
   let stopped = false;
   let paused = false;

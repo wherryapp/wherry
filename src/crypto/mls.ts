@@ -146,6 +146,14 @@ function withGroupLock<T>(
   conversationId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
+  // A hard requirement (iOS and Safari 15.4+), as for the sync leader: there
+  // is no safe way to touch a ratchet without it, so its absence is said
+  // plainly rather than as "cannot read properties of undefined".
+  if (!navigator.locks) {
+    return Promise.reject(
+      new Error("Web Locks are required (Safari or iOS 15.4 or later)"),
+    );
+  }
   return navigator.locks.request(`messenger.mls.${conversationId}`, fn);
 }
 

@@ -72,7 +72,7 @@ afterEach(() => {
   }
 });
 
-const { runAsLeader } = await import("./leader.ts");
+const { hasWebLocks, runAsLeader } = await import("./leader.ts");
 
 test("a request that rejects outright does not re-queue in the same turn", async () => {
   requestImpl = rejecting("InvalidStateError", "The document is not fully active.");
@@ -121,4 +121,22 @@ test("a task that returns on its own is not restarted", async () => {
   assert.equal(requests, 1);
   assert.equal(handle.isLeader(), false);
   handle.stop();
+});
+
+test("without Web Locks the election refuses loudly instead of never running", () => {
+  // The old fallback returned a handle and never called the task, so sync
+  // silently never started (sweep 1001, client-core-14). Web Locks is now a
+  // hard requirement (iOS 15.4 minimum), and the engine checks hasWebLocks
+  // first to put that on the status line.
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  let ran = false;
+  assert.throws(() =>
+    runAsLeader("test", async () => {
+      ran = true;
+    }),
+  );
+  assert.equal(ran, false);
+  assert.equal(hasWebLocks(), false);
+  installGlobals();
+  assert.equal(hasWebLocks(), true);
 });

@@ -71,6 +71,7 @@ import {
 import { Backoff, sleep } from "./backoff";
 import {
   broadcast,
+  hasWebLocks,
   runAsLeader,
   subscribeToBroadcasts,
   type LeaderHandle,
@@ -530,6 +531,18 @@ export class SyncEngine {
     this.#pokePending = false;
     this.#backoff.reset();
     mlsSync.reset();
+
+    // Without Web Locks nothing here can run safely (see sync/leader.ts),
+    // and a sync that silently never starts is the failure this replaces:
+    // say so on the status line and stay stopped.
+    if (!hasWebLocks()) {
+      console.error("sync not started: this browser has no Web Locks");
+      this.#setStatus({
+        state: "stopped",
+        error: "This browser is too old to sync. Update it to Safari 15.4 or later.",
+      });
+      return;
+    }
 
     this.#setStatus({ state: "follower", error: null });
 
