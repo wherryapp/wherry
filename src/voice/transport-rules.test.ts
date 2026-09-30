@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  connectFailureClosesShell,
+  defaultInputId,
   cameraCeilingFor,
   connectionFromWord,
   disconnectSfuStopping,
@@ -50,7 +52,6 @@ describe("userIdFromMetadata", () => {
 describe("nativeErrorName", () => {
   it("maps the shell's codes onto the browser names session.ts already reads", () => {
     assert.equal(nativeErrorName("no_microphone"), "NotFoundError");
-    assert.equal(nativeErrorName("permission"), "NotAllowedError");
     assert.equal(nativeErrorName("mic_failed"), "UnknownError");
     assert.equal(nativeErrorName(""), "UnknownError");
   });
@@ -63,6 +64,30 @@ describe("nativeErrorName", () => {
     // generic one on purpose.
     assert.equal(nativeErrorName("camera_failed"), "UnknownError");
     assert.equal(nativeErrorName("screen_failed"), "UnknownError");
+  });
+
+  it("gives a window that closed after it was picked its own name", () => {
+    assert.equal(nativeErrorName("screen_gone"), "SourceGoneError");
+    const gone = Object.assign(new Error("that window or screen is no longer there"), {
+      name: nativeErrorName("screen_gone"),
+    });
+    assert.equal(
+      publishErrorMessage(gone, "screen"),
+      "The window or screen you chose is no longer there.",
+    );
+  });
+
+  it("words a Windows camera refusal as a refusal, whatever stage raised it", () => {
+    // The old Windows text matched the SFU-refusal patterns ("not allowed"
+    // and "source"); the name is what decides now.
+    for (const text of [
+      "camera access is not allowed (creating the source reader)",
+      "camera access was refused (creating the source reader)",
+      "camera access is not allowed",
+    ]) {
+      const denied = Object.assign(new Error(text), { name: nativeErrorName("camera_denied") });
+      assert.equal(publishErrorMessage(denied, "camera"), "Camera access was refused.");
+    }
   });
 
   // The name is the middle of the path, not the point of it. What broke was
@@ -328,6 +353,45 @@ describe("videoOptionsFor", () => {
     const options = videoOptionsFor(grant, true, "standard");
     assert.deepEqual(options.camera, { maxHeight: 360, maxFps: 30 });
     assert.deepEqual(options.screen, { maxHeight: 1080, maxFps: 15 });
+  });
+});
+
+describe("connectFailureClosesShell", () => {
+  it("leaves a call that is not this connect's alone", () => {
+    assert.equal(connectFailureClosesShell("already_connected"), false);
+  });
+  it("tidies up after any other refusal", () => {
+    assert.equal(connectFailureClosesShell("connect_failed"), true);
+    assert.equal(connectFailureClosesShell("cancelled"), true);
+    assert.equal(connectFailureClosesShell(null), true);
+  });
+});
+
+describe("defaultInputId", () => {
+  const list = (...ids: string[]) => ids.map((deviceId) => ({ deviceId }));
+  it("takes the default a shell reports outright", () => {
+    assert.equal(
+      defaultInputId({ inputs: list("a", "b"), defaultInput: "b", firstIsDefault: false }),
+      "b",
+    );
+  });
+  it("takes an entry named default (Chromium, the macOS shell)", () => {
+    assert.equal(defaultInputId({ inputs: list("a", "default"), firstIsDefault: true }), "default");
+    assert.equal(defaultInputId({ inputs: list("a", "default"), firstIsDefault: false }), "default");
+  });
+  it("takes the first where the first is the default (Safari, Firefox)", () => {
+    assert.equal(defaultInputId({ inputs: list("x", "y"), firstIsDefault: true }), "x");
+  });
+  it("says it cannot tell rather than guessing (the Windows shell)", () => {
+    assert.equal(defaultInputId({ inputs: list("x", "y"), firstIsDefault: false }), null);
+    assert.equal(
+      defaultInputId({ inputs: list("x"), defaultInput: null, firstIsDefault: false }),
+      null,
+    );
+  });
+  it("never answers a blank id (enumeration before a permission grant)", () => {
+    assert.equal(defaultInputId({ inputs: list(""), firstIsDefault: true }), null);
+    assert.equal(defaultInputId({ inputs: [], firstIsDefault: true }), null);
   });
 });
 
