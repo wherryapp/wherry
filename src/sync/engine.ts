@@ -78,6 +78,7 @@ import {
 } from "./leader";
 import { mlsEnabled, mlsSync, type Identity } from "./mls";
 import { SocketManager } from "./socket";
+import { settlePendingDecrypts } from "./pending-decrypt";
 import { isServerReadable } from "../api/hub-class";
 
 // ---------------------------------------------------------------------------
@@ -481,6 +482,8 @@ export class SyncEngine {
    * channel on every wake, forever (sweep 1001, client-core-9).
    */
   #listedConversations: Set<string> | null = null;
+  /** messageId -> reads by the forward archive sync that still failed. */
+  #forwardSyncAttempts = new Map<string, number>();
   #onUnauthorized: (() => void) | null = null;
   /** Per-conversation floor on outgoing typing frames; see sendTyping. */
   #lastTypingSent = new Map<string, number>();
@@ -527,6 +530,7 @@ export class SyncEngine {
     this.#lastPublicSweep = 0;
     this.#publicWake = false;
     this.#listedConversations = null;
+    this.#forwardSyncAttempts.clear();
     this.#lastTypingSent.clear();
     this.#pokePending = false;
     this.#backoff.reset();
@@ -2262,11 +2266,15 @@ export class SyncEngine {
       );
       await store.putMessages(messages);
 
-      for (const message of messages) {
-        if (!message.decryptFailed && pending[message.messageId]) {
-          delete pending[message.messageId];
-          healedConversations.add(message.conversationId);
-        }
+      // Healed ids leave the record; one read and still failed is given
+      // a few runs, then dropped, so the next run starts past it -- see
+      // sync/pending-decrypt.ts.
+      for (const conversationId of settlePendingDecrypts(
+        pending,
+        messages,
+        this.#forwardSyncAttempts,
+      )) {
+        healedConversations.add(conversationId);
       }
 
       if (result.entries.length < ARCHIVE_PAGE) break;
