@@ -358,6 +358,8 @@ class VoiceSession {
   #ringback: { stop: () => void } | null = null;
   #volumes = new Map<string, { userId: string; kind: AudioKind; volume: number }>();
   #leaving = false;
+  /** Bumped by every setCameraEnabled; see there. */
+  #cameraAsked = 0;
   /** How getUserMedia failed, if it did, for the details' mic row. */
   #micFailure: MicFailure | null = null;
   /** When a frame last sent the group to reconcile (see #nudgeGroup). */
@@ -519,6 +521,13 @@ class VoiceSession {
   // -- video ---------------------------------------------------------------
 
   async setCameraEnabled(on: boolean): Promise<void> {
+    // Only the latest request may say what the camera is. A device switch
+    // is slow (the new device opens first) and a mute is fast, so a mute
+    // pressed mid-switch finishes first; the switch finishing after it used
+    // to set `on: true` over it -- the button reading "on" while the shell,
+    // which applies the same latest-wins rule (`video.rs`, `camera_asked`),
+    // kept the camera muted. Read on the macOS shell, 2026-09-30.
+    const ticket = ++this.#cameraAsked;
     // The camera button is the engine switch on a native engine that
     // cannot open a camera (rules.ts's `videoNeedsSwitch`): one press
     // rejoins through the browser engine and *then* turns the camera on,
@@ -528,10 +537,12 @@ class VoiceSession {
     if (!transport) return;
     try {
       await transport.setCameraEnabled(on, loadVoicePrefs().cameraDeviceId);
+      if (ticket !== this.#cameraAsked) return;
       // `paused` is cleared either way: turning the camera off by hand is
       // a decision the background resume must not undo.
       this.#set({ camera: { on, paused: false }, error: null });
     } catch (error) {
+      if (ticket !== this.#cameraAsked) return;
       this.#set({ camera: { on: false, paused: false }, error: publishError(error) });
     }
   }
