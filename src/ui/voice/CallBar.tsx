@@ -280,22 +280,26 @@ export function CallBar({
 
 function DevicePicker({ onClose }: { onClose: () => void }) {
   const prefs = useVoicePrefs();
+  // The engine this call is on, not the preference: after an engine-override
+  // switch the call runs in the webview, and the shell's ids mean nothing to
+  // it (client-voice-13).
+  const native = useVoice().nativeEngine;
   const [devices, setDevices] = useState<AudioDevices>({ inputs: [], outputs: [] });
 
   useEffect(() => {
     let cancelled = false;
     const load = (): void => {
-      void listAudioDevices().then((list) => {
+      void listAudioDevices(native).then((list) => {
         if (!cancelled) setDevices(list);
       });
     };
     load();
-    const off = onDeviceChange(load);
+    const off = onDeviceChange(load, native);
     return () => {
       cancelled = true;
       off();
     };
-  }, []);
+  }, [native]);
 
   return (
     <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -306,7 +310,10 @@ function DevicePicker({ onClose }: { onClose: () => void }) {
           onChange={(e) => {
             const id = e.target.value || null;
             saveVoicePrefs({ micDeviceId: id });
-            if (id) void voice.setMicDevice(id);
+            // "Default" too: the live call moves, as it does for a named
+            // device and as the speaker does (Connor's decision on
+            // client-voice-10).
+            void voice.setMicDevice(id);
           }}
           className="mt-1 w-full"
         >
@@ -318,7 +325,7 @@ function DevicePicker({ onClose }: { onClose: () => void }) {
           ))}
         </Select>
       </label>
-      {supportsSpeakerSelection() && (
+      {supportsSpeakerSelection(native) && (
         <label className="text-xs text-neutral-600 dark:text-neutral-300">
           Speaker
           <Select

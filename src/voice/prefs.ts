@@ -51,9 +51,11 @@ export type VoicePrefs = {
    * join, so it applies to the next call.
    */
   nativeMedia: boolean;
-  /** `deviceId` from enumerateDevices; null = the platform default. In the
-   *  browser's id space, so it is checked against the live camera list
-   *  before it is used, exactly as the microphone's is. */
+  /** A camera id; null = the platform default. In whichever engine's id
+   *  space Settings listed it -- the shell's (`voice_video_devices`) where
+   *  the native engine opens the camera, the browser's elsewhere -- and,
+   *  unlike the microphone's, passed through unchecked: each engine falls
+   *  back to its default camera on an id it does not know. */
   cameraDeviceId: string | null;
   /**
    * How much camera this device would like to send, capped by the grant at

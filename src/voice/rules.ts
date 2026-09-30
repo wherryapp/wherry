@@ -711,6 +711,53 @@ export function cameraOnVisibility(input: {
 }
 
 /**
+ * What this device is sending, as its transport reads it: the microphone
+ * published and unmuted, a camera published and unmuted, a screen
+ * published. The transport's reading, never the page's intent -- which is
+ * the point of it (`localMediaPatch`).
+ */
+export type LocalMedia = { micOpen: boolean; camera: boolean; screen: boolean };
+
+/**
+ * What the page should believe about its own microphone, camera and screen
+ * after the transport reported a change to them (the seam's
+ * `localChanged`), or null for nothing to change.
+ *
+ * For changes the page did not make: a moderator's mute or stop-video (the
+ * SFU mutes the track; livekit-client, and the shell, mute the publication
+ * to match and nothing tells the page), and the browser's own "Stop
+ * sharing" bar (the SDK unpublishes the screen). Before this, the button
+ * went on saying "unmuted" while everybody else saw the person muted, and
+ * the next press was a no-op.
+ *
+ * A source with a request of the page's own in flight (`busy`) is left
+ * alone: that request's own settle says what it ended as, and the reading
+ * taken mid-request is the half-way state -- a camera paused for the
+ * background reads as off for a moment on its way to "paused". So is a
+ * camera that is paused: it reads off, and is meant to. Everything else the
+ * reading wins.
+ */
+export function localMediaPatch(input: {
+  reading: LocalMedia;
+  state: { micMuted: boolean; camera: { on: boolean; paused: boolean }; screen: { on: boolean } };
+  busy: { mic: boolean; camera: boolean; screen: boolean };
+}): { micMuted?: boolean; camera?: { on: boolean; paused: boolean }; screen?: { on: boolean } } | null {
+  const { reading, state, busy } = input;
+  const patch: {
+    micMuted?: boolean;
+    camera?: { on: boolean; paused: boolean };
+    screen?: { on: boolean };
+  } = {};
+  if (!busy.mic && reading.micOpen === state.micMuted) patch.micMuted = !reading.micOpen;
+  const cameraLive = state.camera.on && !state.camera.paused;
+  if (!busy.camera && reading.camera !== cameraLive) {
+    patch.camera = { on: reading.camera, paused: false };
+  }
+  if (!busy.screen && reading.screen !== state.screen.on) patch.screen = { on: reading.screen };
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+/**
  * The camera a flip moves to: the one after the camera in use, wrapping.
  *
  * With no saved choice the camera in use is the platform's default, which

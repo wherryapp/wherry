@@ -60,6 +60,7 @@ import {
   callerIsRinging,
   cameraOnVisibility,
   grantLine,
+  localMediaPatch,
   micStatus,
   nextCameraId,
   shouldJoinMuted,
@@ -346,6 +347,17 @@ type JoinPlan = {
   obtain: () => Promise<JoinResult>;
 };
 
+/**
+ * One run of `#join`, checked after every await in it. `live` goes false
+ * when a teardown (a hang-up, the call ending, a room switch, the engine
+ * switch) or a newer join supersedes it; the join then stops where it is
+ * and undoes only what the teardown could not have known about.
+ * `leaveOnAbandon` is whether the superseding teardown meant to tell the
+ * server this device left: a join abandoned just after `obtain` holds a
+ * participant row that teardown never saw.
+ */
+type JoinAttempt = { live: boolean; leaveOnAbandon: boolean };
+
 class VoiceSession {
   #state: VoiceState = IDLE;
   #listeners = new Set<() => void>();
@@ -358,8 +370,31 @@ class VoiceSession {
   #ringback: { stop: () => void } | null = null;
   #volumes = new Map<string, { userId: string; kind: AudioKind; volume: number }>();
   #leaving = false;
-  /** Bumped by every setCameraEnabled; see there. */
+  /** The join in progress (`JoinAttempt`); null once it finished or was
+   *  superseded. */
+  #attempt: JoinAttempt | null = null;
+  /** Bumped by every setCameraEnabled, the background pause and resume, and
+   *  a change the transport reported; see setCameraEnabled. */
   #cameraAsked = 0;
+  /** The microphone's twin of `#cameraAsked`: bumped by every mute or
+   *  unmute, and by a change the transport reported. */
+  #micAsked = 0;
+  /** Whether the person wants the microphone muted: the latest wish, which
+   *  the button toggles (`toggleMic`) rather than the rendered state, since
+   *  that moves only once a request settles. */
+  #micWanted = false;
+  /** The join whose first microphone publish is in flight. A mute pressed
+   *  meanwhile is recorded in `#micWanted` and applied by the join once the
+   *  publish lands, rather than sent alongside it (client-voice-3). */
+  #micStarting: JoinAttempt | null = null;
+  /** The screen's ticket, bumped by every start that goes ahead, every stop
+   *  and a change the transport reported; and the request in flight, which a
+   *  second start waits out rather than racing (client-voice-5). */
+  #screenAsked = 0;
+  #screenPending: Promise<void> | null = null;
+  /** Requests of the page's own in flight, per source: a transport's
+   *  `localChanged` reading is left to them (`localMediaPatch`). */
+  #busy = { mic: 0, camera: 0, screen: 0 };
   /** How getUserMedia failed, if it did, for the details' mic row. */
   #micFailure: MicFailure | null = null;
   /** When a frame last sent the group to reconcile (see #nudgeGroup). */
@@ -471,24 +506,49 @@ class VoiceSession {
   }
 
   async setMicMuted(muted: boolean): Promise<void> {
+    if (this.#micStarting?.live) {
+      // A join is under way and has not published the microphone yet. On the
+      // native engine a mute sent now found no publication, did nothing, and
+      // the publish then went live; the join applies this wish when it
+      // publishes instead (client-voice-3).
+      this.#micAsked += 1;
+      this.#micWanted = muted;
+      this.#set({ micMuted: muted, error: null });
+      blip(muted ? "mute" : "unmute");
+      return;
+    }
     const transport = this.#transport;
     if (!transport) return;
+    // Only the latest request says what the microphone is, as for the camera:
+    // two quick presses used to both mute, and a mute that settled after the
+    // unmute pressed after it won.
+    const ticket = ++this.#micAsked;
+    this.#micWanted = muted;
+    this.#busy.mic += 1;
     try {
       await transport.setMicrophoneEnabled(!muted);
+      if (ticket !== this.#micAsked) return;
       this.#micFailure = null;
       this.#set({ micMuted: muted, error: null });
       blip(muted ? "mute" : "unmute");
     } catch (error) {
+      if (ticket !== this.#micAsked) return;
       this.#micFailure = micFailure(error);
+      this.#micWanted = true;
       this.#set({ micMuted: true, error: micError(error) });
+    } finally {
+      this.#busy.mic -= 1;
     }
   }
 
   toggleMic(): Promise<void> {
-    return this.setMicMuted(!this.#state.micMuted);
+    return this.setMicMuted(!this.#micWanted);
   }
 
-  async setMicDevice(deviceId: string): Promise<void> {
+  /** `deviceId` null: "Default", chosen mid-call, which moves the live call
+   *  to the platform's default input as a named choice does (Connor's
+   *  decision, 2026-10-01). */
+  async setMicDevice(deviceId: string | null): Promise<void> {
     const transport = this.#transport;
     if (!transport) return;
     try {
@@ -535,6 +595,7 @@ class VoiceSession {
     if (on && videoNeedsSwitch(this.#state, "camera")) await this.switchEngineForThisCall();
     const transport = this.#transport;
     if (!transport) return;
+    this.#busy.camera += 1;
     try {
       await transport.setCameraEnabled(on, loadVoicePrefs().cameraDeviceId);
       if (ticket !== this.#cameraAsked) return;
@@ -544,6 +605,8 @@ class VoiceSession {
     } catch (error) {
       if (ticket !== this.#cameraAsked) return;
       this.#set({ camera: { on: false, paused: false }, error: publishError(error) });
+    } finally {
+      this.#busy.camera -= 1;
     }
   }
 
@@ -566,7 +629,9 @@ class VoiceSession {
    * on a laptop with one.
    */
   async flipCamera(): Promise<void> {
-    const devices = await listVideoDevices();
+    // The live engine's list: during an engine-override call the webview
+    // opens the camera, whatever the preference says (client-voice-13).
+    const devices = await listVideoDevices(this.#state.nativeEngine);
     const next = nextCameraId(
       devices.map((device) => device.deviceId),
       loadVoicePrefs().cameraDeviceId,
@@ -590,22 +655,57 @@ class VoiceSession {
     }
   }
 
+  /**
+   * One screen request at a time, and a stop always wins.
+   *
+   * A start can wait a long time -- the macOS sheet for as long as the person
+   * looks at it, the Windows capturer for its first frame -- and the button
+   * still reads "Share screen" meanwhile. A second start pressed then used to
+   * start a second share on the native engine, and whichever finished second
+   * overwrote the first, which went on being sent with nothing able to stop
+   * it; a stop pressed then found nothing to stop, and the start then stored
+   * its share (client-voice-5). So: a start while another request is in
+   * flight is ignored, and a stop waits for it and then stops whatever it
+   * left. livekit-client already behaves this way (`pendingPublishing`);
+   * this makes the native engine behave the same from the page's side, and
+   * the shell guards itself as well (`video.rs`, `screen_asked`).
+   */
   async setScreenShareEnabled(on: boolean, choice?: ScreenChoice | null): Promise<void> {
+    if (on && this.#screenPending) return;
+    const ticket = ++this.#screenAsked;
+    if (!on) {
+      const pending = this.#screenPending;
+      if (pending) await pending;
+      // A later stop, or a change the transport reported, has it now.
+      if (ticket !== this.#screenAsked) return;
+    }
     if (on && videoNeedsSwitch(this.#state, "screen")) await this.switchEngineForThisCall();
     const transport = this.#transport;
     if (!transport) return;
+    this.#busy.screen += 1;
+    const request = transport.setScreenShareEnabled(
+      on,
+      this.#state.participants.length + 1,
+      choice ?? null,
+    );
+    const settled = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#screenPending = settled;
     try {
-      await transport.setScreenShareEnabled(
-        on,
-        this.#state.participants.length + 1,
-        choice ?? null,
-      );
+      await request;
+      if (ticket !== this.#screenAsked) return;
       this.#set({ screen: { on }, error: null });
     } catch (error) {
+      if (ticket !== this.#screenAsked) return;
       // A cancelled picker is not a failure worth a red line, but it is
       // the same DOMException a refusal raises, so the message covers
       // both and the state goes back to off either way.
       this.#set({ screen: { on: false }, error: on ? publishError(error) : null });
+    } finally {
+      this.#busy.screen -= 1;
+      if (this.#screenPending === settled) this.#screenPending = null;
     }
   }
 
@@ -618,6 +718,8 @@ class VoiceSession {
    * gesture for every transport that has a picker of its own.
    */
   toggleScreenShare(): Promise<void> {
+    // A press while a start is waiting on its picker is the same button
+    // pressed again, and is ignored there (setScreenShareEnabled).
     return this.setScreenShareEnabled(!this.#state.screen.on);
   }
 
@@ -811,10 +913,26 @@ class VoiceSession {
       // Switching rooms: out of the old one first, then in.
       await this.#teardown({ tellServer: true, error: null });
     }
+    // From here every await is followed by a check that nothing superseded
+    // this join (`JoinAttempt`) -- the pattern `#adopt` already had. Without
+    // it a hang-up during "Connecting…" only looked like one: the join woke up
+    // afterwards and carried on into the call, which on the native engine
+    // meant a live room and a published microphone that nothing on the page
+    // could end (client-voice-1).
+    this.#supersedeJoin(false);
+    const attempt: JoinAttempt = { live: true, leaveOnAbandon: false };
+    this.#attempt = attempt;
+    // The microphone is "starting" for the whole join: a press before its
+    // publish is recorded and applied by it (setMicMuted).
+    this.#micStarting = attempt;
+    const micAskedAtStart = this.#micAsked;
     if (!(await this.#acquireLock())) {
+      if (!attempt.live) return;
+      this.#supersedeJoin(false);
       this.#set({ ...IDLE, phase: "elsewhere", error: "You are in a call in another window." });
       return;
     }
+    if (!attempt.live) return;
     this.#leaving = false;
     this.#plan = plan;
     // Sealed unless the conversation says the server may read it: a
@@ -835,7 +953,15 @@ class VoiceSession {
     try {
       result = await plan.obtain();
     } catch (error) {
+      if (!attempt.live) return;
       await this.#teardown({ tellServer: false, error: joinError(error) });
+      return;
+    }
+    if (!attempt.live) {
+      // The server has made this device a participant (and, for a new call,
+      // is ringing), and the teardown that superseded this join did not know
+      // the call yet. A hang-up is a hang-up: say we left.
+      if (attempt.leaveOnAbandon) await leaveAbandoned(plan, result.call.id);
       return;
     }
     this.#set({ call: result.call });
@@ -849,7 +975,10 @@ class VoiceSession {
 
     let derived: { epoch: number; secret: Uint8Array } | null = null;
     if (e2ee) {
-      derived = await this.#deriveKeyWithPatience(plan.conversation.id, result.call.id);
+      derived = await this.#deriveKeyWithPatience(plan.conversation.id, result.call.id, attempt);
+      // Superseded while waiting: the teardown knew the call and told the
+      // server; nothing here to undo.
+      if (!attempt.live) return;
       if (!derived) {
         await this.#teardown({
           tellServer: true,
@@ -901,7 +1030,22 @@ class VoiceSession {
         this.#events(),
       );
     } catch (error) {
+      // A hang-up during the connect rejects it ("Client initiated
+      // disconnect" in the browser, an abort natively), and the hang-up's
+      // teardown has already done everything: a second one here was a
+      // second leave and, sometimes, a red error after a deliberate hang-up.
+      if (!attempt.live) {
+        await transport.disconnect();
+        return;
+      }
       await this.#teardown({ tellServer: true, error: connectError(error) });
+      return;
+    }
+    if (!attempt.live) {
+      // Connected after all, into a call already left: the teardown closed
+      // this transport while it connected, and closing it again is how a
+      // transport that could not tell finds out (idempotent otherwise).
+      await transport.disconnect();
       return;
     }
     // Back in the call whose room was being asked about: the room exists
@@ -939,21 +1083,47 @@ class VoiceSession {
     if (this.#state.ringing) this.#ringback = startRingback();
 
     // The microphone last, so a refused permission leaves a listen-only
-    // participant rather than no call at all.
-    const startMuted = shouldJoinMuted({
-      kind: plan.kind,
-      preference: prefs.joinMute,
-      serverJoinMuted: result.joinMuted,
-    });
+    // participant rather than no call at all. Published muted when joining
+    // muted: never unmuted first, not even for the round trip a publish then
+    // a mute took (Connor's decision on client-voice-15).
+    // A press during the join is the person's own answer and wins over the
+    // room's default.
+    const startMuted =
+      this.#micAsked !== micAskedAtStart
+        ? this.#micWanted
+        : shouldJoinMuted({
+            kind: plan.kind,
+            preference: prefs.joinMute,
+            serverJoinMuted: result.joinMuted,
+          });
+    this.#micWanted = startMuted;
+    this.#busy.mic += 1;
     try {
-      await transport.setMicrophoneEnabled(true);
-      if (startMuted) await transport.setMicrophoneEnabled(false);
+      await transport.startMicrophone(startMuted);
+      if (!attempt.live) return;
       this.#micFailure = null;
-      this.#set({ micMuted: startMuted });
+      // A mute or unmute pressed while the publish was in flight was only
+      // recorded (setMicMuted); apply the latest now, and any pressed while
+      // that was being applied after it.
+      let applied = startMuted;
+      while (this.#micWanted !== applied) {
+        const wanted = this.#micWanted;
+        await transport.setMicrophoneEnabled(!wanted);
+        if (!attempt.live) return;
+        applied = wanted;
+      }
+      this.#set({ micMuted: applied });
     } catch (error) {
+      if (!attempt.live) return;
       this.#micFailure = micFailure(error);
+      this.#micWanted = true;
       this.#set({ micMuted: true, error: micError(error) });
+    } finally {
+      this.#busy.mic -= 1;
+      if (this.#micStarting === attempt) this.#micStarting = null;
     }
+    if (!attempt.live) return;
+    this.#attempt = null;
 
     // Seed the chime's baseline before the first roster read that could
     // fire it: joining a call somebody is already on camera in is not an
@@ -1166,6 +1336,7 @@ class VoiceSession {
       camera: { on: call.camera, paused: false },
       screen: { on: call.screen },
     });
+    this.#micWanted = !call.micOpen;
     this.#refreshParticipants();
     this.#announce();
     if (this.#state.ringing) this.#ringback = startRingback();
@@ -1213,6 +1384,7 @@ class VoiceSession {
   async #deriveKeyWithPatience(
     conversationId: string,
     callId: string,
+    attempt: JoinAttempt,
   ): Promise<{ epoch: number; secret: Uint8Array } | null> {
     const handshake = e2e.handshake;
     if (!handshake) return null;
@@ -1224,7 +1396,9 @@ class VoiceSession {
       } catch {
         // Treated as "not yet": the sweep may be mid-join.
       }
-      if (Date.now() >= deadline || this.#leaving) return null;
+      // Superseded: the caller checks and stops, and "Setting up
+      // encryption…" must not land on the idle state the teardown left.
+      if (Date.now() >= deadline || !attempt.live) return null;
       this.#set({ error: "Setting up encryption…" });
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
@@ -1290,7 +1464,39 @@ class VoiceSession {
         this.#refreshParticipantsSoon();
         this.#nudgeGroup();
       },
+      localChanged: () => this.#onLocalChanged(),
     };
+  }
+
+  /**
+   * The transport says this device's own media changed. For a change the page
+   * made, the request's own settle already says so (`localMediaPatch` leaves
+   * a busy source alone); this is for the ones it did not -- a moderator's
+   * mute or stop-video, the browser's "Stop sharing" -- which before this
+   * left the buttons saying the opposite of what everybody else saw
+   * (client-voice-2). Each ticket is bumped so a request still settling
+   * cannot write over the reading.
+   */
+  #onLocalChanged(): void {
+    const transport = this.#transport;
+    if (!transport || this.#leaving) return;
+    const patch = localMediaPatch({
+      reading: transport.localMedia(),
+      state: this.#state,
+      busy: {
+        mic: this.#busy.mic > 0 || this.#micStarting?.live === true,
+        camera: this.#busy.camera > 0,
+        screen: this.#busy.screen > 0 || this.#screenPending !== null,
+      },
+    });
+    if (!patch) return;
+    if (patch.micMuted !== undefined) {
+      this.#micAsked += 1;
+      this.#micWanted = patch.micMuted;
+    }
+    if (patch.camera) this.#cameraAsked += 1;
+    if (patch.screen) this.#screenAsked += 1;
+    this.#set(patch);
   }
 
   /**
@@ -1469,17 +1675,34 @@ class VoiceSession {
       if (decision === "nothing") return;
       const transport = this.#transport;
       if (!transport) return;
+      // A request like any other: only the latest may say what the camera
+      // is. A press made while the resume opened the device used to be
+      // overwritten by the resume's settle, and a press still in flight when
+      // the pause landed by the pause's (client-voice-12).
+      const ticket = ++this.#cameraAsked;
+      this.#busy.camera += 1;
+      const done = (): void => {
+        this.#busy.camera -= 1;
+      };
       if (decision === "pause") {
         void transport
           .setCameraEnabled(false, null)
-          .then(() => this.#set({ camera: { on: true, paused: true } }))
-          .catch(() => {});
+          .then(() => {
+            if (ticket === this.#cameraAsked) this.#set({ camera: { on: true, paused: true } });
+          })
+          .catch(() => {})
+          .finally(done);
         return;
       }
       void transport
         .setCameraEnabled(true, loadVoicePrefs().cameraDeviceId)
-        .then(() => this.#set({ camera: { on: true, paused: false } }))
-        .catch(() => this.#set({ camera: { on: false, paused: false } }));
+        .then(() => {
+          if (ticket === this.#cameraAsked) this.#set({ camera: { on: true, paused: false } });
+        })
+        .catch(() => {
+          if (ticket === this.#cameraAsked) this.#set({ camera: { on: false, paused: false } });
+        })
+        .finally(done);
     };
     document.addEventListener("visibilitychange", handler);
     this.#onVisibility = () => document.removeEventListener("visibilitychange", handler);
@@ -1532,7 +1755,10 @@ class VoiceSession {
       if (event.type !== "call_state" || event.callId !== callId) return;
       if (event.error === "VIDEO_OVER_GRANT") {
         // The SFU muted the track; there is nothing to undo locally except
-        // the button, which must not keep saying the camera is on.
+        // the button, which must not keep saying the camera is on -- and a
+        // request still settling must not say it again.
+        this.#cameraAsked += 1;
+        this.#screenAsked += 1;
         this.#set({
           camera: { on: false, paused: false },
           screen: { on: false },
@@ -1608,6 +1834,9 @@ class VoiceSession {
     keepPlan?: boolean;
   }): Promise<void> {
     this.#leaving = true;
+    // A join still under way stops at its next check (`JoinAttempt`).
+    this.#supersedeJoin(input.tellServer);
+    this.#micWanted = false;
     this.#micFailure = null;
     this.#encryptionErrors = 0;
     this.#lastEncryptionError = null;
@@ -1686,9 +1915,33 @@ class VoiceSession {
     this.#ringback = null;
   }
 
+  /** Stop the join under way, if any, at its next check. `tellServer` is the
+   *  superseding teardown's: whether a participant row the join obtained
+   *  after that teardown read the state should be left too. */
+  #supersedeJoin(tellServer: boolean): void {
+    const attempt = this.#attempt;
+    this.#attempt = null;
+    if (this.#micStarting === attempt) this.#micStarting = null;
+    if (!attempt) return;
+    attempt.live = false;
+    attempt.leaveOnAbandon = tellServer;
+  }
+
   #set(patch: Partial<VoiceState>): void {
     this.#state = { ...this.#state, ...patch };
     for (const listener of this.#listeners) listener();
+  }
+}
+
+/** The leave for a join abandoned right after the server admitted it: the
+ *  call by its id, or the room by its channel, as `#teardown` would have. */
+async function leaveAbandoned(plan: JoinPlan, callId: string): Promise<void> {
+  try {
+    if (plan.kind === "room") await leaveVoiceRoom(plan.conversation.id);
+    else await leaveCall(callId);
+  } catch {
+    // The SFU's departure webhook cannot heal this one (nothing connected);
+    // the server's sweep does.
   }
 }
 

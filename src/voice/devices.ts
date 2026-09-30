@@ -12,6 +12,14 @@
 // checked against the live list before it is used (transport-rules.ts's
 // `knownDeviceId`), so flipping the engine on or off falls back to the
 // default device rather than failing a call.
+//
+// `native`, where a function takes it, is which engine's list is meant.
+// Left out it is the preference (`nativeMediaSelected`), which is right
+// between calls and in Settings. A picker inside a call passes the engine
+// that call is actually on (the session's `nativeEngine`): after an
+// engine-override switch the call runs in the webview while the preference
+// still says native, and a picker listing the shell's ids offered devices
+// the live transport could not open (client-voice-13).
 
 import { nativeMediaSelected, nativeVideoAvailable } from "./native-media";
 
@@ -27,7 +35,10 @@ export type VideoDevice = AudioDevice;
 const NATIVE_DEVICES_EVENT = "voice-devices";
 
 export function mediaSupported(): boolean {
-  if (nativeMediaSelected()) return true;
+  return nativeMediaSelected() || browserMediaSupported();
+}
+
+function browserMediaSupported(): boolean {
   return (
     typeof navigator !== "undefined" &&
     "mediaDevices" in navigator &&
@@ -35,8 +46,8 @@ export function mediaSupported(): boolean {
   );
 }
 
-export function supportsSpeakerSelection(): boolean {
-  if (nativeMediaSelected()) return true;
+export function supportsSpeakerSelection(native = nativeMediaSelected()): boolean {
+  if (native) return true;
   return (
     typeof HTMLMediaElement !== "undefined" &&
     "setSinkId" in HTMLMediaElement.prototype
@@ -52,9 +63,9 @@ async function listNativeDevices(): Promise<AudioDevices> {
   }
 }
 
-export async function listAudioDevices(): Promise<AudioDevices> {
-  if (nativeMediaSelected()) return listNativeDevices();
-  if (!mediaSupported()) return { inputs: [], outputs: [] };
+export async function listAudioDevices(native = nativeMediaSelected()): Promise<AudioDevices> {
+  if (native) return listNativeDevices();
+  if (!browserMediaSupported()) return { inputs: [], outputs: [] };
   let devices: MediaDeviceInfo[];
   try {
     devices = await navigator.mediaDevices.enumerateDevices();
@@ -71,7 +82,7 @@ export async function listAudioDevices(): Promise<AudioDevices> {
     inputs: devices
       .filter((device) => device.kind === "audioinput")
       .map((device) => named(device, `Microphone ${(inputs += 1)}`)),
-    outputs: supportsSpeakerSelection()
+    outputs: supportsSpeakerSelection(false)
       ? devices
           .filter((device) => device.kind === "audiooutput")
           .map((device) => named(device, `Speaker ${(outputs += 1)}`))
@@ -93,8 +104,8 @@ export async function listAudioDevices(): Promise<AudioDevices> {
  * Labels there are empty until a camera permission has been granted once,
  * the same as microphones, so the picker says "Camera 1" until then.
  */
-export async function listVideoDevices(): Promise<VideoDevice[]> {
-  if (nativeVideoAvailable() && nativeMediaSelected()) {
+export async function listVideoDevices(native = nativeMediaSelected()): Promise<VideoDevice[]> {
+  if (nativeVideoAvailable() && native) {
     // The shell lists its own cameras (voice/video.rs): real labels, no
     // permission needed, the same ids the native publish takes.
     try {
@@ -126,8 +137,11 @@ export async function listVideoDevices(): Promise<VideoDevice[]> {
 }
 
 /** Fires when a device is plugged or unplugged. Returns the unsubscribe. */
-export function onDeviceChange(listener: () => void): () => void {
-  if (nativeMediaSelected()) {
+export function onDeviceChange(
+  listener: () => void,
+  native = nativeMediaSelected(),
+): () => void {
+  if (native) {
     // The shell watches the device module and says when the list moved;
     // no page timer, so this works while a hidden page's timers are
     // throttled too.
@@ -143,7 +157,7 @@ export function onDeviceChange(listener: () => void): () => void {
       unlisten?.();
     };
   }
-  if (!mediaSupported()) return () => {};
+  if (!browserMediaSupported()) return () => {};
   navigator.mediaDevices.addEventListener("devicechange", listener);
   return () => navigator.mediaDevices.removeEventListener("devicechange", listener);
 }
