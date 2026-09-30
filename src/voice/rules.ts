@@ -5,6 +5,7 @@
 // (session.ts, hooks.ts) stay thin.
 
 import type { Call, CallKind } from "../api/types";
+import type { ScreenSource } from "./transport";
 
 /** The two video sources a call can carry, spelled the way the server's
  *  `VideoLimits` spells them. The SDK's own enum never leaves
@@ -992,4 +993,73 @@ export function tilesDrawAbovePage(state: {
   nativeEngine: boolean;
 }): boolean {
   return state.nativeEngine && state.capabilities.renderVideo;
+}
+
+// -- the server's over-grant mute --------------------------------------------
+
+/**
+ * Which of this page's video sources a `VIDEO_OVER_GRANT` frame turns off.
+ *
+ * The server mutes exactly one track -- the one the `track_published`
+ * webhook found over the grant -- and since 2026-09-29 says which beside
+ * the error. Turning both off when only one was muted is the bug this
+ * answers (client-voice-6): a camera over its ceiling during a share took
+ * the self screen tile down and set the button back to "Share screen" while
+ * the screen was still published and seen by everybody. A frame with no
+ * source is an older server's, and keeps the old both-off: it cannot say
+ * which, and "off" is the safe reading of a button.
+ */
+export function overGrantStops(source: VideoSource | undefined): {
+  camera: boolean;
+  screen: boolean;
+  line: string;
+} {
+  if (source === "camera") {
+    return {
+      camera: true,
+      screen: false,
+      line: "Your camera exceeds this call's limit and was stopped.",
+    };
+  }
+  if (source === "screen") {
+    return {
+      camera: false,
+      screen: true,
+      line: "Your screen share exceeds this call's limit and was stopped.",
+    };
+  }
+  return { camera: true, screen: true, line: "Your video exceeds this call's limit and was stopped." };
+}
+
+// -- the share-screen press --------------------------------------------------
+
+/** What a "Share screen" press does, once the transport has been asked. */
+export type ScreenPress =
+  | { action: "stop" }
+  | { action: "start" }
+  | { action: "pick"; sources: ScreenSource[] };
+
+/**
+ * The one decision behind every way of asking to share a screen: the call
+ * controls' button and the keyboard shortcut in `Chat.tsx` made it twice
+ * until 2026-09-29, and a copy that drifts is a shortcut that shares
+ * nothing in particular on Windows.
+ *
+ * Stopping never asks the transport anything. Otherwise the transport's
+ * list decides (CLAUDE.md, `src/voice/`): empty means it opens a picker of
+ * its own -- `getDisplayMedia`, the macOS sheet -- and the press is the
+ * whole gesture; non-empty means it has none -- the shell on Windows -- so
+ * the page draws `ScreenPicker` and the share waits for a choice. Never a
+ * platform check.
+ *
+ * Async only because the list is; `listSources` is the session's
+ * `screenSources`, which answers empty rather than throwing.
+ */
+export async function decideScreenPress(
+  sharing: boolean,
+  listSources: () => Promise<ScreenSource[]>,
+): Promise<ScreenPress> {
+  if (sharing) return { action: "stop" };
+  const sources = await listSources();
+  return sources.length === 0 ? { action: "start" } : { action: "pick", sources };
 }

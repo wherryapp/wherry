@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import type { Call } from "../api/types";
 import {
   audioPresetFor,
+  decideScreenPress,
+  overGrantStops,
   callerIsRinging,
   callKeyContext,
   cameraOnVisibility,
@@ -892,4 +894,38 @@ test("localMediaPatch: a source the page is changing is left to that change", ()
     }),
     { camera: { on: false, paused: false } },
   );
+});
+
+test("an over-grant frame turns off only the source the server muted", () => {
+  const camera = overGrantStops("camera");
+  assert.deepEqual([camera.camera, camera.screen], [true, false]);
+  assert.match(camera.line, /camera/);
+  const screen = overGrantStops("screen");
+  assert.deepEqual([screen.camera, screen.screen], [false, true]);
+  assert.match(screen.line, /screen share/);
+  // An older server names no source: both off, in the old words.
+  assert.deepEqual(overGrantStops(undefined), {
+    camera: true,
+    screen: true,
+    line: "Your video exceeds this call's limit and was stopped.",
+  });
+});
+
+test("a share press stops without asking, starts where the transport picks, and picks otherwise", async () => {
+  let asked = 0;
+  const list = (sources: { id: string; title: string; isScreen: boolean }[]) => () => {
+    asked += 1;
+    return Promise.resolve(sources);
+  };
+  const windows = [{ id: "screen:1", title: "Display 1", isScreen: true }];
+
+  assert.deepEqual(await decideScreenPress(true, list(windows)), { action: "stop" });
+  assert.equal(asked, 0);
+
+  assert.deepEqual(await decideScreenPress(false, list([])), { action: "start" });
+  assert.deepEqual(await decideScreenPress(false, list(windows)), {
+    action: "pick",
+    sources: windows,
+  });
+  assert.equal(asked, 2);
 });

@@ -109,25 +109,15 @@ export function CallControls({
   } | null>(null);
 
   /**
-   * Share screen, on a transport that has no picker of its own.
-   *
-   * The ask decides: an empty list means the transport opens something
-   * itself (`getDisplayMedia`, the macOS sheet) and the press is the whole
-   * gesture, exactly as before. A real list means there is nothing to open
-   * — Windows in the shell — so ours goes up and the share waits for a
-   * choice. Stopping never asks.
+   * Share screen, or stop. The session decides (`pressScreenShare`, the
+   * same decision the keyboard shortcut in `Chat.tsx` takes): sources come
+   * back only where the transport has no picker of its own — Windows in
+   * the shell — and then ours goes up, anchored to this button, and the
+   * share waits for a choice.
    */
   const onScreenPress = async (anchor: HTMLElement): Promise<void> => {
-    if (state.screen.on) {
-      await voice.setScreenShareEnabled(false);
-      return;
-    }
-    const sources = await voice.screenSources();
-    if (sources.length === 0) {
-      await voice.toggleScreenShare();
-      return;
-    }
-    setPicking({ sources, anchor });
+    const sources = await voice.pressScreenShare();
+    if (sources) setPicking({ sources, anchor });
   };
 
   return (

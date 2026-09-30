@@ -158,12 +158,13 @@
 //                                    macOS shell, which no DevTools protocol
 //                                    can drive. See maybeDevSteps. A `+` in a
 //                                    key chord must be written %2B.
-//   ?devnomic=1                      The native transport answers
-//                                    setMicrophoneEnabled(true) with
-//                                    `no_microphone` without asking the shell:
-//                                    a listen-only call that never opens the
-//                                    device (for a machine whose consent
-//                                    prompt nobody can answer).
+//   ?devnomic=1                      The native transport answers the
+//                                    join's microphone (startMicrophone,
+//                                    muted or not) and every later unmute
+//                                    with `no_microphone` without asking the
+//                                    shell: a listen-only call that never
+//                                    opens the device (for a machine whose
+//                                    consent prompt nobody can answer).
 //
 //   VITE_DEVLOGIN / VITE_DEVCALL     The same two, from the dev server's
 //   VITE_TRACE / VITE_DEVUI          environment rather than the URL, for a
@@ -895,10 +896,18 @@ async function tileReading(): Promise<Record<string, unknown>> {
 }
 
 /**
- * `?devnomic=1` (dev only, desktop shell): the native transport answers
- * `setMicrophoneEnabled(true)` with the error the shell gives on a machine
- * with no input device (`no_microphone`, a `NotFoundError`) without asking
- * the shell, so the session takes its listen-only path.
+ * `?devnomic=1` (dev only, desktop shell): the native transport answers the
+ * microphone with the error the shell gives on a machine with no input
+ * device (`no_microphone`, a `NotFoundError`) without asking the shell, so
+ * the session takes its listen-only path.
+ *
+ * Two entry points, both patched. The join's first publish is
+ * `startMicrophone(muted)`: unmuted it is `setMicrophoneEnabled(true)`, but a
+ * muted join (the room's default, or the person's preference) goes straight
+ * to `voice_set_mic { publishMuted }`, which the second patch alone let
+ * through, and which publishes a track. `setMicrophoneEnabled(true)` is every
+ * later unmute. `setMicrophoneEnabled(false)` still reaches the shell. So
+ * under this flag no call publishes a microphone at all, muted or not.
  *
  * Added 2026-09-27 for a Mac whose microphone consent prompt was pending and
  * could not be answered (the screen was locked): every native call's first
@@ -913,14 +922,21 @@ async function maybeDevNoMic(params: URLSearchParams): Promise<void> {
     const { NativeTransport } = await import("./voice/transport-native");
     const proto = NativeTransport.prototype as unknown as {
       setMicrophoneEnabled: (on: boolean) => Promise<void>;
+      startMicrophone: (muted: boolean) => Promise<void>;
+    };
+    const refuse = (what: string): Promise<void> => {
+      record("call", { method: "__dev-nomic", args: [{ refused: what }] });
+      const error = new Error("devnomic: no microphone for this run");
+      error.name = "NotFoundError";
+      return Promise.reject(error);
     };
     const original = proto.setMicrophoneEnabled;
     proto.setMicrophoneEnabled = function (this: unknown, on: boolean): Promise<void> {
       if (!on) return original.call(this, on);
-      record("call", { method: "__dev-nomic", args: [{ refused: "setMicrophoneEnabled(true)" }] });
-      const error = new Error("devnomic: no microphone for this run");
-      error.name = "NotFoundError";
-      return Promise.reject(error);
+      return refuse("setMicrophoneEnabled(true)");
+    };
+    proto.startMicrophone = function (muted: boolean): Promise<void> {
+      return refuse(`startMicrophone(${muted ? "muted" : "unmuted"})`);
     };
     record("call", { method: "__dev-nomic", args: [{ installed: true }] });
   } catch (error) {

@@ -58,11 +58,13 @@ import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
 import {
   audioPresetFor,
   callerIsRinging,
+  decideScreenPress,
   cameraOnVisibility,
   grantLine,
   localMediaPatch,
   micStatus,
   nextCameraId,
+  overGrantStops,
   shouldJoinMuted,
   liveVideoKeys,
   paceSubscription,
@@ -292,6 +294,9 @@ export type VoiceDiagnostics = {
 };
 
 const LOCK_NAME = "messenger.voice";
+/** A join where the browser has no Web Locks. The same words as the sync
+ *  engine's, which will not start there either. */
+const NO_WEB_LOCKS = "This browser is too old for calls. Update it to Safari 15.4 or later.";
 /** How long a page picking up a call waits for the reloaded page's hold on
  *  the voice lock to drain. A document's locks go with the document, but
  *  the new one can be running before that has happened. */
@@ -710,17 +715,23 @@ class VoiceSession {
   }
 
   /**
-   * Stop sharing, or start where the transport picks for itself.
+   * A "Share screen" press from anywhere -- the call controls' button, the
+   * keyboard shortcut -- decided once (rules.ts `decideScreenPress`).
    *
-   * Where it does not — the shell on Windows, whose `screenSources` is a
-   * real list — the caller opens `ScreenPicker` and calls
-   * `setScreenShareEnabled` with the choice instead. This stays the whole
-   * gesture for every transport that has a picker of its own.
+   * Stops, or starts where the transport picks for itself, and answers
+   * null: the press was the whole gesture. Answers the sources where it
+   * does not, and the caller draws `ScreenPicker` over them and calls
+   * `setScreenShareEnabled(true, choice)`; a caller that cannot draw one
+   * just now (Chat under a ring) drops the press. A press while a start is
+   * waiting on its picker is the same button pressed again, and is ignored
+   * there (setScreenShareEnabled). Replaces `toggleScreenShare`, which on
+   * Windows asked the shell to share nothing in particular.
    */
-  toggleScreenShare(): Promise<void> {
-    // A press while a start is waiting on its picker is the same button
-    // pressed again, and is ignored there (setScreenShareEnabled).
-    return this.setScreenShareEnabled(!this.#state.screen.on);
+  async pressScreenShare(): Promise<ScreenSource[] | null> {
+    const press = await decideScreenPress(this.#state.screen.on, () => this.screenSources());
+    if (press.action === "pick") return press.sources;
+    await this.setScreenShareEnabled(press.action === "start");
+    return null;
   }
 
   /**
@@ -926,10 +937,15 @@ class VoiceSession {
     // publish is recorded and applied by it (setMicMuted).
     this.#micStarting = attempt;
     const micAskedAtStart = this.#micAsked;
-    if (!(await this.#acquireLock())) {
+    const lock = await this.#acquireLock();
+    if (lock !== true) {
       if (!attempt.live) return;
       this.#supersedeJoin(false);
-      this.#set({ ...IDLE, phase: "elsewhere", error: "You are in a call in another window." });
+      this.#set(
+        lock === "unsupported"
+          ? { ...IDLE, error: NO_WEB_LOCKS }
+          : { ...IDLE, phase: "elsewhere", error: "You are in a call in another window." },
+      );
       return;
     }
     if (!attempt.live) return;
@@ -1166,7 +1182,11 @@ class VoiceSession {
     // voice lock. Not this one yet: the reloaded page's hold drains with its
     // document. A lock that stays held is another window's, and so is the
     // call -- nothing here touches it.
-    if (!(await this.#acquireLock(lockWaitMs))) return "lock-busy";
+    const lock = await this.#acquireLock(lockWaitMs);
+    // Unsupported: nothing here can tell whose call it is, so it is left
+    // alone, and not retried -- asking again will not add the API.
+    if (lock === "unsupported") return "settled";
+    if (!lock) return "lock-busy";
     const decision = orphanDecision({ orphan: found.call, userId: this.#callHolder });
     if (decision.kind === "adopt") {
       await this.#adopt(found, decision.handoff);
@@ -1348,7 +1368,7 @@ class VoiceSession {
     joined();
   }
 
-  async #acquireLock(waitMs = 0): Promise<boolean> {
+  async #acquireLock(waitMs = 0): Promise<boolean | "unsupported"> {
     // Already held by this session, so do not ask again.
     //
     // The engine switch (`switchEngineForThisCall`) tears the transport
@@ -1359,7 +1379,11 @@ class VoiceSession {
     // happening in another window and the switch failed every time. Found by
     // D-28 on 2026-09-08, the first run of that row.
     if (this.#releaseLock) return true;
-    if (typeof navigator === "undefined" || !("locks" in navigator)) return true;
+    // Web Locks are a hard requirement (Safari and iOS 15.4+; the sync
+    // engine will not start without them either, `hasWebLocks`). Without
+    // one there is no telling whether another window of this profile holds
+    // a call, so a join fails plainly rather than running uncoordinated.
+    if (typeof navigator === "undefined" || !navigator.locks) return "unsupported";
     // `waitMs`: queue for the lock that long, rather than asking once.
     const options: LockOptions =
       waitMs > 0 && typeof AbortSignal.timeout === "function"
@@ -1755,14 +1779,17 @@ class VoiceSession {
       if (event.type !== "call_state" || event.callId !== callId) return;
       if (event.error === "VIDEO_OVER_GRANT") {
         // The SFU muted the track; there is nothing to undo locally except
-        // the button, which must not keep saying the camera is on -- and a
-        // request still settling must not say it again.
-        this.#cameraAsked += 1;
-        this.#screenAsked += 1;
+        // the button, which must not keep saying it is on -- and a request
+        // still settling must not say it again. Only the source the server
+        // muted: the other is still published and still seen
+        // (client-voice-6). No source is an older server's frame, and both.
+        const stops = overGrantStops(event.source);
+        if (stops.camera) this.#cameraAsked += 1;
+        if (stops.screen) this.#screenAsked += 1;
         this.#set({
-          camera: { on: false, paused: false },
-          screen: { on: false },
-          error: "Your video exceeds this call's limit and was stopped.",
+          ...(stops.camera ? { camera: { on: false, paused: false } } : {}),
+          ...(stops.screen ? { screen: { on: false } } : {}),
+          error: stops.line,
         });
         return;
       }
