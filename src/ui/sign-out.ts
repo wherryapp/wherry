@@ -7,15 +7,17 @@
 // so it lives here and not in kit.tsx, which carries no app wording.
 //
 // Not used by VerifyGate's Sign out: that is the gate's only exit, with
-// nothing to lose, so it does not ask. Settings' Devices list ("Sign out" on
-// this device, "Revoke" on another) does not ask either, pending a decision;
-// a row there revokes the device rather than calling the logout route, so it
-// would export SIGN_OUT_CONFIRM and ask through its own `useConfirm`.
+// nothing to lose, so it does not ask. Settings' Devices list: "Sign out" on
+// this device asks in the same words (it is the same action, by way of the
+// revoke route, so Settings asks through its own `useConfirm` with
+// SIGN_OUT_CONFIRM); "Revoke" on another device deliberately does not ask
+// (decided 2026-09-30): revoking is the fast security action for a lost
+// phone, and the device can sign in again.
 
 import { useCallback, type ReactNode } from "react";
 import { useConfirm } from "./kit";
 
-const SIGN_OUT_CONFIRM = {
+export const SIGN_OUT_CONFIRM = {
   message: "Sign out of this device?",
   confirmLabel: "Sign out",
 } as const;

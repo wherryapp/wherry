@@ -57,7 +57,7 @@ import {
   subscribeNotificationPrefs,
 } from "../sync/native-push-prefs";
 import { useAnnouncements, useAvatarUrl } from "./hooks";
-import { useConfirmedSignOut } from "./sign-out";
+import { SIGN_OUT_CONFIRM, useConfirmedSignOut } from "./sign-out";
 import { prepareAvatar } from "./media";
 import { HuePicker } from "./HuePicker";
 import { RecoveryCodeScreen } from "./RecoveryCodeScreen";
@@ -78,6 +78,7 @@ import {
   Note,
   Panel,
   PanelSection,
+  useConfirm,
 } from "./kit";
 
 
@@ -242,9 +243,12 @@ export function Settings({
   const [features, setFeatures] = useState({ voice: false, voiceQuality: false });
 
   // Bottom-of-page sign-out asks first, in the account menu's words
-  // (ui/sign-out.ts). The Devices list's "Sign out" (this device) and
-  // "Revoke" do not ask yet; whether they should is not decided.
+  // (ui/sign-out.ts), and so does the Devices row for this device, which is
+  // the same action by way of the revoke route. "Revoke" on another device
+  // does not ask, on purpose (see sign-out.ts).
   const { requestSignOut, signOutDialog } = useConfirmedSignOut(onSignedOut);
+  const { confirm: confirmThisDeviceSignOut, confirmDialog: thisDeviceDialog } =
+    useConfirm();
   // A recovery code just minted by RecoveryCodeSection, held only until the
   // person confirms they have written it down. Never persisted: leaving
   // Settings before Continue loses it, and the answer to that is to make
@@ -741,7 +745,17 @@ export function Settings({
                     <Button
                       variant="ghost-danger"
                       size="sm"
-                      onClick={() => void revoke(device)}
+                      onClick={() => {
+                        if (!device.current) {
+                          void revoke(device);
+                          return;
+                        }
+                        void confirmThisDeviceSignOut(SIGN_OUT_CONFIRM).then(
+                          (ok) => {
+                            if (ok) void revoke(device);
+                          },
+                        );
+                      }}
                       className="shrink-0 hover:underline"
                     >
                       {device.current ? "Sign out" : "Revoke"}
@@ -826,6 +840,7 @@ export function Settings({
             dialog's own back layer sits above the Panel's, so Escape or Back
             cancels only the question and leaves Settings open. */}
         {signOutDialog}
+        {thisDeviceDialog}
 
         {/* Below sign-out, not beside it -- this is trivia, not a control.
             Absent entirely before tagging starts (APP_VERSION is "unknown"
