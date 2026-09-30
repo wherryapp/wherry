@@ -6,10 +6,13 @@
 //
 // Where it lives, and why it is wrapped: the private key and the auth secret
 // are sealed with an AES-GCM key held in the Android Keystore, and only the
-// sealed bytes go in SharedPreferences. The app's manifest leaves
-// `allowBackup` at its default (true), so SharedPreferences travel into a
-// cloud backup or a device-to-device transfer; a Keystore key never does. A
-// restored copy therefore cannot be unsealed, which is the point: `load`
+// sealed bytes go in SharedPreferences. The app itself is now out of Auto
+// Backup and device transfer (`allowBackup="false"` and its data-extraction
+// rules, hand edit 15), but that is a hand edit `tauri android init` would
+// erase, and this file does not depend on it: without it SharedPreferences
+// travel into a cloud backup or a device-to-device transfer, and a Keystore
+// key never does. A restored copy therefore cannot be unsealed, which is the
+// point: `load`
 // then mints a fresh pair, the next `status` reports the new public half, and
 // the page's once-per-launch registration hands it to the server (hunk H5).
 // Rings sent to the old key in between are lost, which is the right failure

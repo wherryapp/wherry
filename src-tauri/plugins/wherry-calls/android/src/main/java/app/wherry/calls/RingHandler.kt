@@ -290,11 +290,6 @@ internal object RingHandler {
         RingLaunch.ringEnded(callId, answered = reason == "answered")
     }
 
-    /** The ring this device's Answer or Decline acted on, for the decline
-     *  token (CallActionReceiver) and the conversation (the Answer). */
-    @Synchronized
-    fun known(callId: String): Ring? = rings[callId]
-
     /** Sign-out: every ring still posted goes, and nothing of it stays. */
     @Synchronized
     fun reset(context: Context) {
