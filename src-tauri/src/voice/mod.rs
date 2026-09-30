@@ -867,8 +867,16 @@ fn roster(room: &Room) -> Roster {
 
 /// Everything the pump tells the webview. `session` is on every variant so
 /// the listener can drop what is not its own.
+///
+/// Two renames, because serde keeps them apart: `rename_all` names the
+/// *variants* (the `kind` tag, snake_case: `video_changed`), and
+/// `rename_all_fields` names every variant's *fields* (camelCase, as the page
+/// reads them: `micOpen`). Without the second a multi-word field goes out in
+/// snake_case and the page reads `undefined` -- which is how a moderator's
+/// mute once never reached the button (mac-1001 F1). `event_wire_names` pins
+/// every variant's keys to what `transport-native.ts` reads.
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 enum Event {
   /// The roster changed: somebody joined or left, a track came or went, a
   /// mute or encryption status moved. Carries the whole snapshot.
@@ -2727,6 +2735,65 @@ mod route_tests {
     let text = route_of(&stats).expect("a route").to_string();
     for leak in ["203.0.113.7", "50000", "turn.example.test", "turns:"] {
       assert!(!text.contains(leak), "{leak} leaked into {text}");
+    }
+  }
+}
+
+/// The `voice` event's wire names, as `transport-native.ts`'s `ShellEvent`
+/// reads them: the `kind` tag in snake_case, every field in camelCase. One
+/// case per variant, so a field added in snake_case fails here rather than
+/// reading `undefined` on the page.
+#[cfg(test)]
+mod event_wire_tests {
+  use super::{Envelope, Event, Roster};
+  use serde_json::{json, Value};
+
+  fn wire(event: Event) -> Value {
+    serde_json::to_value(Envelope { session: 7, event }).expect("an event serialises")
+  }
+
+  fn empty_roster() -> Roster {
+    Roster { participants: Vec::new(), local_level: 0.0 }
+  }
+
+  #[test]
+  fn event_wire_names() {
+    let roster = json!({ "participants": [], "localLevel": 0.0 });
+    let cases: Vec<(Event, Value)> = vec![
+      (Event::Roster { roster: empty_roster() }, json!({ "session": 7, "kind": "roster", "roster": roster })),
+      (Event::Speakers { roster: empty_roster() }, json!({ "session": 7, "kind": "speakers", "roster": roster })),
+      (Event::ParticipantJoined, json!({ "session": 7, "kind": "participant_joined" })),
+      (Event::ParticipantLeft, json!({ "session": 7, "kind": "participant_left" })),
+      (
+        Event::Connection { state: "connected".into(), quality: "good".into(), reason: None },
+        json!({ "session": 7, "kind": "connection", "state": "connected", "quality": "good" }),
+      ),
+      (
+        Event::Connection {
+          state: "disconnected".into(),
+          quality: "lost".into(),
+          reason: Some("ServerShutdown".into()),
+        },
+        json!({
+          "session": 7, "kind": "connection", "state": "disconnected", "quality": "lost",
+          "reason": "ServerShutdown",
+        }),
+      ),
+      (
+        Event::Encryption { identity: "u1".into(), state: "MissingKey".into() },
+        json!({ "session": 7, "kind": "encryption", "identity": "u1", "state": "MissingKey" }),
+      ),
+      (Event::VideoChanged, json!({ "session": 7, "kind": "video_changed" })),
+      (Event::Token { token: "t".into() }, json!({ "session": 7, "kind": "token", "token": "t" })),
+      // The only multi-word field today, and the one that went out as
+      // `mic_open` (mac-1001 F1).
+      (
+        Event::Local { mic_open: false, camera: true, screen: false },
+        json!({ "session": 7, "kind": "local", "micOpen": false, "camera": true, "screen": false }),
+      ),
+    ];
+    for (event, expected) in cases {
+      assert_eq!(wire(event), expected);
     }
   }
 }
