@@ -25,7 +25,8 @@
 // exception is `enqueueSampleBuffer:`, which AVFoundation documents as
 // callable from any thread and which runs on the frame task, because a
 // main-thread hop per frame at 30 fps times N tiles is exactly the kind of
-// tax (a) paid.
+// tax (a) paid. The frame task sends to the layer only while holding the
+// tile's `views` lock, which `destroy` takes before releasing the layer.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -414,27 +415,41 @@ impl Tile {
           logged_kind = true;
           log::info!("voice: tile frames arrive as {:?}", frame.buffer.buffer_type());
         }
-        let layer = match views.lock().unwrap().as_ref() {
-          Some(views) => views.layer,
-          None => break,
-        };
         if frame.rotation != rotation {
           rotation = frame.rotation;
           let transform = rotation_transform(rotation);
+          // The layer is looked up inside the closure, not captured: the
+          // closure can run after a destroy has released it.
+          let views = views.clone();
           let _ = app.run_on_main_thread(move || unsafe {
-            let layer = layer as *mut AnyObject;
-            let _: () = msg_send![layer, setAffineTransform: transform];
+            if let Some(views) = views.lock().unwrap().as_ref() {
+              let _: () = msg_send![views.layer as *mut AnyObject, setAffineTransform: transform];
+            }
           });
         }
-        // SAFETY: the layer pointer is retained for the tile's life and
-        // enqueueSampleBuffer: is documented safe from any thread.
-        unsafe {
-          let layer = layer as *mut AnyObject;
-          let ready: bool = msg_send![layer, isReadyForMoreMediaData];
+        // The layer is touched only while `views` is locked, and `destroy`
+        // takes the views out under the same lock before releasing them, so
+        // a destroy can never free the layer under a message sent here. The
+        // lock is held for the layer calls alone -- the readiness check, and
+        // later the enqueue and its status -- and not across the plane copy,
+        // so a main-thread `set_rect` or `destroy` waits for a message send
+        // or two, never a frame's conversion. (Retaining the layer for the
+        // frame instead would let the frame task's release be the last one,
+        // deallocating an AppKit-owned layer off the main thread.)
+        {
+          let guard = views.lock().unwrap();
+          let Some(held) = guard.as_ref() else { break };
+          // SAFETY: the layer is alive while `views` holds it and we hold the
+          // lock; isReadyForMoreMediaData is safe from any thread.
+          let ready: bool = unsafe { msg_send![held.layer as *mut AnyObject, isReadyForMoreMediaData] };
           if !ready {
             dropped.fetch_add(1, Ordering::Relaxed);
             continue;
           }
+        }
+        // SAFETY: CoreVideo and CoreMedia objects created and released here;
+        // the layer is reached only under the `views` lock, below.
+        unsafe {
           let (width, height) = (frame.buffer.width(), frame.buffer.height());
           if width == 0 || height == 0 {
             continue;
@@ -530,6 +545,13 @@ impl Tile {
               CFDictionarySetValue(first, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
             }
           }
+          let guard = views.lock().unwrap();
+          let Some(held) = guard.as_ref() else {
+            CFRelease(sample);
+            break;
+          };
+          let layer = held.layer as *mut AnyObject;
+          // enqueueSampleBuffer: is documented safe from any thread.
           let _: () = msg_send![layer, enqueueSampleBuffer: sample as *mut AnyObject];
           CFRelease(sample);
           let n = frames.fetch_add(1, Ordering::Relaxed) + 1;
