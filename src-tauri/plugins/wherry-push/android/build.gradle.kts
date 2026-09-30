@@ -26,6 +26,15 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+
+    // LabelStoreTest's failure paths reach android.util.Log.w, which --
+    // like every unstubbed Android platform method -- throws "not mocked"
+    // under testDebugUnitTest by default. Returning quietly instead (still
+    // no Robolectric) is enough: the tests assert on LabelStore's cache and
+    // the fake disk, never on what got logged.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -44,4 +53,9 @@ dependencies {
     implementation("androidx.activity:activity:1.10.1")
     // RingEnvelopeTest runs RingEnvelope (no Android API) on the JVM.
     testImplementation("junit:junit:4.13.2")
+    // LabelStoreTest exercises LabelStore's real org.json calls (JSONObject
+    // is part of Android's platform, and its stub throws "not mocked" under
+    // testDebugUnitTest for every method, toString() included); the real
+    // library, on the test classpath only, makes that code actually run.
+    testImplementation("org.json:json:20231013")
 }

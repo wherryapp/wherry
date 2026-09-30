@@ -44,53 +44,70 @@ internal object CallsStore {
      *  lock. */
     private var cached: JSONObject? = null
 
-    private fun file(context: Context) =
-        AtomicFile(File(context.applicationContext.noBackupFilesDir, FILE))
+    private fun file(context: Context): JsonFile =
+        AtomicJsonFile(AtomicFile(File(context.applicationContext.noBackupFilesDir, FILE)))
 
+    /** [cached] if warm, else [file] read through [JsonFile.readBytes] and
+     *  cached. Does not run the legacy-prefs cleanup [read] does -- that is
+     *  a side effect on an unrelated file, not part of what [cached] means,
+     *  so [commit] (which has no [Context] to clean up with) can share this
+     *  without it. `internal` so `CallsStoreTest` can drive it directly. */
     @Synchronized
-    private fun read(context: Context): JSONObject {
+    internal fun readAndCache(file: JsonFile): JSONObject {
         cached?.let { return it }
-        val app = context.applicationContext
         val json = try {
-            JSONObject(String(file(app).readFully(), Charsets.UTF_8))
+            JSONObject(String(file.readBytes(), Charsets.UTF_8))
         } catch (e: FileNotFoundException) {
             JSONObject()
         } catch (e: Exception) {
             Log.w(TAG, "[wherry] calls: store unreadable, starting empty: ${e.javaClass.simpleName}")
             JSONObject()
         }
+        cached = json
+        return json
+    }
+
+    @Synchronized
+    private fun read(context: Context): JSONObject {
+        val app = context.applicationContext
+        val json = readAndCache(file(app))
         try {
             app.deleteSharedPreferences(LEGACY_PREFS)
         } catch (e: Exception) {
             // Nothing to remove, or it cannot be: it holds nothing the file
             // does not.
         }
-        cached = json
         return json
     }
 
-    /** Applies [change] to a copy and writes it whole (AtomicFile: a crash
-     *  mid-write leaves the previous file). */
+    /** Applies [change] to a copy and writes it whole ([AtomicJsonFile]: a
+     *  crash mid-write leaves the previous file). [cached] only moves to
+     *  the new value once [JsonFile.writeBytes] returns: on a failure the
+     *  file is still the old one, and a process that has [cached] but no
+     *  disk copy of it forgets on the next kill (a push can cause one) --
+     *  `apiBase`/`deviceId` would then silently revert under a
+     *  lock-screen Decline. Leaving [cached] at the old value keeps the
+     *  two in agreement; the next `configure` or `setLabels` call tries
+     *  the write again. `internal`, and split from [write], so
+     *  `CallsStoreTest` can drive the same commit rule with a [JsonFile]
+     *  that fails -- `android.util.AtomicFile` throws "not mocked" under
+     *  `testDebugUnitTest` (verified 2026-09-30; there is no Robolectric
+     *  here, matching every other JVM test in these plugins). */
+    @Synchronized
+    internal fun commit(file: JsonFile, change: (JSONObject) -> Unit) {
+        val next = JSONObject(readAndCache(file).toString())
+        change(next)
+        try {
+            file.writeBytes(next.toString().toByteArray(Charsets.UTF_8))
+            cached = next
+        } catch (e: Exception) {
+            Log.w(TAG, "[wherry] calls: store not written: ${e.javaClass.simpleName}")
+        }
+    }
+
     @Synchronized
     private fun write(context: Context, change: (JSONObject) -> Unit) {
-        val next = JSONObject(read(context).toString())
-        change(next)
-        val file = file(context)
-        val out = try {
-            file.startWrite()
-        } catch (e: Exception) {
-            Log.w(TAG, "[wherry] calls: store not written: ${e.javaClass.simpleName}")
-            cached = next
-            return
-        }
-        try {
-            out.write(next.toString().toByteArray(Charsets.UTF_8))
-            file.finishWrite(out)
-        } catch (e: Exception) {
-            file.failWrite(out)
-            Log.w(TAG, "[wherry] calls: store not written: ${e.javaClass.simpleName}")
-        }
-        cached = next
+        commit(file(context), change)
     }
 
     /** Only an absolute http(s) base is kept: native HTTP has no page origin
@@ -133,4 +150,44 @@ internal object CallsStore {
     }
 
     private val ABSOLUTE = Regex("^https?://[^/].*$", RegexOption.IGNORE_CASE)
+
+    /** Forgets [cached], as a process kill and restart would. Never called
+     *  outside `CallsStoreTest`, which uses it to check that a "fresh" read
+     *  agrees with what [commit] actually left on the fake disk. */
+    internal fun forgetCacheForTest() {
+        cached = null
+    }
+}
+
+/** The store's byte-level half, behind an interface so `CallsStoreTest` can
+ *  fake a disk that fails: every `android.util.AtomicFile` method throws
+ *  "not mocked" under `testDebugUnitTest`, whatever the real filesystem
+ *  underneath it is asked to do (verified 2026-09-30), so the failure
+ *  [commit]'s cache rule depends on cannot be produced by calling
+ *  [CallsStore] itself from a JVM test. */
+internal interface JsonFile {
+    /** Throws `FileNotFoundException` if nothing has ever been written,
+     *  any other `Exception` if the bytes on disk cannot be read. */
+    fun readBytes(): ByteArray
+
+    /** Throws on failure, leaving whatever was previously readable
+     *  unchanged. */
+    fun writeBytes(bytes: ByteArray)
+}
+
+/** [JsonFile] over one `AtomicFile`, so a crash mid-write leaves the
+ *  previous contents rather than a half-written file. */
+private class AtomicJsonFile(private val file: AtomicFile) : JsonFile {
+    override fun readBytes(): ByteArray = file.readFully()
+
+    override fun writeBytes(bytes: ByteArray) {
+        val out = file.startWrite()
+        try {
+            out.write(bytes)
+            file.finishWrite(out)
+        } catch (e: Exception) {
+            file.failWrite(out)
+            throw e
+        }
+    }
 }
