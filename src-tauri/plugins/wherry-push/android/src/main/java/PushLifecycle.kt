@@ -13,7 +13,13 @@
 //
 // The same callbacks keep `PushState.resumed`: they are per activity and
 // immediate, where Tauri's plugin onResume/onPause come from
-// ProcessLifecycleOwner (delayed, and only once a plugin exists).
+// ProcessLifecycleOwner (delayed, and only once a plugin exists). And each
+// resumed activity's window focus (`PushState.focused`), because resumed is
+// not visible: a ring's full-screen intent resumes MainActivity behind a
+// secure keyguard without showing it (the calls plugin's CallLifecycle.inFront
+// reads the same on API 36), and a message push must still post then. The two
+// plugins share no code (native-gaps-coordination.md §4), so this is a copy
+// of the calls plugin's focus watch, not a use of it.
 
 package app.wherry.push
 
@@ -27,6 +33,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import java.util.WeakHashMap
 
 internal object PushLifecycle : Application.ActivityLifecycleCallbacks {
   private const val TAG = "wherry-push"
@@ -36,6 +43,9 @@ internal object PushLifecycle : Application.ActivityLifecycleCallbacks {
   var installed = false
     private set
   private var resumedCount = 0
+
+  /** Activities whose window focus is already observed. Main thread. */
+  private val watched = WeakHashMap<Activity, Boolean>()
 
   @Synchronized
   fun install(app: Application) {
@@ -75,22 +85,41 @@ internal object PushLifecycle : Application.ActivityLifecycleCallbacks {
     if (savedInstanceState == null) capture(activity.intent, "launch")
   }
 
+  /**
+   * Main thread. Focus comes after the resume, and comes back with no new
+   * resume when the keyguard or the shade goes away over an activity that
+   * stayed resumed, so it is watched rather than read once. Also PushPlugin's
+   * late-install fallback, for the activity already resumed then.
+   */
+  fun watchFocus(activity: Activity) {
+    if (watched.containsKey(activity)) return
+    val observer = activity.window?.decorView?.viewTreeObserver ?: return
+    if (!observer.isAlive) return
+    watched[activity] = true
+    observer.addOnWindowFocusChangeListener { hasFocus -> PushState.focused = hasFocus }
+  }
+
   @Synchronized
   override fun onActivityResumed(activity: Activity) {
     resumedCount += 1
     PushState.resumed = true
+    watchFocus(activity)
+    PushState.focused = activity.hasWindowFocus()
   }
 
   @Synchronized
   override fun onActivityPaused(activity: Activity) {
     resumedCount = maxOf(0, resumedCount - 1)
     PushState.resumed = resumedCount > 0
+    if (!PushState.resumed) PushState.focused = false
   }
 
   override fun onActivityStarted(activity: Activity) {}
   override fun onActivityStopped(activity: Activity) {}
   override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
-  override fun onActivityDestroyed(activity: Activity) {}
+  override fun onActivityDestroyed(activity: Activity) {
+    watched.remove(activity)
+  }
 }
 
 /**

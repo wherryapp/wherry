@@ -21,7 +21,9 @@
 //   call already ended on this device (EndedCalls, in RingMessage.swift) is
 //   reported and ended at once, never rung again.
 // - The provider delegate: Answer, End (a signed decline while ringing, a
-//   hang-up once answered), Mute, reset.
+//   hang-up once answered), Mute, reset. Mute goes both ways: CallKit's
+//   button reaches the page as `mute`, and the page's mute reaches CallKit
+//   through `setActive`'s `micMuted` (`matchMute`).
 // - The commands the page drives, `debugIncoming` (debug builds) and a
 //   debug-only launch ring (`WHERRY_DEBUG_RING`), which run the same handler
 //   without APNs: the simulator's only way in (rows I-51, I-52).
@@ -78,6 +80,9 @@ struct ActiveArgs: Decodable {
   let audioOnly: Bool
   /// Absent from an older page: false.
   let pageOwnsAudio: Bool?
+  /// The page's microphone mute (client-voice-7); null or absent: leave
+  /// CallKit's mute as it is.
+  let micMuted: Bool?
 }
 
 struct EndedArgs: Decodable {
@@ -91,10 +96,13 @@ final class TrackedCall {
   let uuid: UUID
   let callId: String
   var conversationId: String?
-  /// The recipient device the ring's signature names.
-  var deviceId: String?
+  /// When the ring window closes here, seconds since the epoch: the expiry
+  /// timer's value and EndedCalls' only. Never sent with the decline -- the
+  /// page's `reportIncoming` sets it from the phone's own clock.
   var exp: Int64
-  var dsig: String?
+  /// The push's signed decline token, whole (DeclineToken); nil until a
+  /// VoIP push with one arrives, and never taken from the page.
+  var token: DeclineToken?
   /// Answered in CallKit: its End is a hang-up, not a decline.
   var answered = false
   /// The page named it in `setActive(true)`: its web call is running, so the
@@ -104,6 +112,12 @@ final class TrackedCall {
   /// word: the provider delegate must not send it back as an action.
   var answerRequested = false
   var endRequested = false
+  /// What CallKit's mute button shows for this call, as its last
+  /// CXSetMutedCallAction said (false until one has).
+  var muted = false
+  /// A mute this plugin asked CallKit for on the page's word: the delegate
+  /// does not send its echo back to the page as a `mute` event.
+  var muteRequested: Bool?
   var expiry: DispatchWorkItem?
   var watchdog: DispatchWorkItem?
 
@@ -264,7 +278,10 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   }
 
   /// { apiBase, deviceId }: where the lock screen's decline goes. Kept in
-  /// UserDefaults so a PushKit launch with no page still has it.
+  /// UserDefaults so a PushKit launch with no page still has it. The device
+  /// id is stored and read by nothing: a signed decline names the device its
+  /// token was signed for (DeclineToken). It stays in the command because
+  /// PC1 fixed `configure`'s shape on both phones (phone-calls.ts).
   @objc public func configure(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ConfigureArgs.self)
     onMain {
@@ -363,6 +380,8 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
         if args.pageOwnsAudio == true, call.answered, !call.endRequested {
           NSLog("[wherry] calls: page owns audio; ending CallKit's call uuid=%@", call.callId)
           self.endLocally(call)
+        } else if let muted = args.micMuted {
+          self.matchMute(call, muted)
         }
       }
       if !args.active {
@@ -544,10 +563,11 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     if let call = calls[uuid] {
       // Known: the socket's report got here first, or the push repeated.
       // Report again (callUUIDAlreadyExists) so the push counts as
-      // reported, and keep what only the push carries: the signature.
+      // reported, and keep what only the push carries: the decline token,
+      // its three fields together (never the push's signature beside the
+      // page's `exp`, which would not verify).
       call.conversationId = call.conversationId ?? push.conversationId
-      call.deviceId = push.deviceId ?? call.deviceId
-      call.dsig = push.dsig ?? call.dsig
+      call.token = DeclineToken.merged(DeclineToken(push), over: call.token)
       report(uuid, label: label(for: call.conversationId)) { _ in
         completion()
         if expired && !call.answered { self.endReported(uuid, .unanswered) }
@@ -569,8 +589,7 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     }
     let call = TrackedCall(uuid: uuid, callId: push.callId, exp: push.exp)
     call.conversationId = push.conversationId
-    call.deviceId = push.deviceId
-    call.dsig = push.dsig
+    call.token = DeclineToken(push)
     calls[uuid] = call
     report(uuid, label: label(for: push.conversationId)) { error in
       completion()
@@ -677,6 +696,26 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     }
   }
 
+  /// The page's mute, shown on CallKit's own button (client-voice-7): a mute
+  /// from the page's button, a call joined muted, or an unmute that failed
+  /// would otherwise leave the lock screen reading the opposite, and the next
+  /// press there would ask for what the page already had. Only for a call
+  /// CallKit holds answered; its echo is not sent back to the page.
+  private func matchMute(_ call: TrackedCall, _ muted: Bool) {
+    guard call.answered, !call.endRequested else { return }
+    let target = call.muteRequested ?? call.muted
+    if target == muted { return }
+    call.muteRequested = muted
+    let transaction = CXTransaction(action: CXSetMutedCallAction(call: call.uuid, muted: muted))
+    controller.request(transaction) { error in
+      guard let error = error else { return }
+      DispatchQueue.main.async {
+        if call.muteRequested == muted { call.muteRequested = nil }
+        NSLog("[wherry] calls: mute to CallKit refused (%@)", Self.describe(error))
+      }
+    }
+  }
+
   /// Drops a call CallKit never took (its report failed): a later ring for
   /// it may still be reported.
   private func forget(_ uuid: UUID) {
@@ -768,7 +807,14 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
 
   func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
     if let call = calls[action.callUUID] {
-      trigger("mute", data: ["callId": call.callId, "muted": action.isMuted])
+      call.muted = action.isMuted
+      if let requested = call.muteRequested, requested == action.isMuted {
+        // The page's own mute, asked for by `matchMute`: it knows.
+        call.muteRequested = nil
+      } else {
+        call.muteRequested = nil
+        trigger("mute", data: ["callId": call.callId, "muted": action.isMuted])
+      }
     }
     action.fulfill()
   }
@@ -824,15 +870,20 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + Self.unclaimedAnswerSeconds, execute: work)
   }
 
-  /// The lock screen's Decline, when the ring carried a signature. The page,
-  /// if it is running, declines too through its own session (the `decline`
-  /// action); the second decline is a no-op on the server.
+  /// The lock screen's Decline, when the ring's push carried a token. The
+  /// page, if it is running, declines too through its own session (the
+  /// `decline` action); the second decline is a no-op on the server.
   private func declineSigned(_ call: TrackedCall) {
     let defaults = UserDefaults.standard
-    guard let dsig = call.dsig, let deviceId = call.deviceId,
-      let apiBase = defaults.string(forKey: Self.defaultsApiBase)
+    guard let token = call.token, let apiBase = defaults.string(forKey: Self.defaultsApiBase)
     else {
       NSLog("[wherry] calls: no signed decline for %@ (the page declines)", call.callId)
+      return
+    }
+    if token.expired(now: Self.nowSeconds()) {
+      // The server would refuse it and answer 204 all the same; the page's
+      // `decline` action, live or queued, carries the press instead.
+      NSLog("[wherry] calls: decline token for %@ expired (the page declines)", call.callId)
       return
     }
     // A few seconds of background time: the End action is often the last
@@ -843,7 +894,8 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       task = .invalid
     }
     SignedDecline.post(
-      apiBase: apiBase, callId: call.callId, deviceId: deviceId, exp: call.exp, sig: dsig
+      apiBase: apiBase, callId: call.callId, deviceId: token.deviceId, exp: token.exp,
+      sig: token.sig
     ) { status in
       DispatchQueue.main.async {
         NSLog(

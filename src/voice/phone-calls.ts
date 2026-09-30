@@ -27,13 +27,15 @@ import {
   readAction,
   readCapabilities,
   readIncomingAnswer,
+  readRingShown,
   readVoipToken,
 } from "./phone-rules";
 
 /** Which surface rings on this device. "page" is the in-app sheet
  *  (IncomingCall.tsx) and nothing native; "notification" is Android's
- *  CallStyle ring, posted only while the activity is not resumed (the page
- *  still rings when it is); "callkit" is iOS's system call screen. Whether
+ *  CallStyle ring, posted only while the activity is not in front -- resumed
+ *  and its window focused, `CallLifecycle.inFront` (the page still rings
+ *  when it is); "callkit" is iOS's system call screen. Whether
  *  the native surface took a *given* ring is that ring's `reportIncoming`
  *  answer, and phone-rules.ts's `pageRingDuties` decides from both what the
  *  page itself still draws, sounds and posts (one ring UI per device, plan
@@ -138,10 +140,14 @@ export type IncomingReport = {
  *   push (`callUUIDAlreadyExists`), or the system filtered it on purpose
  *   (`filteredByDoNotDisturb`, `filteredByBlockList`), which the page must
  *   not override;
- * - Android: the ring notification was posted.
+ * - Android: the ring notification was posted, or the call has already
+ *   ended here (a Decline on the ring, which the page may never hear of: a
+ *   signed decline goes straight to the server), matching iOS's
+ *   already-ended answer.
  *
  * False when nothing native rings for it -- a stub, Android while the
- * activity is resumed, any other CallKit refusal, or any failure -- and the
+ * activity is in front (resumed and window-focused), any other CallKit
+ * refusal, or any failure -- and the
  * page's sheet then rings exactly as it does without a plugin. A native
  * side that cannot tell answers false: a double ring is a defect, a missed
  * one is a missed call.
@@ -189,6 +195,13 @@ export type ActiveReport = {
    *  carried the ring, and the iOS plugin ends its call without ending the
    *  page's (branch B of row I-58; phone-rules.ts's `nativeActiveCall`). */
   pageOwnsAudio: boolean;
+  /** The page's microphone mute, for CallKit's own mute button to show
+   *  (the lock screen, Control Center): the iOS plugin asks CallKit to
+   *  match it while CallKit holds the answered call. Null where no native
+   *  call UI shows a mute (Android, the page-only shells) and while no call
+   *  is active, so a mute press there sends nothing native. Absent from an
+   *  older page: the plugin then leaves CallKit's mute alone. */
+  micMuted: boolean | null;
 };
 
 export interface PhoneCalls {
@@ -207,7 +220,8 @@ export interface PhoneCalls {
    *  `push-token` event follows). */
   pushToken(): Promise<VoipToken | null>;
   /** A ring that reached the page (over the socket). Android: no-op while
-   *  the activity is resumed, else its ring notification. iOS: CallKit,
+   *  the activity is in front (resumed and window-focused), else its ring
+   *  notification. iOS: CallKit,
    *  deduplicated by the call's UUID. Answers whether the native side took
    *  it; never rejects, and any failure reads as `{ shown: false }`. */
   reportIncoming(input: IncomingReport): Promise<IncomingAnswer>;
@@ -231,7 +245,17 @@ export interface PhoneCalls {
   onPushToken(listener: (token: VoipToken) => void): Promise<() => void>;
   /** CallKit's own mute button (I1). */
   onMute(listener: (event: { callId: string; muted: boolean }) => void): Promise<() => void>;
+  /** Android: the plugin moved a ring the page reported -- posted it as the
+   *  ring notification (`shown: true`: the person left the app) or withdrew
+   *  it for the page's sheet (`shown: false`: they came back). It replaces
+   *  that ring's `reportIncoming` answer (phone-rules.ts's `readRingShown`),
+   *  so the page's tone plays exactly while nothing native rings. iOS never
+   *  sends it: CallKit rings in every app state. */
+  onRingShown(listener: (event: RingShownEvent) => void): Promise<() => void>;
 }
+
+/** The `ring-shown` event (Android). */
+export type RingShownEvent = { callId: string; shown: boolean };
 
 const PLUGIN = "wherry-calls";
 
@@ -356,6 +380,13 @@ class PluginPhoneCalls implements PhoneCalls {
       const callId = record["callId"];
       const muted = record["muted"];
       if (typeof callId === "string" && typeof muted === "boolean") listener({ callId, muted });
+    });
+  }
+
+  async onRingShown(listener: (event: RingShownEvent) => void): Promise<() => void> {
+    return this.#listen<unknown>("ring-shown", (raw) => {
+      const event = readRingShown(raw);
+      if (event) listener(event);
     });
   }
 

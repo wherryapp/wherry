@@ -12,6 +12,7 @@ import {
   nativeApiBase,
   nativeEndReason,
   nativeRingOf,
+  nativeRingOfEvent,
   notificationLabels,
   PAGE_ONLY,
   pageAliveWanted,
@@ -20,6 +21,7 @@ import {
   readAction,
   readCapabilities,
   readIncomingAnswer,
+  readRingShown,
   readVoipToken,
   ringDisplay,
   ringExpiry,
@@ -262,6 +264,33 @@ test("an Android plugin that never answered leaves the page ringing alone, notif
   );
 });
 
+test("Android's ring-shown event moves a reported ring between the notification and the sheet (mobile-2)", () => {
+  assert.deepEqual(readRingShown({ callId: "c1", shown: true }), { callId: "c1", shown: true });
+  assert.deepEqual(readRingShown({ callId: "c1", shown: false }), { callId: "c1", shown: false });
+  for (const raw of [null, "x", {}, { callId: "c1" }, { shown: true }, { callId: "", shown: true }, { callId: 1, shown: true }, { callId: "c1", shown: "true" }]) {
+    assert.equal(readRingShown(raw), null);
+  }
+  // Reported in front (`shown: false`), then the person pressed HOME: the
+  // plugin posted the ring, so the page's tone stops behind (the
+  // notification rings) and nothing of the page's is posted.
+  const left = { capabilities: ANDROID_RING, native: nativeRingOfEvent(true), windowFocused: false };
+  assert.deepEqual(pageRingDuties(left), { sheet: true, tone: false, notification: false });
+  // Back in front: withdrawn, and the sheet's tone plays even where the
+  // webview misreads its focus (row A-63's `am start` with no touch).
+  const back = { capabilities: ANDROID_RING, native: nativeRingOfEvent(false), windowFocused: false };
+  assert.deepEqual(pageRingDuties(back), ALONE_IN_FRONT);
+});
+
+test("Android's answer for a ring already ended here keeps the page's tone off behind (mobile-4)", () => {
+  // A Decline on the ring notification went straight to the server; the
+  // socket's ring came after. The plugin answers `shown: true`, as iOS does.
+  const native = nativeRingOf(readIncomingAnswer({ shown: true }));
+  assert.deepEqual(
+    pageRingDuties({ capabilities: ANDROID_RING, native, windowFocused: false }),
+    { sheet: true, tone: false, notification: false },
+  );
+});
+
 // -- whose bridge it is -----------------------------------------------------
 
 test("the bridge runs for the signed-in account while the engine runs, and not otherwise", () => {
@@ -467,6 +496,7 @@ const state = (over: Partial<ActiveCallInput> = {}): ActiveCallInput => ({
   camera: { on: false },
   screen: { on: false },
   participants: [],
+  micMuted: false,
   ...over,
 });
 
@@ -486,11 +516,19 @@ test("setActive carries the call, its label and whether anybody's video is on", 
     label: null,
     audioOnly: true,
     pageOwnsAudio: false,
+    micMuted: null,
   });
   // Still asking the server for a token: active, no id yet.
   assert.deepEqual(
     nativeActiveCall(state({ phase: "connecting", conversationId: "conv" }), labels, true),
-    { active: true, callId: null, label: "Alice", audioOnly: true, pageOwnsAudio: false },
+    {
+      active: true,
+      callId: null,
+      label: "Alice",
+      audioOnly: true,
+      pageOwnsAudio: false,
+      micMuted: null,
+    },
   );
   const connected = state({ phase: "connected", conversationId: "conv", call: { id: "c" } });
   assert.deepEqual(nativeActiveCall(connected, labels, false), {
@@ -499,6 +537,7 @@ test("setActive carries the call, its label and whether anybody's video is on", 
     label: "Alice",
     audioOnly: true,
     pageOwnsAudio: false,
+    micMuted: null,
   });
   const at = (over: Partial<ActiveCallInput>) =>
     nativeActiveCall({ ...connected, ...over }, labels, false);
@@ -520,6 +559,24 @@ test("the page owns the call's audio only once connected and in front (I-58, bra
   }
   assert.equal(nativeActiveCall({ ...connected, call: null }, {}, true).pageOwnsAudio, false);
   assert.equal(nativeActiveCall({ ...connected, phase: "elsewhere" }, {}, true).pageOwnsAudio, false);
+});
+
+test("the page's mute reaches a native call UI only where one shows a mute (client-voice-7)", () => {
+  const connected = state({ phase: "connected", conversationId: "conv", call: { id: "c" } });
+  // CallKit: its button follows the page, muted and unmuted.
+  assert.equal(nativeActiveCall({ ...connected, micMuted: true }, {}, false, true).micMuted, true);
+  assert.equal(nativeActiveCall({ ...connected, micMuted: false }, {}, false, true).micMuted, false);
+  // A call joining muted is reported muted from its first report.
+  assert.equal(
+    nativeActiveCall({ ...connected, phase: "connecting", micMuted: true }, {}, false, true).micMuted,
+    true,
+  );
+  // Android and the page-only shells: nothing, so a mute press is not a
+  // native report (on Android it would restart the service's notification).
+  assert.equal(nativeActiveCall({ ...connected, micMuted: true }, {}, false).micMuted, null);
+  assert.equal(nativeActiveCall({ ...connected, micMuted: true }, {}, false, false).micMuted, null);
+  // No call: nothing to show.
+  assert.equal(nativeActiveCall(state({ micMuted: true }), {}, false, true).micMuted, null);
 });
 
 // -- labels -----------------------------------------------------------------

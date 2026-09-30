@@ -17,6 +17,10 @@
 // Events the page listens for, with their payloads (trigger(...)):
 //   "action"  { kind: "answer"|"decline"|"hangup", callId, conversationId?, at? }
 //   "mute"    { callId, muted }   (iOS only in practice)
+//   "ring-shown" { callId, shown }  a ring the page reported was posted as
+//             the ring notification (the person left the app) or withdrawn
+//             for the page's sheet (they came back): RingHandler.PageSink.
+//             Android only.
 // "push-token" is iOS's; Android has no VoIP token of its own (the ring
 // comes over FCM through the push plugin's one messaging service).
 package app.wherry.calls
@@ -49,8 +53,20 @@ class CallsPlugin(private val activity: Activity) : Plugin(activity) {
         override fun listening(): Boolean = hasListener("action")
     }
 
+    /** Held here for the same reason as [sink]. */
+    private val ringSink = object : RingHandler.PageSink {
+        override fun ringShown(callId: String, shown: Boolean) {
+            if (!hasListener("ring-shown")) return
+            val event = JSObject()
+            event.put("callId", callId)
+            event.put("shown", shown)
+            trigger("ring-shown", event)
+        }
+    }
+
     init {
         CallActions.attach(sink)
+        RingHandler.attach(ringSink)
         // The service's start after a late RECORD_AUDIO grant, keep-resumed,
         // and the ring's launches and resumed state, all on the activity's
         // lifecycle (CallLifecycle), which CallsInitProvider normally
@@ -119,10 +135,11 @@ class CallsPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     /** { callId, conversationId, label, group, exp } -> { shown }: the ring
-     *  is posted only while no activity is in front, and shown = true only
-     *  when it was. False (in front, notifications off, or any failure)
-     *  leaves the page's sheet and tone ringing (phone-calls.ts's
-     *  IncomingAnswer). */
+     *  is posted only while no activity is in front, and shown = true when
+     *  it was, or when the call has already ended here (a Decline on the
+     *  ring). False (in front, notifications off, or any failure) leaves the
+     *  page's sheet and tone ringing (phone-calls.ts's IncomingAnswer), until
+     *  a `ring-shown` event moves the ring. */
     @Command
     fun reportIncoming(invoke: Invoke) {
         val args = invoke.getArgs()

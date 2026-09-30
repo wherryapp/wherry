@@ -6,10 +6,12 @@
 //
 // Where it lives, and why: one small JSON file under `noBackupFilesDir`,
 // which Android's Auto Backup and device-to-device transfer never copy. The
-// app's manifest leaves `allowBackup` at its default (true), so anything in
-// SharedPreferences or `filesDir` travels into a Google cloud backup (not
-// client-side encrypted on a phone with no screen lock) and comes back on a
-// restore before anyone signs in. The labels are conversation names (D1 keeps
+// app itself is now out of both (`allowBackup="false"` and its
+// data-extraction rules, hand edit 15), but that is a hand edit `tauri
+// android init` would erase, and this file does not depend on it: without
+// it, anything in SharedPreferences or `filesDir` travels into a Google cloud
+// backup (not client-side encrypted on a phone with no screen lock) and
+// comes back on a restore before anyone signs in. The labels are conversation names (D1 keeps
 // them out of the push for exactly that reason), and the device id is this
 // device's, not a restored phone's, so neither may travel. wherry-push's
 // RingKeys.kt meets the same default by sealing its key under the Keystore;
@@ -18,6 +20,10 @@
 // The labels are conversation names the phone already shows in its list,
 // never content (rule 1). `resetAccount` forgets them at sign-out; the
 // configure values stay, since they are the device's (phone-calls.ts).
+//
+// The device id is stored and read by nothing: a signed decline names the
+// device its token was signed for (`DeclineToken`), never the configured
+// one. It is kept because PC1 fixed `configure`'s shape on both phones.
 package app.wherry.calls
 
 import android.content.Context
@@ -30,8 +36,15 @@ import java.io.FileNotFoundException
 internal object CallsStore {
     private const val FILE = "wherry-calls.json"
     /** A2's first cut kept these in SharedPreferences (backed up); removed
-     *  on first use so a debug install from then does not keep a copy. */
+     *  on the first read of each process so a debug install from then does
+     *  not keep a copy. */
     private const val LEGACY_PREFS = "wherry-calls"
+
+    /** The legacy file's removal has been tried this process. [read] runs for
+     *  every ring post and every Decline, mostly on the main thread in a
+     *  receiver, and the file has been gone since the first try. Under this
+     *  object's lock. */
+    private var legacyCleared = false
 
     private const val KEY_API_BASE = "apiBase"
     private const val KEY_DEVICE_ID = "deviceId"
@@ -71,11 +84,14 @@ internal object CallsStore {
     private fun read(context: Context): JSONObject {
         val app = context.applicationContext
         val json = readAndCache(file(app))
-        try {
-            app.deleteSharedPreferences(LEGACY_PREFS)
-        } catch (e: Exception) {
-            // Nothing to remove, or it cannot be: it holds nothing the file
-            // does not.
+        if (!legacyCleared) {
+            legacyCleared = true
+            try {
+                app.deleteSharedPreferences(LEGACY_PREFS)
+            } catch (e: Exception) {
+                // Nothing to remove, or it cannot be: it holds nothing the
+                // file does not.
+            }
         }
         return json
     }
@@ -123,8 +139,6 @@ internal object CallsStore {
     }
 
     fun apiBase(context: Context): String? = read(context).optString(KEY_API_BASE, "").ifEmpty { null }
-
-    fun deviceId(context: Context): String? = read(context).optString(KEY_DEVICE_ID, "").ifEmpty { null }
 
     fun setLabels(context: Context, labels: Map<String, String>) {
         val names = JSONObject()

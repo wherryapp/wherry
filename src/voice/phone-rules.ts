@@ -96,7 +96,7 @@ export function readIncomingAnswer(raw: unknown): IncomingAnswer {
  * What the page knows of the native side's answer for one ring
  * (phone-bridge.ts keeps one per ring; null until there is one):
  * - `"shown"`: the native side rings it (CallKit took it; Android posted its
- *   ring notification);
+ *   ring notification), or has already ended it here;
  * - `"not_shown"`: the native side answered, in so many words, that it rings
  *   nothing for it;
  * - `"no_answer"`: nothing came -- the command failed, there was no plugin
@@ -108,6 +108,31 @@ export type NativeRing = "shown" | "not_shown" | "no_answer";
 export function nativeRingOf(answer: IncomingAnswer): NativeRing {
   if (answer.shown) return "shown";
   return answer.answered ? "not_shown" : "no_answer";
+}
+
+/**
+ * Android's `ring-shown` event: the plugin posted a ring the page reported
+ * (the person left the app) or withdrew it for the page's sheet (they came
+ * back). Read as that ring's new native answer -- `"shown"` or
+ * `"not_shown"`, both from the plugin in so many words -- so
+ * `pageRingDuties` stops the page's tone while the notification rings and
+ * plays it, whatever `hasFocus()` misreads, once the sheet is the ring
+ * again (mobile-2). Null for anything unreadable, which changes nothing.
+ */
+export function readRingShown(raw: unknown): { callId: string; shown: boolean } | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const record = raw as Record<string, unknown>;
+  const callId = record["callId"];
+  const shown = record["shown"];
+  if (typeof callId !== "string" || callId.length === 0 || typeof shown !== "boolean") {
+    return null;
+  }
+  return { callId, shown };
+}
+
+/** The native answer a `ring-shown` event stands for. */
+export function nativeRingOfEvent(shown: boolean): NativeRing {
+  return shown ? "shown" : "not_shown";
 }
 
 /** A `pushToken()` answer or a `push-token` event (plan §5.2, hunk H4):
@@ -187,7 +212,12 @@ function pageAlone(windowFocused: boolean): PageRingDuties {
  *   - `"not_shown"` is the plugin saying, in so many words, that it posts
  *     nothing: because the activity is in front (`CallLifecycle.inFront`,
  *     resumed and its window focused), or because this phone's
- *     notifications are off, or because the ring is already over here. That
+ *     notifications are off. (A ring already over here answers `"shown"`,
+ *     as on iOS: nothing to ring in front for a call just declined.) The
+ *     answer is not fixed: when the person leaves, the plugin posts the ring
+ *     and says so (`ring-shown`, read by `readRingShown`), and the page's
+ *     tone then follows `windowFocused`, false in the background; when they
+ *     come back it withdraws it and says so, and the tone plays again. That
  *     answer is authoritative over `windowFocused`, which on Android is the
  *     webview's `document.hasFocus()` and can read false in a window Android
  *     reports focused (row A-63: after `am start` with no touch, the page
@@ -429,6 +459,7 @@ export type ActiveCallInput = {
   camera: { on: boolean };
   screen: { on: boolean };
   participants: readonly { camera: boolean; screen: boolean }[];
+  micMuted: boolean;
 };
 
 /**
@@ -456,15 +487,30 @@ export function callServiceWanted(state: Pick<ActiveCallInput, "phase">): boolea
  *  connected and the page is in front, CallKit has carried the ring and the
  *  plugin ends its call (never the page's); a call answered on the lock
  *  screen keeps CallKit until the app is opened. The plugin ignores it
- *  where it holds no CallKit call (Android; an outgoing call). */
+ *  where it holds no CallKit call (Android; an outgoing call).
+ *
+ *  `micMuted` is the page's mute, sent only where a native call UI shows a
+ *  mute of its own (`muteShownNatively`: CallKit), so CallKit's button reads
+ *  what the page does -- a mute from the page's button, a call joined muted,
+ *  or a failed unmute (client-voice-7). Null elsewhere: on Android every
+ *  change of the report restarts the call service's notification, and it
+ *  shows no mute. */
 export function nativeActiveCall(
   state: ActiveCallInput,
   labels: Readonly<Record<string, string>>,
   inFront: boolean,
+  muteShownNatively = false,
 ): ActiveReport {
   const active = callServiceWanted(state);
   if (!active) {
-    return { active: false, callId: null, label: null, audioOnly: true, pageOwnsAudio: false };
+    return {
+      active: false,
+      callId: null,
+      label: null,
+      audioOnly: true,
+      pageOwnsAudio: false,
+      micMuted: null,
+    };
   }
   const video =
     state.camera.on || state.screen.on || state.participants.some((p) => p.camera || p.screen);
@@ -474,6 +520,7 @@ export function nativeActiveCall(
     label: state.conversationId ? (labels[state.conversationId] ?? null) : null,
     audioOnly: !video,
     pageOwnsAudio: inFront && state.phase === "connected" && state.call !== null,
+    micMuted: muteShownNatively ? state.micMuted : null,
   };
 }
 

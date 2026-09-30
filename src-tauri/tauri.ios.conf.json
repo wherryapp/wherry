@@ -7,7 +7,7 @@
   "bundle": {
     "iOS": {
       "developmentTeam": "TD6R2M35QU",
-      "minimumSystemVersion": "15.0"
+      "minimumSystemVersion": "15.4"
     }
   }
 }

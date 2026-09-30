@@ -2,7 +2,7 @@ name: wherry-desktop
 options:
   bundleIdPrefix: app.wherry
   deploymentTarget:
-    iOS: 15.0
+    iOS: 15.4
 fileGroups: [../../src]
 configs:
   debug: debug
