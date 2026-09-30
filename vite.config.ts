@@ -67,7 +67,10 @@ export default defineConfig({
     // allowed-origin list that differs between dev and production. Proxying
     // means the browser only ever talks to :5173, and in production Caddy
     // serves the built assets and reverse-proxies /api on one hostname. Same
-    // origin both times, so CORS never exists in this system.
+    // origin both times, so the *web* client never needs CORS. The shells do:
+    // their pages load from tauri://localhost or http://tauri.localhost and
+    // call https://<domain>/api, and server.ts allow-lists exactly those
+    // origins with @fastify/cors.
     proxy: {
       "/api": {
         target: "http://localhost:3000",
