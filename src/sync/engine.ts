@@ -957,8 +957,18 @@ export class SyncEngine {
               : "Something went wrong",
         });
 
+        // The backoff wait is wakeable, like the tick wait: `online`, the
+        // page becoming visible, the socket's reconnect and a message typed
+        // during the outage all poke, and each used to wait out a sleep
+        // that nothing could cut short -- up to a minute at the ceiling,
+        // after the OS had already said the network was back (sweep 1001,
+        // client-core-8). A Retry-After is the exception: the server said
+        // how long, and no local event is evidence it changed its mind.
+        const serverSaid =
+          error instanceof ApiError && Boolean(error.retryAfterSeconds);
         try {
-          await sleep(delay, signal);
+          if (serverSaid) await sleep(delay, signal);
+          else await this.#waitForNextTick(signal, delay);
         } catch {
           return;
         }
@@ -1006,16 +1016,20 @@ export class SyncEngine {
    * slow server produces overlapping requests that pile up exactly when it can
    * least afford them. Waiting *after* the work settles cannot do that.
    */
-  #waitForNextTick(signal: AbortSignal): Promise<void> {
+  #waitForNextTick(signal: AbortSignal, backoffMs?: number): Promise<void> {
     // A healthy socket makes the poll a pure fallback; without one the old
     // cadences apply unchanged. Re-evaluated every wait, so a socket dying
     // mid-wait needs only the poke its unhealthy transition fires: the wait
-    // resolves, the pass runs, and this line picks 2 seconds again.
-    const interval = this.#socket?.isHealthy()
-      ? SOCKET_INTERVAL_MS
-      : document.visibilityState === "visible"
-        ? VISIBLE_INTERVAL_MS
-        : HIDDEN_INTERVAL_MS;
+    // resolves, the pass runs, and this line picks 2 seconds again. After a
+    // failed pass the caller passes the backoff instead, and the same
+    // latch and wake cut it short.
+    const interval =
+      backoffMs ??
+      (this.#socket?.isHealthy()
+        ? SOCKET_INTERVAL_MS
+        : document.visibilityState === "visible"
+          ? VISIBLE_INTERVAL_MS
+          : HIDDEN_INTERVAL_MS);
 
     return new Promise<void>((resolve, reject) => {
       if (signal.aborted) {
