@@ -74,7 +74,7 @@ const X25519_ENC_BYTES = 32;
 // byte for the distinct seal; 0x01 stays HPKE forever, because v2 rows do.
 const ARCHIVE_FORMAT_HISTORY_AES256GCM = 0x02;
 
-const HISTORY_KEY_BYTES = 32;
+export const HISTORY_KEY_BYTES = 32;
 const HISTORY_NONCE_BYTES = 12;
 
 export class KeysError extends Error {
@@ -256,12 +256,18 @@ export async function openArchive(
   const enc = sealed.subarray(1, 1 + X25519_ENC_BYTES);
   const ciphertext = sealed.subarray(1 + X25519_ENC_BYTES);
 
-  const recipient = await hpke.createRecipientContext({
-    recipientKey: await hpke.kem.deserializePrivateKey(toArrayBuffer(privateKey)),
-    enc: toArrayBuffer(enc),
-  });
-
+  // The whole open is inside the try, not only `open`: `enc` is whatever
+  // the sender wrote, and a short one throws DeserializeError, an all-zero
+  // one DecapError from createRecipientContext. Outside the try those
+  // escaped as themselves, and a wrapped history key is ingested by a loop
+  // that skips only KeysError -- one malformed key from any member made
+  // every key refresh throw, forever, and stranded stale sends behind it
+  // (sweep 1001, client-core-4).
   try {
+    const recipient = await hpke.createRecipientContext({
+      recipientKey: await hpke.kem.deserializePrivateKey(toArrayBuffer(privateKey)),
+      enc: toArrayBuffer(enc),
+    });
     return new Uint8Array(await recipient.open(toArrayBuffer(ciphertext)));
   } catch {
     throw new KeysError(
@@ -324,11 +330,14 @@ export async function openWithHistoryKey(
 
   const nonce = sealed.subarray(1, 1 + HISTORY_NONCE_BYTES);
   const ciphertext = sealed.subarray(1 + HISTORY_NONCE_BYTES);
-  const aesKey = await crypto.subtle.importKey("raw", key as BufferSource, "AES-GCM", false, [
-    "decrypt",
-  ]);
 
+  // The import is inside the try too: the key was unwrapped from bytes a
+  // member sealed, and one of the wrong length is a key that does not open
+  // this row, not an exception for the page around it.
   try {
+    const aesKey = await crypto.subtle.importKey("raw", key as BufferSource, "AES-GCM", false, [
+      "decrypt",
+    ]);
     return new Uint8Array(
       await crypto.subtle.decrypt(
         { name: "AES-GCM", iv: nonce as BufferSource },
