@@ -395,8 +395,6 @@ impl Tile {
     let dropped = self.dropped.clone();
     let skipped = self.skipped.clone();
     let app = self.app.clone();
-    let generation = Arc::new(AtomicBool::new(true));
-    let mine = generation.clone();
     let task = tauri::async_runtime::spawn(async move {
       // Two frames of queue: a late frame is dropped rather than shown late.
       let mut stream = NativeVideoStream::new(track);
@@ -405,7 +403,7 @@ impl Tile {
       let mut logged_status = false;
       let mut logged_kind = false;
       while let Some(frame) = stream.next().await {
-        if !alive.load(Ordering::Relaxed) || !mine.load(Ordering::Relaxed) {
+        if !alive.load(Ordering::Relaxed) {
           break;
         }
         if !visible.load(Ordering::Relaxed) || covered.load(Ordering::Relaxed) {
@@ -560,12 +558,12 @@ impl Tile {
       log::debug!("voice: tile frame task ended after {} frame(s)", frames.load(Ordering::Relaxed));
     });
     let previous = self.task.lock().unwrap().replace(task);
+    // `unbind` above already ended the previous task; this covers a bind
+    // that raced it. `abort` lands at the task's next await, and `alive`
+    // ends it at the next frame after a destroy.
     if let Some(previous) = previous {
       previous.abort();
     }
-    // `generation` belongs to the new task; `unbind` above already ended
-    // the previous one, and `abort` covers a frame that was mid-await.
-    drop(generation);
   }
 
   /// Stops drawing; the view hides so the page's placeholder shows.

@@ -636,8 +636,6 @@ impl Tile {
     let frames = self.frames.clone();
     let dropped = self.dropped.clone();
     let skipped = self.skipped.clone();
-    let generation = Arc::new(AtomicBool::new(true));
-    let mine = generation.clone();
     let task = tauri::async_runtime::spawn(async move {
       let mut stream = NativeVideoStream::new(track);
       // Scratch NV12, reused across frames of the same size. The SDK
@@ -658,7 +656,7 @@ impl Tile {
       let driver = d3d::driver();
       let mut presenter_off = driver.is_none();
       while let Some(frame) = stream.next().await {
-        if !alive.load(Ordering::Relaxed) || !mine.load(Ordering::Relaxed) {
+        if !alive.load(Ordering::Relaxed) {
           break;
         }
         if !visible.load(Ordering::Relaxed) || covered.load(Ordering::Relaxed) {
@@ -763,7 +761,6 @@ impl Tile {
     if let Some(previous) = previous {
       previous.abort();
     }
-    drop(generation);
   }
 
   /// Stops drawing; the window hides so the page's placeholder shows.
@@ -975,12 +972,10 @@ fn convert(
   true
 }
 
-/// The app handle, for helpers that cannot capture one. Set once at setup.
-static APP: Mutex<Option<AppHandle>> = Mutex::new(None);
-
-pub fn remember_app(app: &AppHandle) {
-  *APP.lock().unwrap() = Some(app.clone());
-}
+/// `mod.rs` hands every renderer the app handle at setup. A Windows tile
+/// is given its own at `create` and no helper here needs one otherwise, so
+/// this keeps nothing; macOS's `render.rs` does keep it.
+pub fn remember_app(_app: &AppHandle) {}
 
 // -- the W3.0 spike ----------------------------------------------------------
 
