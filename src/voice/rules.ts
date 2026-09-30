@@ -710,6 +710,27 @@ export function cameraOnVisibility(input: {
   return input.paused ? "resume" : "nothing";
 }
 
+/**
+ * The camera a flip moves to: the one after the camera in use, wrapping.
+ *
+ * With no saved choice the camera in use is the platform's default, which
+ * enumeration conventionally lists first -- so "unknown" reads as the first
+ * device, not as "before the first". Where the default is listed elsewhere, a
+ * flip still lands on a different camera more often than not. It used to read as the latter (`findIndex` answers
+ * -1, and -1 + 1 is 0), which made the first flip on a fresh install pick the
+ * camera already open: a tap that did nothing. A saved id no longer present
+ * (a camera unplugged since) is the same unknown. Null when there is nothing
+ * to flip to.
+ */
+export function nextCameraId(
+  deviceIds: readonly string[],
+  current: string | null,
+): string | null {
+  if (deviceIds.length < 2) return null;
+  const index = current === null ? -1 : deviceIds.indexOf(current);
+  return deviceIds[(Math.max(index, 0) + 1) % deviceIds.length] ?? null;
+}
+
 /** The grant line in the details: what this call will let this device send. */
 export function grantLine(grant: {
   sources: readonly VideoSource[];

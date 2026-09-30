@@ -61,6 +61,7 @@ import {
   cameraOnVisibility,
   grantLine,
   micStatus,
+  nextCameraId,
   shouldJoinMuted,
   liveVideoKeys,
   paceSubscription,
@@ -555,11 +556,11 @@ class VoiceSession {
    */
   async flipCamera(): Promise<void> {
     const devices = await listVideoDevices();
-    if (devices.length < 2) return;
-    const current = loadVoicePrefs().cameraDeviceId;
-    const index = devices.findIndex((device) => device.deviceId === current);
-    const next = devices[(index + 1) % devices.length];
-    if (next) await this.setCameraDevice(next.deviceId);
+    const next = nextCameraId(
+      devices.map((device) => device.deviceId),
+      loadVoicePrefs().cameraDeviceId,
+    );
+    if (next) await this.setCameraDevice(next);
   }
 
   /**

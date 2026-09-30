@@ -24,6 +24,7 @@ import {
   liveVideoKeys,
   previewTileOf,
   nativeVideoLine,
+  nextCameraId,
   showsVideoButton,
   tilesDrawAbovePage,
   videoDisabledReason,
@@ -806,4 +807,25 @@ test("a tile's chrome goes outside it only where the shell draws over the page",
     tilesDrawAbovePage({ capabilities: { renderVideo: false }, nativeEngine: false }),
     false,
   );
+});
+
+test("a flip with no saved camera moves off the default, which is listed first", () => {
+  // The first flip on a fresh install used to reopen the camera in use.
+  assert.equal(nextCameraId(["front", "back"], null), "back");
+  assert.equal(nextCameraId(["front", "back", "usb"], null), "back");
+});
+
+test("a flip moves to the camera after the one in use, wrapping", () => {
+  assert.equal(nextCameraId(["front", "back"], "front"), "back");
+  assert.equal(nextCameraId(["front", "back"], "back"), "front");
+  assert.equal(nextCameraId(["a", "b", "c"], "c"), "a");
+});
+
+test("a saved camera that is gone reads as the default", () => {
+  assert.equal(nextCameraId(["front", "back"], "unplugged"), "back");
+});
+
+test("there is nothing to flip to with fewer than two cameras", () => {
+  assert.equal(nextCameraId([], null), null);
+  assert.equal(nextCameraId(["only"], "only"), null);
 });
