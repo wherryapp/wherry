@@ -8,6 +8,8 @@
 // Timeline.tsx) because PinsPanel needs `excerptOf` too, and PinsPanel moved
 // out of Chat.tsx before Timeline did.
 
+import { displayFileName } from "./file-policy";
+
 /**
  * A reply being composed: what the composer bar shows, and what becomes the
  * payload's `replyTo` on send. The excerpt is copied here at reply time --
@@ -34,10 +36,30 @@ export type EditDraft = {
   text: string;
 };
 
+/**
+ * What stands in for a message's attachments where only a word fits: the
+ * sidebar's preview line and a reply's quoted excerpt. "Photo" only when
+ * every attachment is an image -- any file has been attachable since
+ * 2026-09-02, and a PDF previewed as "Photo" is wrong, in a reply quote wrong
+ * for everyone, since the excerpt is copied into the payload. A single file
+ * says its own (sanitised) name; anything else is "File".
+ */
+export function attachmentWord(
+  attachments: readonly { mediaType: string; name?: string }[],
+): string {
+  if (attachments.length === 0) return "";
+  if (attachments.every((attachment) => attachment.mediaType.startsWith("image/"))) {
+    return "Photo";
+  }
+  const only = attachments.length === 1 ? attachments[0] : undefined;
+  const name = only?.name ? displayFileName(only.name).slice(0, 120) : "";
+  return name || "File";
+}
+
 /** The quoted line a reply shows: the text, or what stands in for it. */
-export function excerptOf(content: { text: string; attachments: unknown[] }): string {
-  return (
-    content.text.slice(0, 120) ||
-    (content.attachments.length > 0 ? "Photo" : "")
-  );
+export function excerptOf(content: {
+  text: string;
+  attachments: readonly { mediaType: string; name?: string }[];
+}): string {
+  return content.text.slice(0, 120) || attachmentWord(content.attachments);
 }

@@ -36,6 +36,7 @@ import { ResizeHandle } from "./ResizeHandle";
 import { useSidebarPrefs } from "./prefs";
 import { reorderHubs } from "./hub-order";
 import { rankConversations, recencyRanker, seedHubOrder } from "./rank";
+import { attachmentWord } from "../drafts";
 
 export function ConversationList({
   session,
@@ -164,7 +165,7 @@ export function ConversationList({
 
       {directsAndGroups.map((conversation) => {
           const preview = latest.get(conversation.id);
-          // A photo with no caption still has to say something in the list,
+          // An attachment with no caption still has to say something in the list,
           // and so does a message kind this build cannot render. A retracted
           // one says it was deleted rather than leaking what it used to say.
           const text = preview
@@ -174,7 +175,7 @@ export function ConversationList({
                 ? "Needs a newer version"
                 : preview.content
                   ? preview.content.text ||
-                    (preview.content.attachments.length > 0 ? "Photo" : "")
+                    attachmentWord(preview.content.attachments)
                   : null
             : null;
           const count = unread.get(conversation.id) ?? 0;
