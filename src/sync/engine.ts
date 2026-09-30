@@ -138,6 +138,15 @@ export const APP_VERSION: string =
 // (a locked account key). Either way, once per interval is plenty.
 const FORWARD_SYNC_INTERVAL_MS = 30_000;
 
+// The floor under the readable-channel sweep (#publicChannelSync) when no
+// wake has arrived. That sweep is one request per readable channel, and the
+// wake is contentless, so a wake still sweeps at once -- this only bites
+// while the socket is down, where the 2-second poll used to spend a request
+// per channel per pass: ten readable channels alone were the whole 300/min
+// archive allowance. A readable channel's post can take this long to appear
+// while the socket is down; an envelope still comes on the next poll.
+const PUBLIC_SWEEP_INTERVAL_MS = 10_000;
+
 // A public channel's first contact fetches this many newest messages, not
 // the backlog -- the hydration-depth decision in docs/prompts/hubs-plan.md.
 // Older history is a deliberate on-demand read, never an automatic walk.
@@ -459,6 +468,9 @@ export class SyncEngine {
   #lastConversationRefresh = 0;
   #lastForwardSync = 0;
   #lastHistoryKeyRefresh = 0;
+  #lastPublicSweep = 0;
+  /** A wake (or the reconnect drain) arrived since the last readable sweep. */
+  #publicWake = false;
   #onUnauthorized: (() => void) | null = null;
   /** Per-conversation floor on outgoing typing frames; see sendTyping. */
   #lastTypingSent = new Map<string, number>();
@@ -804,9 +816,21 @@ export class SyncEngine {
       // owns that distinction.
       url: socketUrl(),
       getToken: currentToken,
-      notify: () => this.poke(),
+      notify: () => {
+        // The wake cannot say which conversation moved, and a readable
+        // channel has no inbox to find it in, so every wake owes that
+        // sweep a pass.
+        this.#publicWake = true;
+        this.poke();
+      },
       onReady: () => this.#emit({ type: "socket_ready" }),
-      onFrame: (frame) => void this.#onSignalFrame(frame),
+      // Caught here once for every frame kind: a store write refused while
+      // handling one must be a logged frame, not an unhandled rejection.
+      onFrame: (frame) => {
+        this.#onSignalFrame(frame).catch((error: unknown) => {
+          console.warn("signal frame failed", frame.type, error);
+        });
+      },
     });
     this.#socket.start();
     try {
@@ -1314,8 +1338,15 @@ export class SyncEngine {
     broadcast({ type: "conversations" });
 
     void this.#checkForUpdate();
-    void this.#refreshAnnouncements();
-    void this.#refreshHubs();
+    // Not awaited, so nothing upstream would see a rejection: each catches
+    // its own fetch, but a refused IndexedDB write after it would otherwise
+    // surface as an unhandled rejection rather than a logged, skipped tick.
+    this.#refreshAnnouncements().catch((error: unknown) => {
+      console.warn("announcements refresh failed", error);
+    });
+    this.#refreshHubs().catch((error: unknown) => {
+      console.warn("hub refresh failed", error);
+    });
   }
 
   /**
@@ -1544,6 +1575,11 @@ export class SyncEngine {
    *
    * One channel's trouble is logged and skipped, the #refreshEvents
    * tolerance: the poll loop must not back off because one hub hiccuped.
+   *
+   * Paced, unlike the inbox drain it sits beside, because it costs a request
+   * per channel rather than one: a full pass runs after a wake or once per
+   * PUBLIC_SWEEP_INTERVAL_MS, and between those only a channel with no
+   * watermark yet is fetched, so a hub just joined fills at once.
    */
   async #publicChannelSync(signal: AbortSignal): Promise<void> {
     const conversations = await store.listConversations();
@@ -1558,8 +1594,19 @@ export class SyncEngine {
     const state =
       (await store.getMeta<PublicChannelState>(META_PUBLIC_CHANNELS)) ?? {};
 
+    const now = Date.now();
+    const due =
+      this.#publicWake || now - this.#lastPublicSweep >= PUBLIC_SWEEP_INTERVAL_MS;
+    if (due) {
+      // Cleared before the requests, so a wake landing mid-pass is owed
+      // another (poke()'s latch runs it).
+      this.#publicWake = false;
+      this.#lastPublicSweep = now;
+    }
+
     for (const channel of channels) {
       if (signal.aborted) return;
+      if (!due && state[channel.id] !== undefined) continue;
 
       try {
         let latest = state[channel.id]?.latest ?? null;
