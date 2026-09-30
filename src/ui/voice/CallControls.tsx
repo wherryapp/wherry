@@ -12,8 +12,9 @@
 // button is gone (the call bar's own preview opens the page now) and this
 // row is only ever about what *this* device is doing.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { listVideoDevices } from "../../voice/devices";
 import { useVoice } from "../../voice/hooks";
 import {
   VIDEO_SWITCH_NOTE,
@@ -34,6 +35,51 @@ import {
   VideoOffIcon,
 } from "../kit";
 
+/**
+ * How many cameras the live engine can open, read while the camera is on
+ * (null while it is off, or not read yet). The flip exists only for two or
+ * more; a laptop with one never sees it.
+ */
+function useCameraCount(on: boolean, native: boolean): number | null {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!on) {
+      setCount(null);
+      return;
+    }
+    let cancelled = false;
+    void listVideoDevices(native).then((list) => {
+      if (!cancelled) setCount(list.length);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [on, native]);
+  return count;
+}
+
+/** Two arrows chasing each other around a camera body: "the other camera". */
+function FlipCameraIcon() {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-5 w-5"
+      aria-hidden="true"
+    >
+      <path d="M3 7.5A2 2 0 0 1 5 5.5h1.5l1.2-1.5h4.6l1.2 1.5H15a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <path d="M7.4 9.6a2.8 2.8 0 0 1 4.9-.8" />
+      <path d="m12.6 7.4-.3 1.4-1.4-.3" />
+      <path d="M12.6 11.4a2.8 2.8 0 0 1-4.9.8" />
+      <path d="m7.4 13.6.3-1.4 1.4.3" />
+    </svg>
+  );
+}
+
 export function CallControls({
   dark = false,
   onOpenDevices,
@@ -47,6 +93,13 @@ export function CallControls({
   const cameraReason = videoDisabledReason(state, "camera");
   const screenReason = videoDisabledReason(state, "screen");
   const tint = dark ? "!text-neutral-300 hover:!text-white" : "";
+  // The flip: a phone's way to its back camera (row A-38), and a laptop's to
+  // a second camera, without a trip through Settings. Only while the camera
+  // is on and there is another to move to. This row sits under the stage,
+  // never over a tile, so a native tile's swallowed pointer is not in its
+  // way (rules.ts's `tilesDrawAbovePage`).
+  const cameras = useCameraCount(state.camera.on && !state.camera.paused, state.nativeEngine);
+  const showsFlip = state.camera.on && !state.camera.paused && (cameras ?? 0) >= 2;
   // The button that was pressed, kept in state rather than read from a ref
   // during render: the popover anchors to it, and a ref's `current` is not
   // something a render may depend on.
@@ -117,6 +170,16 @@ export function CallControls({
           }
         >
           {state.camera.on ? <VideoIcon /> : <VideoOffIcon />}
+        </IconButton>
+      )}
+
+      {showsFlip && (
+        <IconButton
+          label="Switch camera"
+          onClick={() => void voice.flipCamera()}
+          className={tint}
+        >
+          <FlipCameraIcon />
         </IconButton>
       )}
 
