@@ -49,7 +49,6 @@ import {
   createGroup as mlsCreateGroup,
   createGroupInfoWithExternalPubAndRatchetTree,
   decodeGroupState,
-  decodeMlsMessage,
   defaultCapabilities,
   defaultLifetime,
   emptyPskIndex,
@@ -444,15 +443,28 @@ class MlsHandshake implements HandshakeOps {
       // immediately.
       const candidates = await listKeyPackages();
       for (const candidate of candidates) {
-        const publicMessage = decodeMlsMessage(candidate.record.publicWire, 0);
-        if (!publicMessage || publicMessage[0].wireformat !== "mls_key_package") {
+        let publicPackage;
+        try {
+          publicPackage = decodeWire(
+            candidate.record.publicWire,
+            "mls_key_package",
+          ).keyPackage;
+        } catch {
           continue;
         }
 
+        // Only the join is "not ours, try the next". Persisting and
+        // consuming the package are outside the try on purpose: they used
+        // to be inside it, so IndexedDB refusing a write after a
+        // successful join was swallowed as a mismatch, the loop ran out,
+        // and the welcome was acked at once as NOT_IN_GROUP -- when
+        // planWelcomeFailure gives exactly that kind of failure five
+        // attempts (sweep 1001, client-core-11).
+        let state: ClientState;
         try {
-          const state = await joinGroup(
+          state = await joinGroup(
             message.welcome,
-            publicMessage[0].keyPackage,
+            publicPackage,
             {
               initPrivateKey: candidate.record.initPrivateKey,
               hpkePrivateKey: candidate.record.hpkePrivateKey,
@@ -461,30 +473,31 @@ class MlsHandshake implements HandshakeOps {
             emptyPskIndex,
             suite,
           );
-
-          const welcomeEpoch = Number(state.groupContext.epoch);
-
-          // Never roll backwards. A welcome used to be the newest thing that
-          // could arrive with state already present (a re-add, or a
-          // redelivery), so it always won. External commits broke that: this
-          // device can join itself at epoch N+1 while a welcome for epoch N
-          // is still queued, and persisting the older state would strand it
-          // one epoch behind a commit it can never apply -- its own. The
-          // package is still consumed and the welcome still acked; the only
-          // change is that the newer state stays.
-          if (existing && existing.epoch >= welcomeEpoch) {
-            await deleteKeyPackage(candidate.id);
-            return { epoch: existing.epoch };
-          }
-
-          await persistState(conversationId, state);
-          // Consumed: the server hands a key package out once, so no other
-          // welcome will ever reference this one.
-          await deleteKeyPackage(candidate.id);
-          return { epoch: welcomeEpoch };
         } catch {
           // Not ours, or not this package. Try the next.
+          continue;
         }
+
+        const welcomeEpoch = Number(state.groupContext.epoch);
+
+        // Never roll backwards. A welcome used to be the newest thing that
+        // could arrive with state already present (a re-add, or a
+        // redelivery), so it always won. External commits broke that: this
+        // device can join itself at epoch N+1 while a welcome for epoch N
+        // is still queued, and persisting the older state would strand it
+        // one epoch behind a commit it can never apply -- its own. The
+        // package is still consumed and the welcome still acked; the only
+        // change is that the newer state stays.
+        if (existing && existing.epoch >= welcomeEpoch) {
+          await deleteKeyPackage(candidate.id);
+          return { epoch: existing.epoch };
+        }
+
+        await persistState(conversationId, state);
+        // Consumed: the server hands a key package out once, so no other
+        // welcome will ever reference this one.
+        await deleteKeyPackage(candidate.id);
+        return { epoch: welcomeEpoch };
       }
 
       throw new E2EError(
