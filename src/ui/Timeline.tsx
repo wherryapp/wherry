@@ -869,13 +869,11 @@ export function Timeline({
   };
 
   // Names by user id, so attribution is a lookup rather than a scan per
-  // message. Only built for groups and channels, since a 1:1 never shows
-  // them. A channel shows senders at ANY size -- unlike a group, its
-  // membership can grow past whoever is in the room right now, so "who
-  // said this" is always information.
-  const isGroup =
-    conversation?.kind === "channel" ||
-    (conversation?.members.length ?? 0) > 2;
+  // message. Shown in groups and channels at ANY size, never in a 1:1: the
+  // question is the conversation's kind, not its head count (format.ts's
+  // directPeer; decided 2026-09-29). A group down to two people is still a
+  // group, and anyone can be added back.
+  const isGroup = conversation !== undefined && conversation.kind !== "direct";
   // Everybody but you. Used to decide whether "Read" means everyone.
   const others = Math.max(0, (conversation?.members.length ?? 1) - 1);
 
@@ -1693,9 +1691,9 @@ export function Presence({
   const presence = usePresence(conversationId);
   if (presence === null || presence.online.length === 0) return null;
 
-  const isGroup =
-    conversation?.kind === "channel" ||
-    (conversation?.members.length ?? 0) > 2;
+  // By kind, as everywhere (format.ts's directPeer): a group down to two
+  // people still reads as a count.
+  const isGroup = conversation !== undefined && conversation.kind !== "direct";
   // In a 1:1 the one other member is the whole answer, so their status
   // kind (friends only -- absent from the map reads as plain online) is
   // what the line says. A group stays a count.

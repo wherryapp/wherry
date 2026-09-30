@@ -21,7 +21,13 @@ import { voice, type ScreenSource } from "../voice/session";
 import { Presence, Timeline, TypingLine } from "./Timeline";
 import { Composer } from "./Composer";
 import { type EditDraft, type ReplyDraft } from "./drafts";
-import { avatarHue, avatarKey, avatarSeed, conversationTitle } from "./format";
+import {
+  avatarHue,
+  avatarKey,
+  avatarSeed,
+  conversationTitle,
+  directPeer,
+} from "./format";
 import { classLabel, isServerReadable } from "./hub-class";
 import { useBackLayer } from "./back";
 import { useIsDesktop } from "./viewport";
@@ -1180,12 +1186,9 @@ export function Chat({
                   )}
                   {current && (() => {
                     // In a 1:1 the header avatar IS the other person, so it
-                    // opens their card. A group's avatar stays inert -- its
-                    // details are behind the Details button.
-                    const other =
-                      current.kind !== "channel" && current.members.length === 2
-                        ? current.members.find((member) => member.userId !== session.user.id)
-                        : undefined;
+                    // opens their card. A group's avatar stays inert, at any
+                    // size -- its details are behind the Details button.
+                    const other = directPeer(current, session.user.id);
                     const avatar = (
                       <UserAvatar
                         size="sm"

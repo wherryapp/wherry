@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatBytes, listTime } from "./format.ts";
+import {
+  avatarHue,
+  avatarKey,
+  avatarSeed,
+  directPeer,
+  formatBytes,
+  listTime,
+} from "./format.ts";
+import type { StoredConversation } from "../store/types.ts";
 
 // A fixed "now" so the boundaries are the test's, not the clock's. Local time
 // throughout, because the function compares calendar days the way a person
@@ -74,4 +82,55 @@ test("formatBytes reads the way an operating system reports a file", () => {
 test("formatBytes refuses to render nonsense as a size", () => {
   assert.equal(formatBytes(-1), "");
   assert.equal(formatBytes(Number.NaN), "");
+});
+
+// directPeer: the one "is this a 1:1?" (sweep 1001 client-ui-11, decided
+// 2026-09-29). By kind, never by head count.
+
+const SELF = "u-self";
+function member(userId: string, extra: Partial<StoredConversation["members"][number]> = {}) {
+  return {
+    userId,
+    username: userId,
+    displayName: userId,
+    lastReadMessageId: null,
+    ...extra,
+  } as StoredConversation["members"][number];
+}
+function conversation(
+  kind: StoredConversation["kind"],
+  members: StoredConversation["members"],
+): StoredConversation {
+  return {
+    id: `c-${kind}`,
+    kind,
+    title: null,
+    createdAt: "2026-09-29T00:00:00.000Z",
+    members,
+  } as unknown as StoredConversation;
+}
+
+test("a direct conversation's peer is the other member", () => {
+  const dm = conversation("direct", [member(SELF), member("u-alice", { avatarHue: 200, avatarKey: "k1" })]);
+  assert.equal(directPeer(dm, SELF)?.userId, "u-alice");
+  assert.equal(avatarSeed(dm, SELF), "u-alice");
+  assert.equal(avatarHue(dm, SELF), 200);
+  assert.equal(avatarKey(dm, SELF), "k1");
+});
+
+test("a group left with two people is still a group, not a 1:1", () => {
+  const group = conversation("group", [member(SELF), member("u-alice", { avatarHue: 200, avatarKey: "k1" })]);
+  assert.equal(directPeer(group, SELF), undefined);
+  assert.equal(avatarSeed(group, SELF), group.id);
+  assert.equal(avatarHue(group, SELF), null);
+  assert.equal(avatarKey(group, SELF), null);
+});
+
+test("a two-member channel is a channel", () => {
+  const channel = conversation("channel", [member(SELF), member("u-alice")]);
+  assert.equal(directPeer(channel, SELF), undefined);
+});
+
+test("a direct conversation with nobody else in it has no peer", () => {
+  assert.equal(directPeer(conversation("direct", [member(SELF)]), SELF), undefined);
 });

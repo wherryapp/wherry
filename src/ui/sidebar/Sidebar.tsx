@@ -23,6 +23,7 @@ import {
   avatarKey,
   avatarSeed,
   conversationTitle,
+  directPeer,
   listTime,
   memberName,
 } from "../format";
@@ -179,7 +180,10 @@ export function ConversationList({
                   : null
             : null;
           const count = unread.get(conversation.id) ?? 0;
-          const isGroup = conversation.members.length > 2;
+          // The one 1:1 test (format.ts): by kind, so a group left with two
+          // people still names its senders and shows no one person's dot.
+          const peer = directPeer(conversation, session.user.id);
+          const isGroup = conversation.kind !== "direct";
 
           // In a group the preview is ambiguous without a name -- "see you at
           // 6" from one of four people is half a message.
@@ -195,11 +199,7 @@ export function ConversationList({
           // The other member's id in a 1:1, for the online dot. Absent from
           // the presence map means unknown -- render nothing, never an
           // "offline" treatment; presence has no stored form on purpose.
-          const otherId = !isGroup
-            ? conversation.members.find(
-                (member) => member.userId !== session.user.id,
-              )?.userId
-            : undefined;
+          const otherId = peer?.userId;
           const snapshot = presence.get(conversation.id);
           const otherOnline =
             otherId !== undefined &&
