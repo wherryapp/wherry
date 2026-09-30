@@ -103,15 +103,6 @@ export async function prepareForUpload(
   return chosen;
 }
 
-/**
- * Decodes and re-encodes to JPEG, or returns null if this browser cannot.
- *
- * Null rather than throwing: a decode failure means the format is not readable
- * here, and the caller's fallback -- send the original bytes -- is the right
- * answer rather than an error. That is also the honest outcome for a HEIC
- * picked on a browser that cannot read one, which should not happen, since the
- * only platform that produces them can read them.
- */
 /** A profile picture's stored edge. Drawn at 56px at the largest today, so
  *  256 covers a 3x display and a bigger card later without a re-upload. */
 const AVATAR_EDGE = 256;
@@ -199,6 +190,15 @@ export async function prepareAvatar(
   }
 }
 
+/**
+ * Decodes and re-encodes to JPEG, or returns null if this browser cannot.
+ *
+ * Null rather than throwing: a decode failure means the format is not readable
+ * here, and the caller's fallback -- send the original bytes -- is the right
+ * answer rather than an error. That is also the honest outcome for a HEIC
+ * picked on a browser that cannot read one, which should not happen, since the
+ * only platform that produces them can read them.
+ */
 async function reencode(file: File): Promise<PreparedFile | null> {
   try {
     // `imageOrientation: "from-image"` applies the EXIF rotation while
