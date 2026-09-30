@@ -20,9 +20,13 @@
 // posted. A ring posted while the page was alive but not in front, and that
 // the page has reported, is withdrawn when the activity comes to the front
 // (the page's sheet then rings with its tone) and posted again if the person
-// leaves while it still rings: the page answered `shown: true` for it and
-// will not ring it in the background. "Is the activity in front" is the one
-// decision made here, because it must be made when the page may not exist.
+// leaves while it still rings. A ring the page reported while in front (so
+// never posted) is posted too when the person leaves: the page's own tone is
+// not relied on in the background, where WebView's pause and the freezer
+// stop it within seconds (mobile-2, 2026-10-01). Each of those moves is told
+// to the page (`ring-shown`), so its tone plays exactly while nothing native
+// rings. "Is the activity in front" is the one decision made here, because
+// it must be made when the page may not exist.
 package app.wherry.calls
 
 import android.app.Notification
@@ -38,6 +42,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import java.lang.ref.WeakReference
 
 internal object RingHandler {
     /** This plugin's channel (coordination §4: CALLS owns `ringing` and
@@ -71,10 +76,36 @@ internal object RingHandler {
     private val held = HashSet<String>()
 
     /** Rings the page rings itself: it reported them while the activity was
-     *  in front, was answered `shown: false`, and so sounds and notifies for
-     *  them on its own (phone-rules.ts's pageRingDuties). A later push for
-     *  one is not posted, or the phone would ring twice. */
+     *  in front and was answered `shown: false`, so its sheet sounds for them
+     *  (phone-rules.ts's pageRingDuties; it posts no notification for them).
+     *  A later push for one is not posted while the page is in front, or the
+     *  phone would ring twice; `left` posts it when the person leaves. */
     private val pageOwned = HashSet<String>()
+
+    /** Where the page hears that the native ring took a ring it reported, or
+     *  gave one back to its sheet: the plugin's `ring-shown` event. */
+    interface PageSink {
+        fun ringShown(callId: String, shown: Boolean)
+    }
+
+    private var pageSink: WeakReference<PageSink>? = null
+
+    /** CallsPlugin, once per plugin instance. */
+    @Synchronized
+    fun attach(sink: PageSink) {
+        pageSink = WeakReference(sink)
+    }
+
+    /** Best-effort: a page that is not listening re-reads nothing, and its
+     *  sheet keeps the answer it had (the tone plays over a posted ring, or
+     *  is silent over a withdrawn one, until the ring ends). */
+    private fun tellPage(callId: String, shown: Boolean) {
+        try {
+            pageSink?.get()?.ringShown(callId, shown)
+        } catch (e: Exception) {
+            Log.w(TAG, "[wherry] calls: ring-shown not sent: $e")
+        }
+    }
 
     // -- ways in ------------------------------------------------------------
 
@@ -141,8 +172,14 @@ internal object RingHandler {
     private fun ring(context: Context, incoming: Ring, source: String): Boolean {
         val callId = incoming.callId
         if (callId in ended) {
+            // Declined or ended here already (a signed Decline on the ring,
+            // which leaves the page no `decline` to act on): nothing is
+            // posted, and the page is told its native side has the ring, as
+            // iOS answers for a call CallKit has ended, so its sheet does not
+            // ring in front for a call just declined (mobile-4). A push is
+            // told nothing was posted.
             Log.i(TAG, "[wherry] calls: $source ring dropped: call=$callId already ended here")
-            return false
+            return incoming.pageKnown
         }
         val now = System.currentTimeMillis()
         if (incoming.exp * 1000 <= now) {
@@ -189,24 +226,52 @@ internal object RingHandler {
             if (rings[callId]?.pageKnown != true) continue
             cancel(context, callId)
             held.add(callId)
+            tellPage(callId, false)
             Log.i(TAG, "[wherry] calls: ring withdrawn in front: the page rings call=$callId")
         }
     }
 
-    /** The activity has left the front (CallLifecycle, after a settle). A
-     *  ring withdrawn for the page and still ringing is posted again: the
-     *  page was answered `shown: true` for it and does not ring it in the
-     *  background. */
+    /**
+     * The activity has left the front (CallLifecycle, after a settle). Every
+     * ring the page reported and that still rings is posted:
+     *  - one withdrawn for the page (`held`), again;
+     *  - one the page has rung from the start (`pageOwned`: reported while in
+     *    front, so never posted), for the first time. Without this a ring
+     *    that began with the app in front had nothing in the shade once the
+     *    person left, and no Answer outside the app: the page posts no
+     *    notification for a ring its plugin answered `shown: false` for
+     *    (467d0dc), and its tone stops with WebView's pause (mobile-2).
+     * Posted, it is the plugin's again: `pageInFront` withdraws it into
+     * `held` when the person comes back. The page is told each one it
+     * posts, so its sheet's tone stops while the notification rings.
+     */
     @Synchronized
     fun left(context: Context) {
-        if (held.isEmpty()) return
+        if (held.isEmpty() && pageOwned.isEmpty()) return
         val now = System.currentTimeMillis()
         for (callId in held.toList()) {
             held.remove(callId)
             val ring = rings[callId] ?: continue
             if (callId in ended || ring.exp * 1000 <= now) continue
-            if (!post(context, ring, "left")) {
+            if (post(context, ring, "left")) {
+                tellPage(callId, true)
+            } else {
                 Log.w(TAG, "[wherry] calls: ring not posted again on leaving call=$callId")
+            }
+        }
+        for (callId in pageOwned.toList()) {
+            val ring = rings[callId]
+            if (ring == null || callId in ended || ring.exp * 1000 <= now) {
+                pageOwned.remove(callId)
+                continue
+            }
+            // Not posted (notifications off): the page's sheet is all there
+            // is, so the page keeps it.
+            if (post(context, ring, "left")) {
+                pageOwned.remove(callId)
+                tellPage(callId, true)
+            } else {
+                Log.w(TAG, "[wherry] calls: page's ring not posted on leaving call=$callId")
             }
         }
     }

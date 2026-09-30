@@ -21,7 +21,9 @@
 //     are;
 //   - the PushKit token, registered through the push plan's one
 //     registration path;
-//   - CallKit's mute button.
+//   - CallKit's mute button;
+//   - Android's `ring-shown`: a reported ring posted as the ring notification
+//     or withdrawn for the sheet, which replaces that ring's answer.
 //
 // Nothing here may throw into React or the sync loop (CLAUDE.md: a throw
 // there can wedge every tap). Every native call is already best-effort
@@ -83,6 +85,7 @@ import {
   nativeApiBase,
   nativeEndReason,
   nativeRingOf,
+  nativeRingOfEvent,
   notificationLabels,
   PAGE_ALIVE_EVERY_MS,
   PAGE_ONLY,
@@ -404,6 +407,16 @@ class PhoneBridge {
       await this.#native.onMute(({ callId, muted }) => {
         if (!run.alive || voice.getState().call?.id !== callId) return;
         void voice.setMicMuted(muted).catch(() => {});
+      }),
+    );
+    // Android moved a ring this page reported: the new answer, only while
+    // the ring is still the page's (as a late `reportIncoming` answer).
+    this.#hold(
+      run,
+      await this.#native.onRingShown(({ callId, shown }) => {
+        if (!run.alive || !this.#reported.has(callId)) return;
+        log(`ring ${callId} ${shown ? "posted natively" : "back to the sheet"}`);
+        this.#setShown(callId, nativeRingOfEvent(shown));
       }),
     );
     if (!run.alive) return;

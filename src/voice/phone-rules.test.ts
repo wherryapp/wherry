@@ -12,6 +12,7 @@ import {
   nativeApiBase,
   nativeEndReason,
   nativeRingOf,
+  nativeRingOfEvent,
   notificationLabels,
   PAGE_ONLY,
   pageAliveWanted,
@@ -20,6 +21,7 @@ import {
   readAction,
   readCapabilities,
   readIncomingAnswer,
+  readRingShown,
   readVoipToken,
   ringDisplay,
   ringExpiry,
@@ -259,6 +261,33 @@ test("an Android plugin that never answered leaves the page ringing alone, notif
   assert.deepEqual(
     pageRingDuties({ capabilities: ANDROID_RING, native: "no_answer", windowFocused: true }),
     ALONE_IN_FRONT,
+  );
+});
+
+test("Android's ring-shown event moves a reported ring between the notification and the sheet (mobile-2)", () => {
+  assert.deepEqual(readRingShown({ callId: "c1", shown: true }), { callId: "c1", shown: true });
+  assert.deepEqual(readRingShown({ callId: "c1", shown: false }), { callId: "c1", shown: false });
+  for (const raw of [null, "x", {}, { callId: "c1" }, { shown: true }, { callId: "", shown: true }, { callId: 1, shown: true }, { callId: "c1", shown: "true" }]) {
+    assert.equal(readRingShown(raw), null);
+  }
+  // Reported in front (`shown: false`), then the person pressed HOME: the
+  // plugin posted the ring, so the page's tone stops behind (the
+  // notification rings) and nothing of the page's is posted.
+  const left = { capabilities: ANDROID_RING, native: nativeRingOfEvent(true), windowFocused: false };
+  assert.deepEqual(pageRingDuties(left), { sheet: true, tone: false, notification: false });
+  // Back in front: withdrawn, and the sheet's tone plays even where the
+  // webview misreads its focus (row A-63's `am start` with no touch).
+  const back = { capabilities: ANDROID_RING, native: nativeRingOfEvent(false), windowFocused: false };
+  assert.deepEqual(pageRingDuties(back), ALONE_IN_FRONT);
+});
+
+test("Android's answer for a ring already ended here keeps the page's tone off behind (mobile-4)", () => {
+  // A Decline on the ring notification went straight to the server; the
+  // socket's ring came after. The plugin answers `shown: true`, as iOS does.
+  const native = nativeRingOf(readIncomingAnswer({ shown: true }));
+  assert.deepEqual(
+    pageRingDuties({ capabilities: ANDROID_RING, native, windowFocused: false }),
+    { sheet: true, tone: false, notification: false },
   );
 });
 
