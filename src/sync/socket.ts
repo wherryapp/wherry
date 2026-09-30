@@ -47,9 +47,15 @@ export type SocketLike = {
 };
 
 export type SocketManagerOptions = {
-  /** Defaults to `new WebSocket(...)` against the page's own origin. */
+  /** Defaults to `new WebSocket(url)`. */
   createSocket?: (url: string) => SocketLike;
-  url?: string;
+  /**
+   * Where the socket lives. Required: base.ts's `socketUrl()` owns that
+   * answer, and the desktop build's socket is on the API origin, not the
+   * page's -- a default built from `location` was the desktop bug CLAUDE.md
+   * names, waiting for a caller to forget the argument.
+   */
+  url: string;
   getToken: () => string | null;
   /** "Run a sync pass." The engine passes poke; never anything heavier. */
   notify: () => void;
@@ -66,11 +72,6 @@ export type SocketManagerOptions = {
   staleMs?: number;
   staleCheckMs?: number;
 };
-
-function defaultUrl(): string {
-  const scheme = location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${location.host}/api/ws`;
-}
 
 export class SocketManager {
   readonly #options: SocketManagerOptions;
@@ -151,6 +152,20 @@ export class SocketManager {
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = null;
     }
+    // A socket still in its handshake is replaced, and closed: it was
+    // opened on the network this call says is gone. Left open, its handlers
+    // went inert (superseded) but it lived on, and one that had already
+    // authenticated kept its server-side registration until the server's
+    // ping sweep timed it out (sweep 1001, client-core-15). Detached before
+    // the close so its close handler, which checks for exactly this, stays
+    // out of it.
+    const pending = this.#socket;
+    this.#socket = null;
+    try {
+      pending?.close();
+    } catch {
+      // Already dead; nothing to close.
+    }
     this.#backoff.reset();
     this.#connect();
   }
@@ -185,7 +200,7 @@ export class SocketManager {
     let socket: SocketLike;
     try {
       socket = (this.#options.createSocket ?? ((url) => new WebSocket(url)))(
-        this.#options.url ?? defaultUrl(),
+        this.#options.url,
       );
     } catch {
       this.#scheduleReconnect();

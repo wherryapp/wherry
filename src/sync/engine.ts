@@ -854,9 +854,8 @@ export class SyncEngine {
     // leadership change, a fatal 401, a thrown bug -- runs the finally and
     // closes it. The next leader's loop opens its own.
     this.#socket = new SocketManager({
-      // Resolved here rather than by socket.ts's own default: the desktop
-      // build's socket lives on the API origin, not the page's -- base.ts
-      // owns that distinction.
+      // The desktop build's socket lives on the API origin, not the
+      // page's -- base.ts owns that distinction.
       url: socketUrl(),
       getToken: currentToken,
       notify: () => {
