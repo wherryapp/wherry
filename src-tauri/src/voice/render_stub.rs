@@ -35,7 +35,7 @@ pub struct Tile {
 
 impl Tile {
   pub fn create(_app: &AppHandle) -> Result<Tile, VoiceError> {
-    Err(VoiceError::new("unsupported", "native video tiles are macOS only for now"))
+    Err(VoiceError::new("unsupported", "no native video tiles on this platform"))
   }
   pub fn is_bound(&self) -> bool {
     false
