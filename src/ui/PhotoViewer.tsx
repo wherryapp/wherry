@@ -26,6 +26,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, ty
 import type { AttachmentRef } from "../api/payload";
 import { store } from "../store";
 import { useBackLayer } from "./back";
+import { displayFileName } from "./file-policy";
 import { DownloadIcon, XIcon } from "./kit";
 import {
   RESET,
@@ -94,15 +95,29 @@ function swallowGhostClick(dismissedAt: ClickPoint): void {
   timer = setTimeout(done, 600);
 }
 
-/** What a saved file is called. The id makes it unique; the type comes from
- *  the payload, since the server never learned it. */
+/** What a saved file is called when the sender's name is not carried. The
+ *  id makes it unique; the type comes from the payload, since the server
+ *  never learned it. GIFs are kept as GIFs (media.ts), and an image whose
+ *  re-encode failed keeps its own type, so more than JPEG arrives here. */
 const EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
+  "image/gif": "gif",
+  "image/avif": "avif",
+  "image/heic": "heic",
+  "image/heif": "heif",
 };
 
+/**
+ * The sender's own filename when the payload carries one -- it does exactly
+ * when the bytes are the ones that were picked (Composer.tsx), a GIF from the
+ * picker included -- sanitised as every displayed name is. Otherwise a name
+ * made from the id and the type.
+ */
 function fileNameFor(attachment: AttachmentRef): string {
+  const named = attachment.name ? displayFileName(attachment.name) : "";
+  if (named) return named;
   return `photo-${attachment.id}.${EXTENSIONS[attachment.mediaType] ?? "bin"}`;
 }
 
@@ -152,7 +167,16 @@ export function PhotoViewer({
     setTransform(RESET);
 
     void (async () => {
-      const blob = await store.getBlob(attachment.id);
+      let blob: Awaited<ReturnType<typeof store.getBlob>>;
+      try {
+        blob = await store.getBlob(attachment.id);
+      } catch {
+        // IndexedDB refused the read. Close rather than stay mounted showing
+        // nothing: the viewer's back layer is already registered, and an
+        // invisible layer would eat the next Back or Escape.
+        if (!cancelled) close.current();
+        return;
+      }
       if (cancelled) return;
       if (!blob || blob.state !== "ok") {
         // No bytes, or a terminal verdict there will never be any. Nothing
