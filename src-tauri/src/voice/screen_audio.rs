@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
-use windows::Win32::Foundation::{CloseHandle, HWND, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
@@ -242,10 +242,16 @@ impl ScreenAudio {
         Ok(ScreenAudio { stop, frames, join: Some(join) })
       }
       Ok(Err(message)) => Err(VoiceError::new("screen_audio_failed", message)),
-      Err(_) => Err(VoiceError::new(
-        "screen_audio_failed",
-        "the screen audio capture never reported ready",
-      )),
+      Err(_) => {
+        // The thread may still become ready after we have given up on it;
+        // told to stop now, it leaves its loop on its first check instead
+        // of capturing for the life of the process with nobody to stop it.
+        stop.store(true, Ordering::Relaxed);
+        Err(VoiceError::new(
+          "screen_audio_failed",
+          "the screen audio capture never reported ready",
+        ))
+      }
     }
   }
 
@@ -287,6 +293,25 @@ impl Drop for Com {
   }
 }
 
+/// The loopback's wake-up event, closed on every way out of `capture_loop`
+/// -- the early `?` returns included, which used to leak it once per failed
+/// share.
+struct Event(HANDLE);
+
+impl Event {
+  fn create() -> windows_core::Result<Event> {
+    // SAFETY: an unnamed auto-reset event, owned by the guard from here.
+    unsafe { CreateEventW(None, false, false, PCWSTR::null()) }.map(Event)
+  }
+}
+
+impl Drop for Event {
+  fn drop(&mut self) {
+    // SAFETY: created by `create` and closed only here.
+    let _ = unsafe { CloseHandle(self.0) };
+  }
+}
+
 fn capture_loop(
   mode: Mode,
   pid: u32,
@@ -299,6 +324,8 @@ fn capture_loop(
   // `!Send` and cannot be handed anywhere else. The guard is the first
   // local, so every COM object is dropped before it uninitialises.
   let _com = Com::start().map_err(|e| e.message())?;
+  // Before the client, so it is closed after the client lets go of it.
+  let event = Event::create().map_err(|e| e.message())?;
   let client = activate(mode, pid)?;
   let format = pcm_format();
   // Nothing is sized from `GetBufferSize` on this stream -- it reports junk,
@@ -315,9 +342,7 @@ fn capture_loop(
     )
   }
   .map_err(|e| format!("screen audio Initialize: 0x{:08X} {}", e.code().0, e.message()))?;
-  let event = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }
-    .map_err(|e| e.message())?;
-  unsafe { client.SetEventHandle(event) }.map_err(|e| e.message())?;
+  unsafe { client.SetEventHandle(event.0) }.map_err(|e| e.message())?;
   let capture: IAudioCaptureClient = unsafe { client.GetService() }.map_err(|e| e.message())?;
   unsafe { client.Start() }.map_err(|e| format!("screen audio Start: {}", e.message()))?;
   let _ = ready_tx.send(Ok(()));
@@ -334,7 +359,7 @@ fn capture_loop(
     // A 200 ms wait rather than an infinite one: with no active render
     // endpoint the event never fires at all, and the loop still has to
     // notice `stop`.
-    let _ = unsafe { WaitForSingleObject(event, 200) } == WAIT_OBJECT_0;
+    let _ = unsafe { WaitForSingleObject(event.0, 200) } == WAIT_OBJECT_0;
     loop {
       let next = unsafe { capture.GetNextPacketSize() }.unwrap_or(0);
       if next == 0 {
@@ -389,6 +414,5 @@ fn capture_loop(
   }
 
   let _ = unsafe { client.Stop() };
-  let _ = unsafe { CloseHandle(event) };
   Ok(())
 }

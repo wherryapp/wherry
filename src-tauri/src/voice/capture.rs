@@ -409,7 +409,12 @@ impl Screen {
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
       Ok(Ok(())) => Ok(Screen { stop, frames, join: Some(join) }),
       Ok(Err((code, message))) => Err(VoiceError::new(code, message)),
-      Err(_) => Err(VoiceError::new("screen_failed", "the capturer did not start")),
+      Err(_) => {
+        // A thread that becomes ready after this would otherwise capture for
+        // the life of the process with nobody holding its `stop`.
+        stop.store(true, Ordering::Relaxed);
+        Err(VoiceError::new("screen_failed", "the capturer did not start"))
+      }
     }
   }
 
@@ -889,10 +894,13 @@ pub mod win {
   /// its usual shape. That has to arrive as `camera_denied` -- "Camera access
   /// was refused." -- rather than as the generic sentence, because on a
   /// machine with the setting off it is not the rare path but the only one
-  /// (the work order's §4; row D-62).
+  /// (the work order's §4; row D-62). The message says "refused", never "not
+  /// allowed": the page's `publishErrorMessage` reads a message holding "not
+  /// allowed" beside "source" as the SFU refusing to take camera video, and
+  /// one stage here is "creating the source reader".
   fn camera_error(stage: &str, error: &windows_core::Error) -> VoiceError {
     if error.code() == E_ACCESSDENIED {
-      return VoiceError::new("camera_denied", format!("camera access is not allowed ({stage})"));
+      return VoiceError::new("camera_denied", format!("camera access was refused ({stage})"));
     }
     VoiceError::new("camera_failed", format!("{stage}: {}", describe(error)))
   }
