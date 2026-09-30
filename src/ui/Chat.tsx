@@ -221,9 +221,15 @@ function useMarkRead(conversationId: string | null, selfUserId: string): void {
 
   // The newest *stored* message. Outbox entries are excluded: they have no
   // server id yet, and marking your own unsent message read means nothing.
+  // So are rows from another conversation: useTimeline's items lag a switch
+  // by a render, and the effect below fires on the new id with the old
+  // conversation's newest message. The server ignores a message from another
+  // conversation, but the local marker took it until the next refresh.
   let newest: string | null = null;
   for (const item of items) {
-    if (item.kind === "sent") newest = item.message.messageId;
+    if (item.kind === "sent" && item.message.conversationId === conversationId) {
+      newest = item.message.messageId;
+    }
   }
 
   useEffect(() => {

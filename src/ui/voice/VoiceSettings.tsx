@@ -498,15 +498,23 @@ function MicMeter({
         for (const v of buffer) sum += v * v;
         setLevel(Math.min(1, Math.sqrt(sum / buffer.length) * 4));
       }, 80);
+      // Idempotent, because both the unmount cleanup and the 5s auto-stop
+      // below can reach it -- without the guard, the timer firing after an
+      // unmount-triggered stop closed an already-closed AudioContext, which
+      // rejects and was going unhandled.
+      let stopped = false;
       const stop = (): void => {
+        if (stopped) return;
+        stopped = true;
         clearInterval(timer);
+        clearTimeout(timeout);
         for (const track of stream.getTracks()) track.stop();
-        void context.close();
+        if (context.state !== "closed") void context.close().catch(() => {});
         setLevel(null);
         stopRef.current = null;
       };
       stopRef.current = stop;
-      setTimeout(stop, 5_000);
+      const timeout = setTimeout(stop, 5_000);
     } catch (e) {
       const name = e instanceof Error ? e.name : "";
       setError(

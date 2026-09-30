@@ -1883,7 +1883,7 @@ export function setHubVideoCap(
 ): Promise<{ limits: Partial<VideoLimits> | null }> {
   return request<{ limits: Partial<VideoLimits> | null }>(`${API}/hubs/${hubId}/video-cap`, {
     method: "PUT",
-    body: JSON.stringify({ limits }),
+    body: { limits },
   });
 }
 

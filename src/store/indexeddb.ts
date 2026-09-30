@@ -541,7 +541,7 @@ export class IndexedDbMessageStore implements MessageStore {
   async clear(): Promise<void> {
     const db = await this.#open();
     const tx = db.transaction(
-      [MESSAGES, CONVERSATIONS, OUTBOX, META, EVENTS],
+      [MESSAGES, CONVERSATIONS, OUTBOX, META, EVENTS, BLOBS],
       "readwrite",
     );
     await Promise.all([
@@ -550,6 +550,7 @@ export class IndexedDbMessageStore implements MessageStore {
       tx.objectStore(OUTBOX).clear(),
       tx.objectStore(META).clear(),
       tx.objectStore(EVENTS).clear(),
+      tx.objectStore(BLOBS).clear(),
     ]);
     await tx.done;
   }

@@ -222,11 +222,22 @@ export function Composer({
 
   // Revoke preview URLs when they stop being used, or every photo somebody
   // picks and reconsiders is held in memory until the page is reloaded.
+  // `remove` and the send path already revoke each item's URL as it leaves
+  // `pending`; this effect only has to catch what's still pending when the
+  // composer itself goes away (switching conversations, say). Through a ref
+  // kept current every render, because depending on `pending` directly ran
+  // this cleanup -- and revoked -- on every change to the list, which killed
+  // the preview of whatever was already picked the moment a second file was
+  // added.
+  const pendingAtUnmount = useRef(pending);
+  useEffect(() => {
+    pendingAtUnmount.current = pending;
+  });
   useEffect(() => {
     return () => {
-      for (const item of pending) URL.revokeObjectURL(item.url);
+      for (const item of pendingAtUnmount.current) URL.revokeObjectURL(item.url);
     };
-  }, [pending]);
+  }, []);
 
   /**
    * The one way anything becomes a pending attachment.

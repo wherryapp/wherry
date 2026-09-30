@@ -24,6 +24,7 @@ import {
   Panel,
   PanelSection,
   handleInputProps,
+  useConfirm,
 } from "./kit";
 import { UserAvatar } from "./UserAvatar";
 import { StatusDot } from "./StatusDot";
@@ -44,6 +45,8 @@ export function GroupDetails({
   selfUserId: string;
   onClose: () => void;
 }) {
+  const { confirm, confirmDialog } = useConfirm();
+
   const [title, setTitle] = useState(conversation.title ?? "");
   const [titleBusy, setTitleBusy] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
@@ -183,6 +186,14 @@ export function GroupDetails({
   }
 
   async function doLeave(): Promise<void> {
+    if (
+      !(await confirm({
+        message: "Leave this group?",
+        confirmLabel: "Leave",
+      }))
+    ) {
+      return;
+    }
     setLeaveBusy(true);
     setLeaveError(null);
     try {
@@ -378,6 +389,7 @@ export function GroupDetails({
           </form>
         </PanelSection>
       </div>
+      {confirmDialog}
     </Panel>
   );
 }

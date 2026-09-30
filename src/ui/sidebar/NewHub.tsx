@@ -126,8 +126,7 @@ export function NewHub({
             <span>
               {classLabel(option)}
               <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-                {classSentence(option)}{" "}
-                {option !== "private" && CLASS_IS_PERMANENT}
+                {classSentence(option)} {CLASS_IS_PERMANENT}
               </span>
             </span>
           </label>

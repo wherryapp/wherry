@@ -37,7 +37,10 @@ export type StoredMessage = {
   conversationId: string;
   senderUserId: string;
   senderDeviceId: string;
-  /** 2 (MLS) on everything since the cutover; 1 was the plaintext era. */
+  /**
+   * v2 envelopes, v3 the archive-row format (history key), v4 readable hub
+   * content; v1 was the plaintext era, ended by the cutover wipe.
+   */
   protocolVersion: number;
   /**
    * The message content as bytes, already decrypted by `E2EProvider.decrypt`
