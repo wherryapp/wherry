@@ -13,8 +13,9 @@
 // do-not-disturb nobody clears is how messages get missed. The dot in the
 // header is this menu's state made visible when it is closed.
 //
-// Sign out lives here as well as at the bottom of Settings. It confirms,
-// which is what makes a row this close to the status list safe to have.
+// Sign out lives here as well as at the bottom of Settings. Both confirm,
+// in the same words (ui/sign-out.ts, decided 2026-09-29) -- which is also
+// what makes a row this close to the status list safe to have.
 
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
@@ -31,8 +32,8 @@ import {
   PopoverRow,
   Select,
   SignOutIcon,
-  useConfirm,
 } from "./kit";
+import { useConfirmedSignOut } from "./sign-out";
 import { UserAvatar } from "./UserAvatar";
 import {
   DURATION_OPTIONS,
@@ -65,7 +66,7 @@ export function SelfMenu({
   const status = useSelfStatus();
   const [duration, setDuration] = useState<DurationChoice>("until-changed");
   const [error, setError] = useState<string | null>(null);
-  const { confirm, confirmDialog } = useConfirm();
+  const { requestSignOut, signOutDialog } = useConfirmedSignOut(onSignOut);
   // The message field is a draft until saved (Enter or blur), so typing
   // does not post a request per keystroke. Re-seeded when the server's
   // value changes underneath -- another device set it, or it lapsed --
@@ -229,20 +230,11 @@ export function SelfMenu({
         >
           Settings
         </PopoverRow>
-        <PopoverRow
-          onClick={() => {
-            void confirm({ message: "Sign out of this device?", confirmLabel: "Sign out" }).then(
-              (ok) => {
-                if (ok) onSignOut();
-              },
-            );
-          }}
-          icon={<SignOutIcon />}
-        >
+        <PopoverRow onClick={requestSignOut} icon={<SignOutIcon />}>
           Sign out
         </PopoverRow>
       </div>
-      {confirmDialog}
+      {signOutDialog}
     </Popover>
   );
 }

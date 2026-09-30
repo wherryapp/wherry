@@ -45,6 +45,31 @@ function listTime(iso: string, now: Date = new Date()): string {
   });
 }
 
+type Member = StoredConversation["members"][number];
+
+/**
+ * The other person in a 1:1, or undefined for anything else.
+ *
+ * The one answer to "is this a 1:1?", decided by the conversation's KIND and
+ * never by counting members (decided 2026-09-29, sweep 1001 client-ui-11):
+ * a group left with two people is still a group -- its own avatar, names on
+ * messages, a count of who is online, no one person's status dot and no one
+ * person's card behind the header -- and a hub channel is a channel at any
+ * size. Five places used to decide this five ways, and a two-member group
+ * drew the group's avatar while its header button opened one member's card.
+ *
+ * Undefined too for a direct conversation without exactly one other member
+ * (the other account deleted), since there is nobody for it to depict.
+ */
+function directPeer(
+  conversation: StoredConversation,
+  selfUserId: string,
+): Member | undefined {
+  if (conversation.kind !== "direct") return undefined;
+  const others = conversation.members.filter((m) => m.userId !== selfUserId);
+  return others.length === 1 ? others[0] : undefined;
+}
+
 /**
  * Who a conversation's avatar depicts: the other person in a 1:1, the group
  * itself otherwise. The id doubles as the colour seed (see kit's Avatar),
@@ -54,13 +79,9 @@ function avatarSeed(
   conversation: StoredConversation,
   selfUserId: string,
 ): string {
-  const others = conversation.members.filter((m) => m.userId !== selfUserId);
-  // Direct only -- a two-person hub channel is still the channel, not the
-  // other person, so it keeps its own identity like a group does.
-  if (conversation.kind === "direct" && others.length === 1) {
-    return others[0]!.userId;
-  }
-  return conversation.id;
+  // Direct only -- a two-person hub channel or group is still the room, not
+  // the other person, so it keeps its own identity.
+  return directPeer(conversation, selfUserId)?.userId ?? conversation.id;
 }
 
 /**
@@ -73,11 +94,7 @@ function avatarHue(
   conversation: StoredConversation,
   selfUserId: string,
 ): number | null {
-  const others = conversation.members.filter((m) => m.userId !== selfUserId);
-  if (conversation.kind === "direct" && others.length === 1) {
-    return others[0]!.avatarHue ?? null;
-  }
-  return null;
+  return directPeer(conversation, selfUserId)?.avatarHue ?? null;
 }
 
 /** The same for the profile picture's key: the other person's in a 1:1, and
@@ -87,11 +104,7 @@ function avatarKey(
   conversation: StoredConversation,
   selfUserId: string,
 ): string | null {
-  const others = conversation.members.filter((m) => m.userId !== selfUserId);
-  if (conversation.kind === "direct" && others.length === 1) {
-    return others[0]!.avatarKey ?? null;
-  }
-  return null;
+  return directPeer(conversation, selfUserId)?.avatarKey ?? null;
 }
 
 
@@ -123,6 +136,7 @@ export {
   conversationTitle,
   memberName,
   listTime,
+  directPeer,
   avatarSeed,
   avatarHue,
   avatarKey,

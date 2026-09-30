@@ -49,13 +49,6 @@ export function rankConversations<T extends { id: string }>(
 }
 
 /**
- * Apply the user's manual hub order. Hubs the stored order knows sort by
- * their stored position; hubs it does not (joined since the last reorder)
- * append after them in server order. Stale stored ids -- hubs since left --
- * simply match nothing here; the next reorder writes only present ids,
- * which is what prunes them.
- */
-/**
  * Move a list item to an insertion slot, drag-and-drop style: `overIndex`
  * counts gaps (0 = before the first item, length = after the last), so the
  * two slots hugging the item itself are the no-op positions.
@@ -106,6 +99,13 @@ export function seedHubOrder<
   return { action: "seed", order: orderHubs(hubs, localOrder) };
 }
 
+/**
+ * Apply the user's manual hub order. Hubs the stored order knows sort by
+ * their stored position; hubs it does not (joined since the last reorder)
+ * append after them in server order. Stale stored ids -- hubs since left --
+ * simply match nothing here; the next reorder writes only present ids,
+ * which is what prunes them.
+ */
 export function orderHubs<T extends { id: string }>(
   hubs: readonly T[],
   order: readonly string[],

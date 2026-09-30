@@ -15,7 +15,8 @@
 //
 // Actions are the contact operations Friends.tsx already has, reached from
 // where the person actually is -- a group, a thread -- instead of a list
-// you have to go and find them in. Destructive ones confirm.
+// you have to go and find them in. Destructive ones confirm, in the words
+// Friends uses too (ui/contact-confirm.ts).
 
 import { useEffect, useState } from "react";
 import {
@@ -32,6 +33,11 @@ import type { StoredSession } from "../api/session";
 import type { UserProfile } from "../api/types";
 import { sync } from "../sync/engine";
 import { useAvatarUrl, useConversations } from "./hooks";
+import {
+  blockConfirm,
+  removeFriendConfirm,
+  type ContactConfirm,
+} from "./contact-confirm";
 import {
   Avatar,
   ChatIcon,
@@ -107,15 +113,9 @@ export function ProfileCard({
 
   async function act(
     operation: () => Promise<unknown>,
-    options: { confirm?: string; confirmLabel?: string } = {},
+    ask?: ContactConfirm,
   ): Promise<void> {
-    if (options.confirm) {
-      const ok = await confirm({
-        message: options.confirm,
-        confirmLabel: options.confirmLabel ?? "Confirm",
-      });
-      if (!ok) return;
-    }
+    if (ask && !(await confirm(ask))) return;
     setBusy(true);
     setError(null);
     try {
@@ -281,10 +281,10 @@ export function ProfileCard({
               {relationship === "friend" && (
                 <PopoverRow
                   onClick={() =>
-                    void act(() => removeFriend(request.userId), {
-                      confirm: `Remove ${displayName} from your friends?`,
-                      confirmLabel: "Remove",
-                    })
+                    void act(
+                      () => removeFriend(request.userId),
+                      removeFriendConfirm(displayName),
+                    )
                   }
                   icon={<PencilIcon />}
                   disabled={busy}
@@ -304,10 +304,10 @@ export function ProfileCard({
                 relationship !== undefined && (
                   <PopoverRow
                     onClick={() =>
-                      void act(() => blockUser(request.userId), {
-                        confirm: `Block ${displayName}? They will not be able to message you or find you, and will not be told.`,
-                        confirmLabel: "Block",
-                      })
+                      void act(
+                        () => blockUser(request.userId),
+                        blockConfirm(displayName),
+                      )
                     }
                     icon={<TrashIcon />}
                     tone="danger"

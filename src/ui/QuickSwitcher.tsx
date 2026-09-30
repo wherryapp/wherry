@@ -7,7 +7,13 @@
 import { useMemo, useState } from "react";
 import type { HubSummary } from "../api/types";
 import type { StoredConversation } from "../store/types";
-import { avatarKey as dmAvatarKey, avatarSeed, conversationTitle } from "./format";
+import {
+  avatarHue,
+  avatarKey as dmAvatarKey,
+  avatarSeed,
+  conversationTitle,
+  directPeer,
+} from "./format";
 import { useBackLayer } from "./back";
 import { Input } from "./kit";
 import { StatusDot } from "./StatusDot";
@@ -21,8 +27,11 @@ type Entry = {
   /** The hub name, for channel rows; null for DMs and groups. */
   sub: string | null;
   isChannel: boolean;
-  /** The same seed the sidebar row uses, so the colours agree. */
+  /** The same seed and chosen hue the sidebar row uses, so the colours
+   *  agree -- the seed alone drew anyone who picked a colour in the
+   *  id-derived one instead. Null hue for rooms, whose colour is nobody's. */
   seed: string;
+  hue: number | null;
   /** The other person, in a 1:1 -- for the online dot. Null for groups and
    *  channels: a room's dot is the sidebar's business, and this list is
    *  ephemeral enough that "who else is in that group" is not what somebody
@@ -59,10 +68,10 @@ export function QuickSwitcher({
   const dmIds = useMemo(
     () =>
       conversations
-        .filter((c) => c.kind !== "channel" && c.members.length === 2)
+        .filter((c) => directPeer(c, selfId) !== undefined)
         .map((c) => c.id)
         .sort(),
-    [conversations],
+    [conversations, selfId],
   );
   const presence = useSidebarPresence(dmIds);
 
@@ -78,10 +87,8 @@ export function QuickSwitcher({
         sub: null,
         isChannel: false,
         seed: avatarSeed(c, selfId),
-        otherUserId:
-          c.members.length === 2
-            ? (c.members.find((member) => member.userId !== selfId)?.userId ?? null)
-            : null,
+        hue: avatarHue(c, selfId),
+        otherUserId: directPeer(c, selfId)?.userId ?? null,
         avatarKey: dmAvatarKey(c, selfId),
       }));
     const channels: Entry[] = hubs.flatMap((hub) =>
@@ -91,6 +98,7 @@ export function QuickSwitcher({
         sub: hub.name,
         isChannel: true,
         seed: channel.id,
+        hue: null,
         otherUserId: null,
         avatarKey: null,
       })),
@@ -105,6 +113,7 @@ export function QuickSwitcher({
         sub: null,
         isChannel: true,
         seed: c.id,
+        hue: null,
         otherUserId: null,
         avatarKey: null,
       }));
@@ -195,6 +204,7 @@ export function QuickSwitcher({
                       size="sm"
                       name={entry.label}
                       userId={entry.seed}
+                      hue={entry.hue}
                       avatarKey={entry.avatarKey}
                     />
                     {entry.otherUserId !== null &&

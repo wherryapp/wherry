@@ -14,13 +14,20 @@ import { CallButton } from "./voice/CallButton";
 import { IncomingCall } from "./voice/IncomingCall";
 import { CallPage } from "./voice/CallPage";
 import { VoiceRoom } from "./voice/VoiceRoom";
+import { ScreenPicker } from "./voice/ScreenPicker";
 import { useVoice, useVoiceSignals } from "../voice/hooks";
 import { usePhoneCallBridge } from "../voice/phone-bridge";
-import { voice } from "../voice/session";
+import { voice, type ScreenSource } from "../voice/session";
 import { Presence, Timeline, TypingLine } from "./Timeline";
 import { Composer } from "./Composer";
 import { type EditDraft, type ReplyDraft } from "./drafts";
-import { avatarHue, avatarKey, avatarSeed, conversationTitle } from "./format";
+import {
+  avatarHue,
+  avatarKey,
+  avatarSeed,
+  conversationTitle,
+  directPeer,
+} from "./format";
 import { classLabel, isServerReadable } from "./hub-class";
 import { useBackLayer } from "./back";
 import { useIsDesktop } from "./viewport";
@@ -46,8 +53,8 @@ import {
   useAnnouncements,
   useConversations,
   useHubs,
+  useNewestMessageId,
   useSyncStatus,
-  useTimeline,
   useUnread,
   useFeatures,
 } from "./hooks";
@@ -217,20 +224,11 @@ function UpdateBanner() {
  * and there is no need to track whether this call would be one.
  */
 function useMarkRead(conversationId: string | null, selfUserId: string): void {
-  const { items } = useTimeline(conversationId, selfUserId);
-
-  // The newest *stored* message. Outbox entries are excluded: they have no
+  // The newest *stored* message. Outbox entries are not in it: they have no
   // server id yet, and marking your own unsent message read means nothing.
-  // So are rows from another conversation: useTimeline's items lag a switch
-  // by a render, and the effect below fires on the new id with the old
-  // conversation's newest message. The server ignores a message from another
-  // conversation, but the local marker took it until the next refresh.
-  let newest: string | null = null;
-  for (const item of items) {
-    if (item.kind === "sent" && item.message.conversationId === conversationId) {
-      newest = item.message.messageId;
-    }
-  }
+  // The hook answers only for the conversation it was asked about, so an
+  // answer still in flight from the previous one is never marked here.
+  const newest = useNewestMessageId(conversationId);
 
   useEffect(() => {
     if (!conversationId || !newest) return;
@@ -316,9 +314,12 @@ export function Chat({
   const [friendsOpen, setFriendsOpen] = useState(false);
   /** The compose panel (new conversation, or a hub) -- a Friends-shaped panel. */
   const [composeOpen, setComposeOpen] = useState(false);
-  const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
+  /** Which group's details panel is open, by conversation id. An id rather
+   *  than a flag, so a panel whose group leaves the list (removed, deleted
+   *  elsewhere) cannot come back over whatever is selected next. */
+  const [groupDetailsFor, setGroupDetailsFor] = useState<string | null>(null);
   /** Which hub's panel is open, by hub id -- the channel-class sibling of
-   *  groupDetailsOpen. */
+   *  groupDetailsFor. */
   const [hubDetailsFor, setHubDetailsFor] = useState<string | null>(null);
   /** Which channel's pin list is open. */
   const [pinsFor, setPinsFor] = useState<string | null>(null);
@@ -349,13 +350,40 @@ export function Chat({
   // Edit shares the composer's context-bar slot, so the two are exclusive:
   // starting either clears the other.
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
-  useEffect(() => {
+  // Reset during render, not in an effect. The composer is keyed by the
+  // conversation (below), so a switch mounts a fresh one -- and a child's
+  // mount effects run before its parent's effects. Reset in an effect, the
+  // new composer mounted with the *old* edit draft and its own effect
+  // copied that text into the field; the reset then cleared the edit bar
+  // and left the text, which Enter sent to the new conversation as a
+  // message. Adjusting state during render re-renders before any child
+  // commits, so the new composer never sees the old draft.
+  const [draftsFor, setDraftsFor] = useState(selected);
+  if (draftsFor !== selected) {
+    setDraftsFor(selected);
     setReplyDraft(null);
     setEditDraft(null);
-  }, [selected]);
+  }
   const [muteBusy, setMuteBusy] = useState(false);
   const { conversations } = useConversations();
   const { hubs } = useHubs();
+  const current = conversations.find((c) => c.id === selected);
+
+  // A details or pins panel is drawn only while its conversation is the
+  // selected one and still in the list. When it stops being either -- the
+  // group was left or deleted elsewhere, a profile card's "Message" moved the
+  // selection -- the flag is dropped here, during render, rather than left
+  // set: a stale flag used to bring the panel back over the next conversation
+  // selected (a DM got GroupDetails), and kept the shortcuts' `panelOpen`
+  // true with nothing on screen.
+  const groupDetailsShown =
+    groupDetailsFor !== null &&
+    current?.id === groupDetailsFor &&
+    current.kind === "group";
+  if (groupDetailsFor !== null && !groupDetailsShown) setGroupDetailsFor(null);
+  const pinsShown = pinsFor !== null && current?.id === pinsFor && !!current.hubId;
+  if (pinsFor !== null && !pinsShown) setPinsFor(null);
+
   const isDesktop = useIsDesktop();
   // Voice: the flag gates every affordance; the signals hook is the one
   // self-heal read (rings, open calls, room occupancy) for the whole tree.
@@ -396,6 +424,11 @@ export function Chat({
   // it means for push and for the collapsed-hub roll-up: not worth waking
   // anybody for. The store's own unread bookkeeping is untouched by mute.
   const unreadByConversation = useUnread(conversations, session.user.id);
+  // The page's own title (index.html's), read once, so the count is put in
+  // front of the product's name and taken off it again at sign-out. It said
+  // "messenger" here, from before the rename, for as long as anyone was
+  // signed in.
+  const baseTitle = useRef(document.title).current;
   useEffect(() => {
     let total = 0;
     for (const conversation of conversations) {
@@ -403,16 +436,16 @@ export function Chat({
       total += unreadByConversation.get(conversation.id) ?? 0;
     }
     document.title =
-      total > 0 ? `(${total > 99 ? "99+" : total}) messenger` : "messenger";
+      total > 0 ? `(${total > 99 ? "99+" : total}) ${baseTitle}` : baseTitle;
     // The phone's icon badge is the same number, so the two cannot
     // disagree (native-push-plan §7.4: the client owns the badge, because
     // the server cannot tell an operation from a message). A no-op off the
     // phone shells.
     withNativePush((native) => native.setBadge(total));
     return () => {
-      document.title = "messenger";
+      document.title = baseTitle;
     };
-  }, [conversations, unreadByConversation]);
+  }, [conversations, unreadByConversation, baseTitle]);
   // Signed out (the shell unmounts): no number left on the icon.
   useEffect(() => () => withNativePush((native) => native.setBadge(0)), []);
 
@@ -450,6 +483,32 @@ export function Chat({
     onSignOut();
   };
 
+  // The screen shortcut takes the Share button's path (CallControls'
+  // onScreenPress), not a bare toggle: a non-empty `screenSources()` means
+  // this transport opens no picker of its own -- the shell on Windows -- so
+  // ours goes up and the share waits for a choice. A bare toggle there asked
+  // the shell to share nothing in particular and showed its refusal as the
+  // bar's error line. Stopping never asks. No anchor: a keypress has no
+  // button, and the picker's Popover centres itself without one.
+  const [shortcutPicker, setShortcutPicker] = useState<ScreenSource[] | null>(null);
+  // Gone with the call, not kept for the next one.
+  if (shortcutPicker !== null && voiceState.phase !== "connected") setShortcutPicker(null);
+  const shareFromShortcut = async (): Promise<void> => {
+    if (voice.getState().screen.on) {
+      await voice.setScreenShareEnabled(false);
+      return;
+    }
+    const sources = await voice.screenSources();
+    if (sources.length === 0) {
+      await voice.toggleScreenShare();
+      return;
+    }
+    // A ring paints over everything and holds Escape; a picker opened under
+    // it would register above it on the back stack (see the note below).
+    if (rings.length > 0) return;
+    setShortcutPicker(sources);
+  };
+
   // Global keys. Ctrl/Cmd+K opens the switcher from anywhere in the main
   // view, composer included; it stays out of the full-screen panels because
   // they early-return their own trees and the dialog could not render over
@@ -464,16 +523,20 @@ export function Chat({
   // nobody can see and leave the page or ring that is showing, which reads
   // as a dead key (review of W-103's fix, 2026-09-26). Paint order and
   // registration order have to agree for Escape to mean "the thing on top".
-  const coveredByCall = callPageOpen || rings.length > 0;
+  const ringing = rings.length > 0;
+  const coveredByCall = callPageOpen || ringing;
+
+  // Every full-screen panel that replaces the main view (the early returns
+  // below). Read by the shortcuts and by the read marker.
+  const panelOpen =
+    settingsOpen ||
+    friendsOpen ||
+    composeOpen ||
+    groupDetailsShown ||
+    hubDetailsFor !== null ||
+    pinsShown ||
+    searchOpen;
   useEffect(() => {
-    const panelOpen =
-      settingsOpen ||
-      friendsOpen ||
-      composeOpen ||
-      groupDetailsOpen ||
-      hubDetailsFor !== null ||
-      pinsFor !== null ||
-      searchOpen;
     const onKey = (event: KeyboardEvent) => {
       // Ctrl/Cmd+Shift+M toggles the microphone while in a call. Escape
       // never hangs up -- leaving a call is a deliberate click.
@@ -503,7 +566,11 @@ export function Chat({
         if (!voiceState.grant?.sources.includes(source)) return;
         if (!voiceState.capabilities[source]) return;
         event.preventDefault();
-        void (camera ? voice.toggleCamera() : voice.toggleScreenShare());
+        if (camera) {
+          void voice.toggleCamera();
+          return;
+        }
+        void shareFromShortcut();
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -532,14 +599,10 @@ export function Chat({
   }, [
     isDesktop,
     selected,
-    settingsOpen,
-    friendsOpen,
-    composeOpen,
-    groupDetailsOpen,
-    hubDetailsFor,
-    pinsFor,
-    searchOpen,
+    panelOpen,
     coveredByCall,
+    // Read by shareFromShortcut, which the handler closes over.
+    ringing,
     voiceState.grant,
     voiceState.capabilities,
     voiceState.phase,
@@ -559,9 +622,18 @@ export function Chat({
     escape: "outside-fields",
   });
 
-  // Only when a thread is actually on screen. On a phone that is the same
-  // thing as being selected; on desktop both panes are visible at once.
-  useMarkRead(selected, session.user.id);
+  // Only when a thread is actually on screen. Being selected is not enough:
+  // a panel (Settings, Friends, Search, Pins, Compose, a group's or hub's
+  // details) replaces the thread while `selected` stays set, and the call
+  // page and an invite landing page cover it. Marking through any of those
+  // sent read receipts for messages nobody saw and cleared their
+  // notifications. When the cover goes the id comes back, and the hook's
+  // effect marks what is now on screen.
+  const threadOnScreen =
+    !panelOpen &&
+    !inviteToken &&
+    !(features.voice && voiceState.phase === "connected" && callPageOpen);
+  useMarkRead(threadOnScreen ? selected : null, session.user.id);
 
   // Open the newest conversation on first load, so the app does not start on
   // an empty panel when there is something to show.
@@ -604,7 +676,7 @@ export function Chat({
     const closePanels = (): void => {
       setSettingsOpen(false);
       setComposeOpen(false);
-      setGroupDetailsOpen(false);
+      setGroupDetailsFor(null);
       setHubDetailsFor(null);
       setPinsFor(null);
       setSearchOpen(false);
@@ -645,8 +717,6 @@ export function Chat({
       cancelled = true;
     };
   }, [openRequest, conversations]);
-
-  const current = conversations.find((c) => c.id === selected);
 
   // The channel's hub-side settings and the viewer's role, from the hubs
   // summary the engine keeps -- the mirror of the server's matrix, for
@@ -771,7 +841,7 @@ export function Chat({
             // Whatever panel the card was opened over, the conversation is
             // the destination now.
             setFriendsOpen(false);
-            setGroupDetailsOpen(false);
+            setGroupDetailsFor(null);
             setHubDetailsFor(null);
             setComposeOpen(false);
             setSelected(id);
@@ -832,8 +902,8 @@ export function Chat({
         <div className="min-h-0 flex-1">{screen}</div>
       </div>
       {overlays}
-      {/* The one-time push offer on a phone shell (D4, pending: one line to
-          remove). Before the call page and the ring, so both paint over it. */}
+      {/* The one-time push offer on a phone shell (D4: kept, 2026-09-29).
+          Before the call page and the ring, so both paint over it. */}
       <NotificationNudge deviceId={session.device.id} />
       {features.voice && voiceState.phase === "connected" && callPageOpen && (
         <CallPage
@@ -842,6 +912,19 @@ export function Chat({
           selfName={session.user.displayName}
           selfUserId={session.user.id}
           onClose={() => setCallPageOpen(false)}
+        />
+      )}
+      {/* The screen shortcut's picker: after the call page, which it was
+          opened over and must paint above, and before the ring. */}
+      {shortcutPicker && voiceState.phase === "connected" && (
+        <ScreenPicker
+          sources={shortcutPicker}
+          anchor={null}
+          onCancel={() => setShortcutPicker(null)}
+          onConfirm={(choice) => {
+            setShortcutPicker(null);
+            void voice.setScreenShareEnabled(true, choice);
+          }}
         />
       )}
       {/*
@@ -884,11 +967,11 @@ export function Chat({
     );
   }
 
-  if (pinsFor !== null && current?.hubId) {
+  if (pinsShown && current?.hubId) {
     return withChrome(
       <PinsPanel
         hubId={current.hubId}
-        conversationId={pinsFor}
+        conversationId={current.id}
         canModerate={canModerate}
         onClose={() => setPinsFor(null)}
         onJump={(pin) => {
@@ -973,12 +1056,12 @@ export function Chat({
     );
   }
 
-  if (groupDetailsOpen && current) {
+  if (groupDetailsShown && current) {
     return withChrome(
       <GroupDetails
         conversation={current}
         selfUserId={session.user.id}
-        onClose={() => setGroupDetailsOpen(false)}
+        onClose={() => setGroupDetailsFor(null)}
       />
     );
   }
@@ -1010,12 +1093,14 @@ export function Chat({
 
   return withChrome(
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-950">
-      {/* The app header is the LIST's header: a title and two controls, the
-          shape a phone expects, instead of the row of webpage links this
-          used to be. On a phone with a thread open it does not render at
-          all -- the thread's own header is the only chrome -- which is what
-          `showList` already means. Sign out moved into Settings; it is a
-          rare act and was sitting on the most valuable row of the screen. */}
+      {/* The app header is the LIST's header: a title and a few controls
+          (compose, search, friends, the account menu), the shape a phone
+          expects, instead of the row of webpage links this used to be. On a
+          phone with a thread open it does not render at all -- the thread's
+          own header is the only chrome -- which is what `showList` already
+          means. Sign out left this row for the account menu and the bottom
+          of Settings; it is a rare act and was sitting on the most valuable
+          row of the screen. */}
       {showList && (
         <header className="flex items-center justify-between border-b border-neutral-200 bg-white py-2 pl-4 pr-2 dark:border-neutral-800 dark:bg-neutral-900">
           <span className="text-lg font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
@@ -1078,6 +1163,9 @@ export function Chat({
         {showList && (
           <ConversationList
             session={session}
+            conversations={conversations}
+            hubs={hubs}
+            unread={unreadByConversation}
             selected={selected}
             onSelect={setSelected}
             onOpenHub={setHubDetailsFor}
@@ -1098,12 +1186,9 @@ export function Chat({
                   )}
                   {current && (() => {
                     // In a 1:1 the header avatar IS the other person, so it
-                    // opens their card. A group's avatar stays inert -- its
-                    // details are behind the Details button.
-                    const other =
-                      current.kind !== "channel" && current.members.length === 2
-                        ? current.members.find((member) => member.userId !== session.user.id)
-                        : undefined;
+                    // opens their card. A group's avatar stays inert, at any
+                    // size -- its details are behind the Details button.
+                    const other = directPeer(current, session.user.id);
                     const avatar = (
                       <UserAvatar
                         size="sm"
@@ -1208,7 +1293,7 @@ export function Chat({
                   {current?.kind === "group" && (
                     <Button
                       variant="ghost"
-                      onClick={() => setGroupDetailsOpen(true)}
+                      onClick={() => setGroupDetailsFor(current.id)}
                       className="shrink-0"
                     >
                       Details
@@ -1270,6 +1355,17 @@ export function Chat({
                   </div>
                 ) : (
                   <Composer
+                    // One composer per conversation. Without the key the
+                    // desktop kept a single instance across switches (both
+                    // panes stay up, so the tree's shape never changed) and
+                    // the typed text, the picked attachments and the busy
+                    // spinner followed you into the next conversation -- a
+                    // photo picked in one thread was sent to another. A
+                    // phone always remounted here, because leaving a thread
+                    // unmounts its pane; this gives the desktop the same.
+                    // An in-flight send survives the remount by design
+                    // (sending.ts), and writes nothing into the new one.
+                    key={selected}
                     conversationId={selected}
                     publicChannel={isServerReadable(current?.hubVisibility)}
                     members={(current?.members ?? [])

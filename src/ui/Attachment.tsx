@@ -69,7 +69,16 @@ export function Attachment({
     };
 
     void (async () => {
-      const cached = await store.getBlob(attachment.id);
+      // Read inside a try: a rejected read left the bubble on "Loading…"
+      // for good, never reaching "failed" and its Try again. A cache that
+      // cannot be read is treated as a miss -- the download below is the
+      // same answer, and whether it can be stored is its own question.
+      let cached: StoredBlob | undefined;
+      try {
+        cached = await store.getBlob(attachment.id);
+      } catch {
+        cached = undefined;
+      }
       if (cached) {
         show(cached);
         return;
@@ -96,7 +105,15 @@ export function Attachment({
         // Terminal states are stored too. Without that, a message whose
         // attachment expired asks the server again on every single render, for
         // the life of the conversation.
-        await store.putBlob(attachment.id, blob);
+        //
+        // Never fatal, though, the same trade Composer.tsx makes for the
+        // sender's copy: the bytes are in hand, and an IndexedDB that will
+        // not store them costs a re-download next time, not this showing.
+        try {
+          await store.putBlob(attachment.id, blob);
+        } catch {
+          // Deliberately empty -- see above.
+        }
         show(blob);
       } catch {
         // Not recorded. This is "the network is down", not "there are no

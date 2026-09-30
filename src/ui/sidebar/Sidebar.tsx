@@ -15,19 +15,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { StoredSession } from "../../api/session";
-import {
-  useConversations,
-  useHubs,
-  useLatestMessages,
-  useMentions,
-  useSidebarPresence,
-  useUnread,
-} from "../hooks";
+import type { HubSummary } from "../../api/types";
+import type { StoredConversation } from "../../store/types";
+import { useLatestMessages, useMentions, useSidebarPresence } from "../hooks";
 import {
   avatarHue,
   avatarKey,
   avatarSeed,
   conversationTitle,
+  directPeer,
   listTime,
   memberName,
 } from "../format";
@@ -41,28 +37,38 @@ import { ResizeHandle } from "./ResizeHandle";
 import { useSidebarPrefs } from "./prefs";
 import { reorderHubs } from "./hub-order";
 import { rankConversations, recencyRanker, seedHubOrder } from "./rank";
+import { attachmentWord } from "../drafts";
 
 export function ConversationList({
   session,
+  conversations,
+  hubs,
+  unread,
   selected,
   onSelect,
   onOpenHub,
   voiceOccupancy,
 }: {
   session: StoredSession;
+  /**
+   * The list, the hubs and the unread counts, from the shell's own hooks.
+   * Props rather than a second subscription here: each of those hooks
+   * re-reads IndexedDB on every `messages` event (the unread one walks every
+   * conversation), and the shell already runs them for the tab title.
+   */
+  conversations: readonly StoredConversation[];
+  hubs: HubSummary[];
+  unread: Map<string, number>;
   selected: string | null;
   onSelect: (id: string) => void;
   onOpenHub: (hubId: string) => void;
   /** Who is in each voice channel (voice_presence), for the hub rows. */
   voiceOccupancy: ReadonlyMap<string, readonly string[]>;
 }) {
-  const { conversations } = useConversations();
-  const { hubs } = useHubs();
   // Unread and previews are computed over everything -- channels included,
   // for the hub section's badges -- but the direct/group rows below exclude
   // channels, which render nested under their hub instead.
-  const latest = useLatestMessages(conversations);
-  const unread = useUnread(conversations, session.user.id);
+  const latest = useLatestMessages(conversations, session.user.id);
   const mentions = useMentions(conversations, session.user.id);
   const muted = new Set(
     conversations.filter((c) => c.muted).map((c) => c.id),
@@ -160,7 +166,7 @@ export function ConversationList({
 
       {directsAndGroups.map((conversation) => {
           const preview = latest.get(conversation.id);
-          // A photo with no caption still has to say something in the list,
+          // An attachment with no caption still has to say something in the list,
           // and so does a message kind this build cannot render. A retracted
           // one says it was deleted rather than leaking what it used to say.
           const text = preview
@@ -170,11 +176,14 @@ export function ConversationList({
                 ? "Needs a newer version"
                 : preview.content
                   ? preview.content.text ||
-                    (preview.content.attachments.length > 0 ? "Photo" : "")
+                    attachmentWord(preview.content.attachments)
                   : null
             : null;
           const count = unread.get(conversation.id) ?? 0;
-          const isGroup = conversation.members.length > 2;
+          // The one 1:1 test (format.ts): by kind, so a group left with two
+          // people still names its senders and shows no one person's dot.
+          const peer = directPeer(conversation, session.user.id);
+          const isGroup = conversation.kind !== "direct";
 
           // In a group the preview is ambiguous without a name -- "see you at
           // 6" from one of four people is half a message.
@@ -190,11 +199,7 @@ export function ConversationList({
           // The other member's id in a 1:1, for the online dot. Absent from
           // the presence map means unknown -- render nothing, never an
           // "offline" treatment; presence has no stored form on purpose.
-          const otherId = !isGroup
-            ? conversation.members.find(
-                (member) => member.userId !== session.user.id,
-              )?.userId
-            : undefined;
+          const otherId = peer?.userId;
           const snapshot = presence.get(conversation.id);
           const otherOnline =
             otherId !== undefined &&

@@ -233,22 +233,6 @@ export function ReplyIcon({ className }: IconProps) {
   );
 }
 
-/** The "more actions" affordance at a bubble's edge. */
-export function DotsIcon({ className }: IconProps) {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      className={cx("h-5 w-5", className)}
-      aria-hidden="true"
-    >
-      <circle cx="4.5" cy="10" r="1.5" />
-      <circle cx="10" cy="10" r="1.5" />
-      <circle cx="15.5" cy="10" r="1.5" />
-    </svg>
-  );
-}
-
 export function XIcon({ className }: IconProps) {
   return (
     <svg
@@ -1468,6 +1452,17 @@ export function useConfirm(): {
     setPending(null);
   }, []);
 
+  // Unmounting with a question open settles it as cancelled, so an awaited
+  // confirm() never hangs. The resolver only, not `settle`: there is no
+  // state left to set.
+  useEffect(
+    () => () => {
+      resolver.current?.(false);
+      resolver.current = null;
+    },
+    [],
+  );
+
   const confirm = useCallback(
     (options: { message: string; confirmLabel?: string }) => {
       resolver.current?.(false);
@@ -1552,6 +1547,15 @@ export function usePrompt(): {
     resolver.current = null;
     setPending(null);
   }, []);
+
+  // As useConfirm's: unmounting with the prompt open settles it as cancelled.
+  useEffect(
+    () => () => {
+      resolver.current?.(null);
+      resolver.current = null;
+    },
+    [],
+  );
 
   const prompt = useCallback(
     (options: { message: string; initial?: string; confirmLabel?: string }) => {

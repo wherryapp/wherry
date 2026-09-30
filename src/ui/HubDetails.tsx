@@ -1594,20 +1594,28 @@ function HubVideoSection({ hubId }: { hubId: string }) {
   const [cap, setCap] = useState<Partial<VideoLimits> | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A read that failed is not "this hub has no row". Shown as that, the
+  // next toggle wrote its patch over nothing and replaced the real row --
+  // unticking screens dropped a camera height cap nobody could see. So a
+  // failure is its own state: said, with the controls withheld and a retry.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setLoadFailed(false);
+    setCap(undefined);
     void fetchHubVideoCap(hubId)
       .then((answer) => {
         if (!cancelled) setCap(answer.limits);
       })
       .catch(() => {
-        if (!cancelled) setCap(null);
+        if (!cancelled) setLoadFailed(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [hubId]);
+  }, [hubId, attempt]);
 
   const save = async (next: Partial<VideoLimits> | null): Promise<void> => {
     setBusy(true);
@@ -1621,6 +1629,22 @@ function HubVideoSection({ hubId }: { hubId: string }) {
       setBusy(false);
     }
   };
+
+  if (loadFailed) {
+    return (
+      <PanelSection title="Video in this hub">
+        <ErrorText>Could not load this hub's video settings.</ErrorText>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="mt-2"
+          onClick={() => setAttempt((n) => n + 1)}
+        >
+          Try again
+        </Button>
+      </PanelSection>
+    );
+  }
 
   if (cap === undefined) {
     return (
