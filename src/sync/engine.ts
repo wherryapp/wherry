@@ -471,6 +471,15 @@ export class SyncEngine {
   #lastPublicSweep = 0;
   /** A wake (or the reconnect drain) arrived since the last readable sweep. */
   #publicWake = false;
+  /**
+   * The conversation ids the server's last list answered with, or null
+   * before the first answer of this run. The readable sweep reads only
+   * channels in it: stored rows outlive leaving a hub (nothing deletes
+   * them), and the server answers a left channel's archive with an empty
+   * page rather than an error, so the sweep used to fetch every left
+   * channel on every wake, forever (sweep 1001, client-core-9).
+   */
+  #listedConversations: Set<string> | null = null;
   #onUnauthorized: (() => void) | null = null;
   /** Per-conversation floor on outgoing typing frames; see sendTyping. */
   #lastTypingSent = new Map<string, number>();
@@ -504,6 +513,23 @@ export class SyncEngine {
   start(options: { onUnauthorized?: () => void } = {}): void {
     if (this.#leader) return;
     this.#onUnauthorized = options.onUnauthorized ?? null;
+
+    // A start is a new session, possibly another account's: sign-out does
+    // not reload the page, so this engine and mlsSync are the same objects
+    // the last sign-in used. Their clocks said "refreshed seconds ago" and
+    // the new session's first passes skipped the conversation list -- an
+    // empty sidebar for up to 30 s -- and mlsSync never published the new
+    // device's key packages until a reload (sweep 1001, client-core-5).
+    this.#lastConversationRefresh = 0;
+    this.#lastForwardSync = 0;
+    this.#lastHistoryKeyRefresh = 0;
+    this.#lastPublicSweep = 0;
+    this.#publicWake = false;
+    this.#listedConversations = null;
+    this.#lastTypingSent.clear();
+    this.#pokePending = false;
+    this.#backoff.reset();
+    mlsSync.reset();
 
     this.#setStatus({ state: "follower", error: null });
 
@@ -1331,6 +1357,9 @@ export class SyncEngine {
 
     const conversations = await listConversations();
     this.#lastConversationRefresh = now;
+    this.#listedConversations = new Set(
+      conversations.map((conversation) => conversation.id),
+    );
 
     await store.putConversations(conversations);
     await this.#refreshEvents(conversations, signal);
@@ -1583,11 +1612,17 @@ export class SyncEngine {
    */
   async #publicChannelSync(signal: AbortSignal): Promise<void> {
     const conversations = await store.listConversations();
-    const channels = conversations.filter((conversation) =>
-      // Every readable channel is delivered by a cursor read over its
-      // archive rows -- there are no envelopes to drain -- so this sweep
-      // covers invite-only channels as well as public ones.
-      isServerReadable(conversation.hubVisibility),
+    const listed = this.#listedConversations;
+    const channels = conversations.filter(
+      (conversation) =>
+        // Every readable channel is delivered by a cursor read over its
+        // archive rows -- there are no envelopes to drain -- so this sweep
+        // covers invite-only channels as well as public ones.
+        isServerReadable(conversation.hubVisibility) &&
+        // And only the ones the account is still in (see
+        // #listedConversations). Before the first list of this run there
+        // is no answer to filter by, so nothing is filtered.
+        (listed === null || listed.has(conversation.id)),
     );
     if (channels.length === 0) return;
 
