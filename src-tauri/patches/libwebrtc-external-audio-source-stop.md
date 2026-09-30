@@ -3,7 +3,8 @@
 **Not a patch we carry.** The defect is in LiveKit's own libwebrtc patch,
 `webrtc-sys/libwebrtc/patches/external_audio_source.patch` in
 `livekit/rust-sdks`. It is compiled into the prebuilt libwebrtc that
-`webrtc-sys-build` downloads, `webrtc-89d790b` at our pinned `6a32ecc`, for
+`webrtc-sys-build` downloads, `webrtc-89d790b` at our pinned `06f0a5d` (the same
+`WEBRTC_TAG` as at `6a32ecc`, where this was found), for
 Windows, macOS and Linux alike. A fix to that patch in our fork would change
 nothing in our binary until libwebrtc was rebuilt, so the shell works around
 it instead. This file is the evidence, and the upstream report ready to file.

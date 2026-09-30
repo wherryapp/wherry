@@ -1,7 +1,7 @@
 # rust-sdks-frame-cryptor-detach.patch
 
 One commit on top of `livekit/rust-sdks` at `dee418bb` (the revision
-`Cargo.toml` pins): `FrameCryptor::~FrameCryptor` in
+`Cargo.toml` pinned then): `FrameCryptor::~FrameCryptor` in
 `webrtc-sys/src/frame_cryptor.cpp` detaches the transformer from the
 `RtpSender`/`RtpReceiver` it was attached to. Without it every cryptor
 leaves its `FrameCryptorTransformer` thread behind until the peer

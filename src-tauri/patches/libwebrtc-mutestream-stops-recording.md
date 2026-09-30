@@ -2,7 +2,8 @@
 
 **Not a patch we carry.** The behaviour is in the libwebrtc that
 `webrtc-sys-build` downloads prebuilt (`webrtc-89d790b`, webrtc-sdk's
-`m150_release`, at our pinned `6a32ecc`), not in any patch LiveKit or we
+`m150_release`, at our pinned `06f0a5d`, the same `WEBRTC_TAG` as at
+`6a32ecc`, where this was found), not in any patch LiveKit or we
 apply. A change in our fork would do nothing until libwebrtc was rebuilt, so
 the shell works around it (`client/src-tauri/src/voice/mod.rs`, above
 `set_microphone_gate`). This file is the evidence and the upstream report,
