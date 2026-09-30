@@ -89,7 +89,7 @@ livekit = { git = "https://github.com/wherryapp/rust-sdks", rev = "06f0a5d0c59e4
 # intervals in voice/mod.rs). Both are already enabled in the graph through
 # livekit and Tauri; stating `time` means the code no longer compiles only
 # by feature unification.
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 # `StreamExt::next` on the SDK's `NativeVideoStream` (voice/render.rs): the
 # received-frame path is a `Stream`, and this is already in the graph
 # through livekit.
