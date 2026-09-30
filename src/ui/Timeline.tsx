@@ -51,6 +51,7 @@ import {
   PhoneIcon,
 } from "./kit";
 import { openProfile } from "./profile";
+import { useBackLayer } from "./back";
 import { presenceStatusOf, statusLabel } from "./status";
 import { callNotice } from "../voice/rules";
 import { voice } from "../voice/session";
@@ -740,6 +741,20 @@ function sameRun(
   );
 }
 
+/**
+ * A row the timeline draws nothing for: a call's "started" line once the
+ * call has ended (the "ended" line carries the summary). Shared by the
+ * renderer and the unread divider's placement, which must never sit above a
+ * row that is not there.
+ */
+function rendersNothing(item: TimelineItem): boolean {
+  return (
+    item.kind === "event" &&
+    item.event.kind === "call_started" &&
+    !(item.event.call !== null && item.event.call.endedAt === null)
+  );
+}
+
 export function Timeline({
   conversationId,
   session,
@@ -782,6 +797,13 @@ export function Timeline({
   // (see the prop's comment on Bubble) rather than to this row's full width.
   const [actionsFor, setActionsFor] = useState<string | null>(null);
   useEffect(() => setActionsFor(null), [conversationId]);
+  // A dismissible layer like every other tap-opened surface (ui/back.ts):
+  // Android's back gesture closes the bar first instead of leaving the
+  // whole thread, and Escape does the same (decided 2026-09-29, sweep 1001
+  // client-ui-19). Not an overlay, for WidgetBar's reason: the bar sits in
+  // the timeline and covers nothing, so a native video tile above the page
+  // must not read it as something drawn over it and hide.
+  useBackLayer(actionsFor !== null, () => setActionsFor(null), { overlay: false });
   const { confirm, confirmDialog } = useConfirm();
 
   // The photo the full-screen viewer is showing, if any. Cleared on a
@@ -1048,7 +1070,14 @@ export function Timeline({
   /** Which rendered row the divider sits above; -1 for none. */
   const dividerIndex = useMemo(() => {
     if (!divider) return -1;
-    if (divider.beforeId === null) return items.length > 0 ? 0 : -1;
+    // "Top of the page" is the first row that draws something. Notices are
+    // not paged, so items[0] is the conversation's oldest event, and in a
+    // conversation that began with a call that is a finished call's
+    // "started" line, which renders nothing -- the divider went with it,
+    // and the open anchor, already latched on the divider, had nowhere to go.
+    if (divider.beforeId === null) {
+      return items.findIndex((item) => !rendersNothing(item));
+    }
     return items.findIndex(
       (item) =>
         item.kind === "sent" && item.message.messageId === divider.beforeId,
@@ -1460,8 +1489,7 @@ export function Timeline({
           // Join". Once it has ended the call_ended line carries the
           // summary and the started line renders nothing at all.
           if (item.event.kind === "call_started") {
-            const open = item.event.call !== null && item.event.call.endedAt === null;
-            if (!open) return [];
+            if (rendersNothing(item)) return [];
             return withDivider(
               index,
               <div key={item.event.id} className="mt-3 flex justify-center">
