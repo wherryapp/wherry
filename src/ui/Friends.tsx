@@ -2,6 +2,9 @@
 //
 // The same full-screen shape as Settings, for the same reason -- no router,
 // and a phone wants a page here anyway.
+//
+// Remove and Block ask first, in the profile card's words
+// (ui/contact-confirm.ts): the same act from either surface.
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
@@ -27,7 +30,13 @@ import {
   Panel,
   PanelSection,
   handleInputProps,
+  useConfirm,
 } from "./kit";
+import {
+  blockConfirm,
+  removeFriendConfirm,
+  type ContactConfirm,
+} from "./contact-confirm";
 import { UserAvatar } from "./UserAvatar";
 import { openProfile } from "./profile";
 
@@ -105,7 +114,14 @@ export function Friends({
     void reload();
   }, [reload]);
 
-  async function act(work: () => Promise<void>, success?: string) {
+  const { confirm, confirmDialog } = useConfirm();
+
+  async function act(
+    work: () => Promise<void>,
+    success?: string,
+    ask?: ContactConfirm,
+  ) {
+    if (ask && !(await confirm(ask))) return;
     setError(null);
     try {
       await work();
@@ -262,7 +278,13 @@ export function Friends({
                         variant="ghost"
                         size="sm"
                         className="px-2 py-1"
-                        onClick={() => void act(() => removeFriend(person.userId))}
+                        onClick={() =>
+                          void act(
+                            () => removeFriend(person.userId),
+                            undefined,
+                            removeFriendConfirm(person.displayName),
+                          )
+                        }
                       >
                         Remove
                       </Button>
@@ -274,6 +296,7 @@ export function Friends({
                           void act(
                             () => blockUser(person.userId),
                             `${person.displayName} is blocked.`,
+                            blockConfirm(person.displayName),
                           )
                         }
                       >
@@ -333,6 +356,7 @@ export function Friends({
           </>
         )}
       </div>
+      {confirmDialog}
     </Panel>
   );
 }
