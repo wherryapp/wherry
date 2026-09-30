@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { Call } from "../api/types";
 import {
   audioPresetFor,
+  decideScreenPress,
   overGrantStops,
   callerIsRinging,
   callKeyContext,
@@ -910,3 +911,21 @@ test("an over-grant frame turns off only the source the server muted", () => {
   });
 });
 
+test("a share press stops without asking, starts where the transport picks, and picks otherwise", async () => {
+  let asked = 0;
+  const list = (sources: { id: string; title: string; isScreen: boolean }[]) => () => {
+    asked += 1;
+    return Promise.resolve(sources);
+  };
+  const windows = [{ id: "screen:1", title: "Display 1", isScreen: true }];
+
+  assert.deepEqual(await decideScreenPress(true, list(windows)), { action: "stop" });
+  assert.equal(asked, 0);
+
+  assert.deepEqual(await decideScreenPress(false, list([])), { action: "start" });
+  assert.deepEqual(await decideScreenPress(false, list(windows)), {
+    action: "pick",
+    sources: windows,
+  });
+  assert.equal(asked, 2);
+});

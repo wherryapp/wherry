@@ -5,6 +5,7 @@
 // (session.ts, hooks.ts) stay thin.
 
 import type { Call, CallKind } from "../api/types";
+import type { ScreenSource } from "./transport";
 
 /** The two video sources a call can carry, spelled the way the server's
  *  `VideoLimits` spells them. The SDK's own enum never leaves
@@ -1030,3 +1031,35 @@ export function overGrantStops(source: VideoSource | undefined): {
   return { camera: true, screen: true, line: "Your video exceeds this call's limit and was stopped." };
 }
 
+// -- the share-screen press --------------------------------------------------
+
+/** What a "Share screen" press does, once the transport has been asked. */
+export type ScreenPress =
+  | { action: "stop" }
+  | { action: "start" }
+  | { action: "pick"; sources: ScreenSource[] };
+
+/**
+ * The one decision behind every way of asking to share a screen: the call
+ * controls' button and the keyboard shortcut in `Chat.tsx` made it twice
+ * until 2026-09-29, and a copy that drifts is a shortcut that shares
+ * nothing in particular on Windows.
+ *
+ * Stopping never asks the transport anything. Otherwise the transport's
+ * list decides (CLAUDE.md, `src/voice/`): empty means it opens a picker of
+ * its own -- `getDisplayMedia`, the macOS sheet -- and the press is the
+ * whole gesture; non-empty means it has none -- the shell on Windows -- so
+ * the page draws `ScreenPicker` and the share waits for a choice. Never a
+ * platform check.
+ *
+ * Async only because the list is; `listSources` is the session's
+ * `screenSources`, which answers empty rather than throwing.
+ */
+export async function decideScreenPress(
+  sharing: boolean,
+  listSources: () => Promise<ScreenSource[]>,
+): Promise<ScreenPress> {
+  if (sharing) return { action: "stop" };
+  const sources = await listSources();
+  return sources.length === 0 ? { action: "start" } : { action: "pick", sources };
+}

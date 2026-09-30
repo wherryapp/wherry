@@ -58,6 +58,7 @@ import { loadVoicePrefs, saveVoicePrefs } from "./prefs";
 import {
   audioPresetFor,
   callerIsRinging,
+  decideScreenPress,
   cameraOnVisibility,
   grantLine,
   localMediaPatch,
@@ -714,17 +715,23 @@ class VoiceSession {
   }
 
   /**
-   * Stop sharing, or start where the transport picks for itself.
+   * A "Share screen" press from anywhere -- the call controls' button, the
+   * keyboard shortcut -- decided once (rules.ts `decideScreenPress`).
    *
-   * Where it does not — the shell on Windows, whose `screenSources` is a
-   * real list — the caller opens `ScreenPicker` and calls
-   * `setScreenShareEnabled` with the choice instead. This stays the whole
-   * gesture for every transport that has a picker of its own.
+   * Stops, or starts where the transport picks for itself, and answers
+   * null: the press was the whole gesture. Answers the sources where it
+   * does not, and the caller draws `ScreenPicker` over them and calls
+   * `setScreenShareEnabled(true, choice)`; a caller that cannot draw one
+   * just now (Chat under a ring) drops the press. A press while a start is
+   * waiting on its picker is the same button pressed again, and is ignored
+   * there (setScreenShareEnabled). Replaces `toggleScreenShare`, which on
+   * Windows asked the shell to share nothing in particular.
    */
-  toggleScreenShare(): Promise<void> {
-    // A press while a start is waiting on its picker is the same button
-    // pressed again, and is ignored there (setScreenShareEnabled).
-    return this.setScreenShareEnabled(!this.#state.screen.on);
+  async pressScreenShare(): Promise<ScreenSource[] | null> {
+    const press = await decideScreenPress(this.#state.screen.on, () => this.screenSources());
+    if (press.action === "pick") return press.sources;
+    await this.setScreenShareEnabled(press.action === "start");
+    return null;
   }
 
   /**
