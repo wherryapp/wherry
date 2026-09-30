@@ -125,6 +125,11 @@ struct VideoState {
   screen: Option<Published>,
   /// Outlives `screen` for the rest of the call: see `ScreenAudioPublication`.
   screen_audio: Option<ScreenAudioPublication>,
+  /// Bumped by every `voice_set_camera`, so one that awaited a device can
+  /// tell whether a later instruction arrived meanwhile. Tauri runs each
+  /// command as its own task, so a mute can land while a switch is opening
+  /// the new device; the latest instruction is the one that stands.
+  camera_asked: u64,
   tiles: HashMap<u64, TileEntry>,
   next_tile: u64,
   covered: HashSet<String>,
@@ -323,8 +328,10 @@ pub fn dev_open_camera(max_height: u32) {
 #[tauri::command]
 pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<()> {
   let (session, room, shared) = current()?;
-  let existing = with_state(session, |state| {
-    state.camera.as_ref().map(|c| (c.capture.is_some(), c.device_id.clone(), c.source.clone()))
+  let (ticket, existing) = with_state(session, |state| {
+    state.camera_asked += 1;
+    let existing = state.camera.as_ref().map(|c| (c.capture.is_some(), c.device_id.clone(), c.source.clone()));
+    (state.camera_asked, existing)
   });
 
   if let Some((capturing, device, source)) = existing {
@@ -355,6 +362,12 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
     if let Some(previous) = previous {
       tauri::async_runtime::spawn_blocking(move || previous.stop()).await.ok();
     }
+    // Checked before the open as well as after, so a mute that arrived while
+    // the old device was closing does not light the camera at all.
+    if with_state(session, |state| state.camera_asked != ticket) {
+      log::info!("voice: camera switch superseded before opening");
+      return Ok(());
+    }
     let size = landscape(args.max_height);
     let wanted = args.device_id.clone();
     let capture = tauri::async_runtime::spawn_blocking(move || {
@@ -362,13 +375,26 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
     })
     .await
     .map_err(|e| VoiceError::new("camera_failed", e.to_string()))??;
-    with_state(session, |state| {
+    // Installed only if nothing was asked while the device opened. A later
+    // mute found no capture to close and muted the publication; unmuting it
+    // here would undo that, so the fresh device is closed instead. A later
+    // switch opens its own device and installs that.
+    let stale = with_state(session, |state| {
+      if state.camera_asked != ticket {
+        return Some(capture);
+      }
       if let Some(c) = state.camera.as_mut() {
         c.capture = Some(capture);
         c.device_id = args.device_id.clone();
         c.publication.unmute();
       }
+      None
     });
+    if let Some(stale) = stale {
+      tauri::async_runtime::spawn_blocking(move || stale.stop()).await.ok();
+      log::info!("voice: camera switch superseded while opening, device closed");
+      return Ok(());
+    }
     log::info!("voice: camera unmuted on {}", args.device_id.as_deref().unwrap_or("default"));
     return Ok(());
   }
@@ -387,6 +413,13 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
   })
   .await
   .map_err(|e| VoiceError::new("camera_failed", e.to_string()))??;
+  // A mute that arrived while the device opened found no camera to mute;
+  // nothing is published yet, so honouring it is closing the device.
+  if with_state(session, |state| state.camera_asked != ticket) {
+    tauri::async_runtime::spawn_blocking(move || capture.stop()).await.ok();
+    log::info!("voice: camera superseded while opening, device closed");
+    return Ok(());
+  }
 
   let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source.clone()));
   let options = TrackPublishOptions {
@@ -422,16 +455,30 @@ pub async fn voice_set_camera(_app: AppHandle, args: CameraArgs) -> VoiceResult<
     size.0,
     size.1
   );
-  with_state(session, |state| {
+  // The publication is recorded either way -- one dropped unrecorded could
+  // never be muted or unpublished -- but if something was asked while it
+  // published, it is recorded muted with its device closed, as a mute that
+  // had found it would have left it.
+  let stale = with_state(session, |state| {
+    let superseded = state.camera_asked != ticket;
+    if superseded {
+      publication.mute();
+    }
+    let (installed, stale) = if superseded { (None, Some(capture)) } else { (Some(capture), None) };
     state.camera = Some(Published {
       publication,
       track,
       source,
-      capture: Some(capture),
+      capture: installed,
       slot: None,
       device_id: args.device_id,
     });
+    stale
   });
+  if let Some(stale) = stale {
+    tauri::async_runtime::spawn_blocking(move || stale.stop()).await.ok();
+    log::info!("voice: camera superseded while publishing, published muted with the device closed");
+  }
   rebind_tiles(session, &room);
   Ok(())
 }

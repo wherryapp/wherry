@@ -672,29 +672,35 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
-/// `voice_connect`s that have started and not yet returned. A session is
-/// stored only at the end of its connect (about 2 s on the rig), so this is
-/// how a reading taken meanwhile (`voice_current`) learns that a call is on
-/// its way. It matters across a page reload: Tauri does not cancel a command
-/// when the page that invoked it goes, so the old page's connect can land
-/// after the new page has asked -- and leave a call no page knows about.
-static CONNECTS_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+/// Whether a `voice_connect` is running: at most one is, and only it may
+/// store a session. A session is stored only at the end of its connect
+/// (about 2 s on the rig), so a check of `SESSION` alone cannot keep a
+/// second connect out -- Tauri spawns every async command as its own task,
+/// so two invocations run concurrently even from one page, and both would
+/// pass the check and the second store would drop the first's room without
+/// closing it. This is also how a reading taken meanwhile (`voice_current`)
+/// learns that a call is on its way. That matters across a page reload:
+/// Tauri does not cancel a command when the page that invoked it goes, so
+/// the old page's connect can land after the new page has asked -- and
+/// leave a call no page knows about.
+static CONNECT_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-/// One connect counted in `CONNECTS_IN_FLIGHT` for as long as this lives:
+/// The one connect's claim on `CONNECT_IN_FLIGHT` for as long as this lives:
 /// dropped on every way out of `voice_connect`, including its future being
 /// dropped unfinished.
 struct ConnectInFlight;
 
 impl ConnectInFlight {
-  fn start() -> Self {
-    CONNECTS_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
-    Self
+  /// None when another connect holds the claim.
+  fn claim() -> Option<Self> {
+    CONNECT_IN_FLIGHT.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).ok()?;
+    Some(Self)
   }
 }
 
 impl Drop for ConnectInFlight {
   fn drop(&mut self) {
-    CONNECTS_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    CONNECT_IN_FLIGHT.store(false, Ordering::SeqCst);
   }
 }
 
@@ -1324,8 +1330,13 @@ pub struct ConnectResult {
 #[tauri::command]
 pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<ConnectResult> {
   // First, so every way out drops it -- and a success drops it only after
-  // the session is stored at the end.
-  let _in_flight = ConnectInFlight::start();
+  // the session is stored at the end. A connect already on its way is
+  // refused with the same code as a call already running: the page has no
+  // separate path for either, and a second code would be one more thing an
+  // older page does not know.
+  let Some(_in_flight) = ConnectInFlight::claim() else {
+    return Err(VoiceError::new("already_connected", "a call is already connecting"));
+  };
   if session_id().is_some() {
     return Err(VoiceError::new("already_connected", "a call is already running"));
   }
@@ -1602,8 +1613,8 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     roster: roster(&room),
   };
 
-  // Another connect could not have raced in: the command runs on the one
-  // webview's calls in order, and `session_id()` was None above.
+  // Another connect could not have raced in: this one holds the only
+  // `ConnectInFlight` claim, and `session_id()` was None once it had it.
   *SESSION.lock().unwrap() = Some(Session {
     id,
     room,
@@ -1966,10 +1977,10 @@ pub struct CurrentReading {
 #[tauri::command]
 pub fn voice_current() -> VoiceResult<CurrentReading> {
   // Read before the session, and a connect stores its session before it
-  // stops counting (`ConnectInFlight`): a connect that finishes between the
-  // two reads is seen as the session, and one that has not as connecting.
-  // The other order could see neither.
-  let connecting = CONNECTS_IN_FLIGHT.load(Ordering::SeqCst) > 0;
+  // lets go of its claim (`ConnectInFlight`): a connect that finishes
+  // between the two reads is seen as the session, and one that has not as
+  // connecting. The other order could see neither.
+  let connecting = CONNECT_IN_FLIGHT.load(Ordering::SeqCst);
   let snapshot = SESSION.lock().unwrap().as_ref().map(|session| {
     (
       session.id,

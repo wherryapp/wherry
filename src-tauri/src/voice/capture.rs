@@ -469,6 +469,7 @@ pub mod mac {
 
   extern "C" {
     fn dispatch_queue_create(label: *const std::ffi::c_char, attr: *const c_void) -> *mut c_void;
+    fn dispatch_release(object: *mut c_void);
   }
 
   /// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` ('420v') and the
@@ -579,11 +580,12 @@ pub mod mac {
     code.to_be_bytes().iter().map(|b| *b as char).collect()
   }
 
-  /// An open camera: the capture session, its delegate, and the queue the
-  /// frames arrive on. Raw retained pointers rather than `Retained<_>`,
-  /// because this lives in the session state behind a `Mutex` and is
-  /// dropped from whichever thread the disconnect command runs on;
-  /// AVCaptureSession is documented safe to stop from any thread.
+  /// An open camera: the capture session and its delegate. The session owns
+  /// the input and output, and the output the queue the frames arrive on, so
+  /// releasing the session releases all three. Raw retained pointers rather
+  /// than `Retained<_>`, because this lives in the session state behind a
+  /// `Mutex` and is dropped from whichever thread the disconnect command
+  /// runs on; AVCaptureSession is documented safe to stop from any thread.
   pub struct Camera {
     session: usize,
     sink: usize,
@@ -692,6 +694,15 @@ pub mod mac {
       });
       // SAFETY: plain AVFoundation setup, every object retained by the
       // session or by this struct; failures are checked at each step.
+      //
+      // Ownership, as `render.rs` balances it: `session` and `output` come
+      // from `new` and the queue from `dispatch_queue_create`, each ours
+      // (+1) to release; `device`, `input`, `settings` and the error are
+      // autoreleased and not ours. The session retains what it adds and the
+      // output retains its callback queue, so the output and queue are
+      // released as soon as they are handed over and the session is the one
+      // thing kept. Every early return releases the session, which lets go
+      // of whatever had been added to it.
       unsafe {
         let device: *mut AnyObject = match device_id {
           Some(id) => {
@@ -727,6 +738,7 @@ pub mod mac {
         let can_input: bool = msg_send![session, canAddInput: input];
         if !can_input {
           let _: () = msg_send![session, commitConfiguration];
+          let _: () = msg_send![session, release];
           return Err(VoiceError::new("camera_failed", "the camera cannot be added to a session"));
         }
         let _: () = msg_send![session, addInput: input];
@@ -745,16 +757,25 @@ pub mod mac {
         let sink: Retained<CameraSink> = msg_send![super(sink), init];
         let queue = dispatch_queue_create(c"app.wherry.camera".as_ptr(), std::ptr::null());
         let _: () = msg_send![output, setSampleBufferDelegate: &*sink, queue: queue];
+        // The output holds the queue now; ours goes.
+        dispatch_release(queue);
         let can_output: bool = msg_send![session, canAddOutput: output];
         if !can_output {
           let _: () = msg_send![session, commitConfiguration];
+          let _: () = msg_send![output, release];
+          let _: () = msg_send![session, release];
           return Err(VoiceError::new("camera_failed", "the output cannot be added to a session"));
         }
         let _: () = msg_send![session, addOutput: output];
+        // The session holds the output now; ours goes. Without this every
+        // open and close -- each camera mute or device switch in a call --
+        // leaked an output, and with it the queue.
+        let _: () = msg_send![output, release];
         let _: () = msg_send![session, commitConfiguration];
         let _: () = msg_send![session, startRunning];
         let running: bool = msg_send![session, isRunning];
         if !running {
+          let _: () = msg_send![session, release];
           return Err(VoiceError::new("camera_failed", "the capture session did not start"));
         }
         log::info!(
@@ -776,7 +797,8 @@ pub mod mac {
     /// Stops the session -- the camera light goes off -- and releases it.
     pub fn close(self) {
       // SAFETY: the pointers were retained in `open`; stopRunning is safe
-      // from any thread, and the session drops its input and output.
+      // from any thread, and the session drops its input and output (the
+      // last reference to each, see `open`), and the output its queue.
       unsafe {
         let session = self.session as *mut AnyObject;
         let _: () = msg_send![session, stopRunning];

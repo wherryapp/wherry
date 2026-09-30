@@ -262,6 +262,31 @@ impl ScreenAudio {
   }
 }
 
+/// COM on the current thread, for as long as this lives: capture.rs's
+/// `MediaFoundation` without the MF half. Each capture runs on a thread of
+/// its own, and without the pairing every share left that thread's COM
+/// initialised as it exited. Every COM object a function holds must be a
+/// local declared **after** the guard, which Rust drops before it.
+struct Com;
+
+impl Com {
+  fn start() -> windows_core::Result<Com> {
+    // SAFETY: paired by `Drop`, on the capture thread this module created.
+    // `ok()` is `Ok` for S_FALSE too (already initialised on this thread),
+    // which still takes a reference that `CoUninitialize` must give back.
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+    Ok(Com)
+  }
+}
+
+impl Drop for Com {
+  fn drop(&mut self) {
+    // SAFETY: `start` succeeded on this thread, and what was made under it
+    // has already been dropped (see the struct comment).
+    unsafe { CoUninitialize() };
+  }
+}
+
 fn capture_loop(
   mode: Mode,
   pid: u32,
@@ -271,8 +296,9 @@ fn capture_loop(
   ready_tx: &Sender<Result<(), String>>,
 ) -> Result<(), String> {
   // MTA on this thread, and every COM object below built on it: they are
-  // `!Send` and cannot be handed anywhere else.
-  unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok() }.map_err(|e| e.message())?;
+  // `!Send` and cannot be handed anywhere else. The guard is the first
+  // local, so every COM object is dropped before it uninitialises.
+  let _com = Com::start().map_err(|e| e.message())?;
   let client = activate(mode, pid)?;
   let format = pcm_format();
   // Nothing is sized from `GetBufferSize` on this stream -- it reports junk,
