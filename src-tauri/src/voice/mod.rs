@@ -643,8 +643,12 @@ struct Session {
   keys: Option<KeyProvider>,
   shared: Arc<Shared>,
   /// The microphone, once it has been published; `None` before the first
-  /// `voice_set_mic(true)`.
+  /// `voice_set_mic(true)` (or the join's muted publish).
   mic: Option<LocalTrackPublication>,
+  /// The page's number on the latest `voice_set_mic` it sent, for the one
+  /// that arrives out of order (`voice_set_mic`'s `seq`). Zero after a new
+  /// page adopts the call, which numbers its own from one.
+  mic_asked: u64,
   max_bitrate: u64,
   /// The call's processing switches and whether the engine was held, kept so
   /// `voice_set_mic` can repair the built-in canceller before every
@@ -684,6 +688,16 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// the old page's connect can land after the new page has asked -- and
 /// leave a call no page knows about.
 static CONNECT_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// A `voice_disconnect` arrived while a connect was in flight: the page hung
+/// up during "Connecting…". That connect must not store its session -- it
+/// closes its room and answers `cancelled` instead. Before this the
+/// disconnect found no session, answered zeros, and the connect then stored a
+/// live room that no page knew about, whose microphone the page went on to
+/// publish (client-voice-1, rust-shell-1). Set and read only under the
+/// `SESSION` lock, so a disconnect sees either the stored session or a connect
+/// still to store one, never neither; cleared by the next connect's claim.
+static CONNECT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// The one connect's claim on `CONNECT_IN_FLIGHT` for as long as this lives:
 /// dropped on every way out of `voice_connect`, including its future being
@@ -746,11 +760,9 @@ pub struct RosterEntry {
   /// Whether their audio track is enabled for playout here.
   playing: Option<bool>,
   /// A camera publication exists for them, muted or not -- and likewise a
-  /// screen. This transport can neither publish nor render video until
-  /// stage 3N (docs/prompts/video-execution-handoff.md §0), so these two
-  /// booleans exist for exactly one purpose: so a participant on this
-  /// engine is told "Alice's camera is on -- switch engine to see it"
-  /// rather than shown nothing at all.
+  /// screen. What the page's tiles are built from (`TransportParticipant`'s
+  /// `camera` and `screen`); `camera_muted` below says whether the camera is
+  /// actually sending.
   has_camera: bool,
   has_screen: bool,
   /// Their screen share carries a second audio track, unmuted. A separate
@@ -890,6 +902,13 @@ enum Event {
   /// 15 minutes, which would make every longer call's answer a 401. Never
   /// logged.
   Token { token: String },
+  /// This device's own media after one of its tracks was muted, unmuted,
+  /// published or unpublished: the seam's `localChanged`. The page made most
+  /// of these changes itself and knows; this is for the ones it did not --
+  /// a moderator's mute or stop-video, which the SFU applies and the SDK
+  /// mirrors onto the local publication with no other word to the page
+  /// (client-voice-2). Read when sent, not taken from the event.
+  Local { mic_open: bool, camera: bool, screen: bool },
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -902,6 +921,47 @@ struct Envelope {
 /// A connection word with no disconnect reason: everything but `disconnected`.
 fn connection(state: &str, quality: String) -> Event {
   Event::Connection { state: state.into(), quality, reason: None }
+}
+
+/// `Event::Local`, read now. The microphone is open when it is published,
+/// unmuted and the gate is open -- read from the room's own publications, not
+/// `Session::mic`, which a full reconnect's republish leaves behind.
+fn local_media(session: u64, room: &Room) -> Event {
+  let mic_unmuted = room
+    .local_participant()
+    .track_publications()
+    .into_values()
+    .any(|publication| publication.source() == TrackSource::Microphone && !publication.is_muted());
+  let (camera, screen) = video::local_video(session);
+  Event::Local { mic_open: mic_unmuted && microphone_gate_open(), camera, screen }
+}
+
+/// The SFU muted this device's microphone -- a moderator (`moderateVoice`'s
+/// `mute`), since the page's own mutes close the gate under `MIC_RECORDING`
+/// before this can look. The SDK has already muted the publication; this
+/// does the rest of what a mute here does, so the device stops recording and
+/// the OS indicator stops saying the microphone is live. The page learns it
+/// from `Event::Local`, and its next unmute is an ordinary one.
+fn on_microphone_muted_remotely(session: u64, room: &Room) {
+  let _sequence = mic_recording_lock();
+  if session_id() != Some(session) || !microphone_gate_open() {
+    return;
+  }
+  let muted = room
+    .local_participant()
+    .track_publications()
+    .into_values()
+    .any(|publication| publication.source() == TrackSource::Microphone && publication.is_muted());
+  if !muted {
+    return;
+  }
+  if let Ok(audio) = platform_audio() {
+    if let Err(error) = audio.stop_recording() {
+      log::debug!("voice: stop_recording after a remote mute: {error:?}");
+    }
+  }
+  set_mic_start_failed(session, false);
+  set_microphone_gate(false, "after the SFU muted the microphone");
 }
 
 fn emit(app: &AppHandle, session: u64, event: Event) {
@@ -990,11 +1050,25 @@ async fn pump(
           video::on_video_event(&app, session, &room);
         }
       }
-      RoomEvent::TrackMuted { publication, .. } | RoomEvent::TrackUnmuted { publication, .. } => {
+      RoomEvent::TrackMuted { participant, publication }
+      | RoomEvent::TrackUnmuted { participant, publication } => {
         emit(&app, session, Event::Roster { roster: roster(&room) });
+        if matches!(participant, Participant::Local(_)) && publication.is_muted() {
+          match publication.source() {
+            TrackSource::Microphone => on_microphone_muted_remotely(session, &room),
+            TrackSource::Camera => video::on_camera_muted_remotely(session),
+            _ => {}
+          }
+        }
         if publication.kind() == TrackKind::Video {
           video::on_video_event(&app, session, &room);
         }
+        if matches!(participant, Participant::Local(_)) {
+          emit(&app, session, local_media(session, &room));
+        }
+      }
+      RoomEvent::LocalTrackPublished { .. } | RoomEvent::LocalTrackUnpublished { .. } => {
+        emit(&app, session, local_media(session, &room));
       }
       RoomEvent::ParticipantEncryptionStatusChanged { .. }
       | RoomEvent::ParticipantNameChanged { .. }
@@ -1337,8 +1411,13 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   let Some(_in_flight) = ConnectInFlight::claim() else {
     return Err(VoiceError::new("already_connected", "a call is already connecting"));
   };
-  if session_id().is_some() {
-    return Err(VoiceError::new("already_connected", "a call is already running"));
+  {
+    let guard = SESSION.lock().unwrap();
+    if guard.is_some() {
+      return Err(VoiceError::new("already_connected", "a call is already running"));
+    }
+    // A cancel meant for an earlier connect is not this one's.
+    CONNECT_CANCELLED.store(false, Ordering::SeqCst);
   }
   let started = Instant::now();
   let audio = platform_audio()?;
@@ -1539,6 +1618,12 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     log::info!("voice: WHERRY_FORCE_RELAY=1 -- this call's ICE is relay-only");
   }
 
+  // Hung up while the devices and the key were being set up: nothing to
+  // close yet, so do not open anything.
+  if CONNECT_CANCELLED.load(Ordering::SeqCst) {
+    log::info!("voice: connect cancelled by a hang-up before it reached the SFU");
+    return Err(VoiceError::new("cancelled", "the call was hung up while it connected"));
+  }
   let (room, rx) = Room::connect(&args.url, &args.token, options)
     .await
     .map_err(|e| VoiceError::new("connect_failed", e.to_string()))?;
@@ -1561,10 +1646,11 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   // (patches/rust-sdks-room-session-release.md) dropping it would run the
   // engine's `Terminate` into the `PlatformAudio` this shell keeps, and the
   // next call's `Init` would repeat this call's device defect. Taken now,
-  // the defect stays with this one call, as it always did. Until that fork
-  // change lands no PeerConnection is ever released, so this changes nothing
-  // today. `engine_held` keeps its meaning: whether the init ran before this
-  // call's choices.
+  // the defect stays with this one call, as it always did. That fork change
+  // is pinned (the sixth commit, 2026-09-29), so a hold taken here is what
+  // keeps the engine initialised across this call's hang-up when the hold
+  // before the connect failed. `engine_held` keeps its meaning: whether the
+  // init ran before this call's choices.
   if !engine_held {
     match hold_media_engine() {
       EngineHold::Failed(error) => log::warn!(
@@ -1615,12 +1701,15 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
 
   // Another connect could not have raced in: this one holds the only
   // `ConnectInFlight` claim, and `session_id()` was None once it had it.
-  *SESSION.lock().unwrap() = Some(Session {
+  // Stored only if nobody hung up meanwhile, decided under the same lock the
+  // disconnect takes (`CONNECT_CANCELLED`).
+  let session = Session {
     id,
     room,
     keys,
     shared,
     mic: None,
+    mic_asked: 0,
     max_bitrate: args.max_bitrate,
     processing,
     engine_held,
@@ -1629,7 +1718,27 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     started,
     url: args.url,
     handoff: args.handoff,
-  });
+  };
+  let refused = {
+    let mut guard = SESSION.lock().unwrap();
+    if CONNECT_CANCELLED.load(Ordering::SeqCst) {
+      Some(session)
+    } else {
+      *guard = Some(session);
+      None
+    }
+  };
+  if let Some(Session { room, keys, pump, .. }) = refused {
+    log::info!(
+      "voice: session {id} was hung up while it connected -- closing it rather than keeping it"
+    );
+    if let Err(error) = room.close().await {
+      log::warn!("voice: close after a cancelled connect: {error}");
+    }
+    pump.abort();
+    drop(keys);
+    return Err(VoiceError::new("cancelled", "the call was hung up while it connected"));
+  }
   Ok(result)
 }
 
@@ -1640,10 +1749,21 @@ pub struct DisconnectResult {
   lifetime_ms: u64,
 }
 
-/// Idempotent: a second call, or one with no session, answers zeros.
+/// Idempotent: a second call, or one with no session, answers zeros. With no
+/// session but a connect in flight, that connect is the call being hung up:
+/// it is told to close instead of storing its session (`CONNECT_CANCELLED`).
 #[tauri::command]
 pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
-  let Some(session) = SESSION.lock().unwrap().take() else {
+  let taken = {
+    let mut guard = SESSION.lock().unwrap();
+    let taken = guard.take();
+    if taken.is_none() && CONNECT_IN_FLIGHT.load(Ordering::SeqCst) {
+      CONNECT_CANCELLED.store(true, Ordering::SeqCst);
+      log::info!("voice: disconnect requested while a connect is in flight -- it will close instead of storing its call");
+    }
+    taken
+  };
+  let Some(session) = taken else {
     return Ok(DisconnectResult { close_ms: 0, lifetime_ms: 0 });
   };
   let Session { room, keys, mic, pump, started, .. } = session;
@@ -1687,12 +1807,38 @@ pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
 /// in place. Recording is stopped while muted so the OS privacy indicator
 /// tells the truth (the SDK's own documented pattern), and started again
 /// on unmute.
+///
+/// `publish_muted`: the join's first publish in a call it joins muted
+/// (`enabled` false). The track is published muted with the microphone gate
+/// left closed, so the device never records and no unmuted frame is ever
+/// sent; the next `true` is an ordinary unmute. Without it a `false` with
+/// nothing published does nothing, as before (Connor's decision on
+/// client-voice-15: joining muted never publishes the microphone unmuted).
+///
+/// `seq`: the page's number for this instruction. Tauri's IPC does not keep
+/// two commands in order, so one numbered below the latest already seen is
+/// stale and is dropped; absent (an older page) is taken as it comes.
 #[tauri::command]
-pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
+pub async fn voice_set_mic(
+  enabled: bool,
+  publish_muted: Option<bool>,
+  seq: Option<u64>,
+) -> VoiceResult<()> {
   let (id, room, shared) = current()?;
   let (existing, max_bitrate, processing, engine_held) = {
-    let guard = SESSION.lock().unwrap();
-    let session = guard.as_ref().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
+    let mut guard = SESSION.lock().unwrap();
+    let session = guard.as_mut().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
+    if let Some(seq) = seq {
+      if seq <= session.mic_asked {
+        log::info!(
+          "voice: microphone {} (#{seq}) arrived after #{} -- stale, dropped",
+          if enabled { "on" } else { "off" },
+          session.mic_asked
+        );
+        return Ok(());
+      }
+      session.mic_asked = seq;
+    }
     (session.mic.clone(), session.max_bitrate, session.processing, session.engine_held)
   };
   let audio = platform_audio()?;
@@ -1741,7 +1887,8 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
     return Ok(());
   }
 
-  if !enabled {
+  let muted = !enabled;
+  if muted && publish_muted != Some(true) {
     // Muted before it was ever published: nothing to publish silence from,
     // and the gate stays as the connect left it, closed.
     return Ok(());
@@ -1749,11 +1896,20 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
   if audio.recording_devices().next().is_none() {
     return Err(VoiceError::new("no_microphone", "no recording device"));
   }
-  // Before the publish, whose `AddSendingStream` is what initialises
-  // recording for a device track (the connect's `builtin_aec_off` has already
-  // run in front of it).
-  set_microphone_gate(true, "before the microphone's publish");
   let track = LocalAudioTrack::create_audio_track("microphone", audio.rtc_source());
+  if muted {
+    // Muted before it is published, so its AddTrackRequest says muted and its
+    // sender never carries a frame. The gate stays closed: the publish's
+    // `AddSendingStream` initialises nothing on the device, and the unmute
+    // opens it and starts recording with the repair in front, as after any
+    // mute (the `existing` branch above).
+    track.mute();
+  } else {
+    // Before the publish, whose `AddSendingStream` is what initialises
+    // recording for a device track (the connect's `builtin_aec_off` has
+    // already run in front of it).
+    set_microphone_gate(true, "before the microphone's publish");
+  }
   let options = TrackPublishOptions {
     source: TrackSource::Microphone,
     // dtx and red stay on at every tier, as in the webview transport:
@@ -1776,6 +1932,21 @@ pub async fn voice_set_mic(enabled: bool) -> VoiceResult<()> {
       return Err(VoiceError::new("mic_failed", format!("publish: {error}")));
     }
   };
+  if muted {
+    let index = *shared.key_index.lock().unwrap();
+    let cryptors = apply_key_index(&room, index);
+    log::info!(
+      "voice: microphone published muted as {} (recording {}, gate closed), {cryptors} cryptor(s) on index {index}",
+      publication.sid(),
+      audio.is_recording_initialized()
+    );
+    let mut guard = SESSION.lock().unwrap();
+    if let Some(session) = guard.as_mut().filter(|session| session.id == id) {
+      session.mic = Some(publication);
+      session.mic_start_failed = false;
+    }
+    return Ok(());
+  }
   // On the rig's pre-fix reading the publish had initialised recording by
   // this point (status §3.3), so this should ask nothing; it is here so that no `start_recording` in this file can
   // initialise recording without the repair in front of it.
@@ -2044,15 +2215,14 @@ pub fn voice_forget_page() -> VoiceResult<usize> {
   let (id, _, shared) = current()?;
   shared.playback.lock().unwrap().clear();
   shared.volume.lock().unwrap().clear();
+  // The old page's numbering goes with it: the new one numbers its
+  // instructions from one (`voice_set_mic`'s `seq`, and video.rs's tickets).
+  if let Some(session) = SESSION.lock().unwrap().as_mut().filter(|session| session.id == id) {
+    session.mic_asked = 0;
+  }
   let tiles = video::forget_page(id);
   log::info!("voice: session {id} taken over by a new page; {tiles} tile(s) of the old one destroyed");
   Ok(tiles)
-}
-
-#[tauri::command]
-pub fn voice_roster() -> VoiceResult<Roster> {
-  let (_, room, _) = current()?;
-  Ok(roster(&room))
 }
 
 fn summarize_local(stats: &[RtcStats], out: &mut Value) {
@@ -2161,16 +2331,12 @@ fn route_of(stats: &[RtcStats]) -> Option<Value> {
 #[tauri::command]
 pub async fn voice_stats() -> VoiceResult<Value> {
   let (_, room, _) = current()?;
-  let (mic, audio_ok) = {
+  let mic = {
     let guard = SESSION.lock().unwrap();
     let session = guard.as_ref().ok_or_else(|| VoiceError::new("not_connected", "no call"))?;
-    (session.mic.clone(), true)
+    session.mic.clone()
   };
-  let recording = if audio_ok {
-    platform_audio().map(|audio| audio.is_recording_initialized()).unwrap_or(false)
-  } else {
-    false
-  };
+  let recording = platform_audio().map(|audio| audio.is_recording_initialized()).unwrap_or(false);
   let muted = mic.as_ref().map(|p| p.is_muted()).unwrap_or(true);
   let mut out = json!({
     "mic": {
