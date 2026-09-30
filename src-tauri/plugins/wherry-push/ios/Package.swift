@@ -14,7 +14,7 @@ let package = Package(
     // `swift build` on the Mac can resolve the package; the plugin is never
     // linked into the desktop shell.
     .macOS(.v10_13),
-    .iOS(.v15),
+    .iOS("15.4"),
   ],
   products: [
     .library(

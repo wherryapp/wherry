@@ -10,7 +10,7 @@ let package = Package(
   name: "tauri-plugin-wherry-calls",
   platforms: [
     // The app's own deployment target (gen/apple/project.yml).
-    .iOS(.v15)
+    .iOS("15.4")
   ],
   products: [
     .library(
