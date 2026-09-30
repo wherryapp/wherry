@@ -409,7 +409,6 @@ const frame = (over: Partial<CallFrame>): CallFrame => ({
   status: "ringing",
   reason: null,
   participants: [],
-  micMuted: false,
   ...over,
 });
 
@@ -497,6 +496,7 @@ const state = (over: Partial<ActiveCallInput> = {}): ActiveCallInput => ({
   camera: { on: false },
   screen: { on: false },
   participants: [],
+  micMuted: false,
   ...over,
 });
 
