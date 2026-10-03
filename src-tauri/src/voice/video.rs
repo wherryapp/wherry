@@ -740,6 +740,7 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
       return Err(VoiceError::new("screen_failed", format!("publish: {error}")));
     }
   };
+  let gone = screen.gone_flag();
   let published = Published {
     publication,
     track,
@@ -830,7 +831,44 @@ pub async fn voice_set_screen(app: AppHandle, args: ScreenArgs) -> VoiceResult<(
   }
   let _ = &app;
   rebind_tiles(session, &room);
+  watch_share_target(session, ticket, gone);
   Ok(())
+}
+
+/// Ends the share when its window closes: the capture thread raises `gone`
+/// and stops itself, and this takes the share down the way a Stop press does,
+/// so the page learns it from `Event::Local` and the far end sees the picture
+/// leave rather than freeze (row S-12 kept the freeze until 2026-10-03, when
+/// the maintainer decided a closed window ends its share). Gives up when the
+/// instruction is superseded or the call ends; takes only the share whose
+/// flag it holds, so a newer share is never its victim.
+fn watch_share_target(session: u64, ticket: u64, gone: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+  tauri::async_runtime::spawn(async move {
+    loop {
+      tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+      if screen_superseded(session, ticket) {
+        return;
+      }
+      if !gone.load(std::sync::atomic::Ordering::Relaxed) {
+        continue;
+      }
+      let Ok((_, room, _)) = current() else { return };
+      let ours = with_live_state(session, |state| {
+        let mine = matches!(
+          state.screen.as_ref().and_then(|p| p.capture.as_ref()),
+          Some(Source::Screen(screen)) if std::sync::Arc::ptr_eq(&screen.gone_flag(), &gone)
+        );
+        mine.then(|| state.screen.take()).flatten()
+      })
+      .flatten();
+      let Some(published) = ours else { return };
+      log::info!("voice: the shared window closed -- ending the share");
+      stop_share_sound(session, Some(ticket)).await;
+      take_down(session, &room, published).await;
+      super::recheck_microphone("after the shared window closed");
+      return;
+    }
+  });
 }
 
 /// Whether the screen instruction `ticket` is no longer the one to act on: a

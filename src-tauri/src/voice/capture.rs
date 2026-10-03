@@ -273,6 +273,9 @@ pub fn screen_sources() -> Vec<ScreenSourceInfo> {
 pub struct Screen {
   stop: Arc<AtomicBool>,
   frames: Arc<AtomicU64>,
+  /// Set by the capture thread when the shared window no longer exists, and
+  /// the capture has stopped itself. Windows only: elsewhere nothing sets it.
+  gone: Arc<AtomicBool>,
   join: Option<JoinHandle<()>>,
 }
 
@@ -296,6 +299,7 @@ impl Screen {
   ) -> Result<Screen, VoiceError> {
     let stop = Arc::new(AtomicBool::new(false));
     let frames = Arc::new(AtomicU64::new(0));
+    let gone = Arc::new(AtomicBool::new(false));
     // `(code, message)` rather than a message alone: "this platform has no
     // capturer" and "the window you picked has closed" are different things
     // to say to somebody, and the second is the one our own picker made
@@ -304,6 +308,7 @@ impl Screen {
     let join = {
       let stop = stop.clone();
       let frames = frames.clone();
+      let gone = gone.clone();
       std::thread::Builder::new()
         .name("wherry-screen".into())
         .spawn(move || {
@@ -399,15 +404,34 @@ impl Screen {
           capturer.start_capture(chosen, callback);
           let _ = ready_tx.send(Ok(()));
           let interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
+          let mut last_look = std::time::Instant::now();
           while !stop.load(Ordering::Relaxed) {
             capturer.capture_frame();
             std::thread::sleep(interval);
+            // A window share ends with its window. Looked at twice a second,
+            // by the handle the picker was given; a minimised window still
+            // exists, so only a closed one ends the share.
+            #[cfg(target_os = "windows")]
+            if let Some(pick) = picked {
+              if pick.kind == ScreenKind::Window
+                && last_look.elapsed() >= Duration::from_millis(500)
+              {
+                last_look = std::time::Instant::now();
+                if !window_exists(pick.id) {
+                  log::info!("voice: the shared window is gone; capture stopped");
+                  gone.store(true, Ordering::Relaxed);
+                  break;
+                }
+              }
+            }
+            #[cfg(not(target_os = "windows"))]
+            let _ = (&mut last_look, &gone);
           }
         })
         .expect("spawn screen thread")
     };
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
-      Ok(Ok(())) => Ok(Screen { stop, frames, join: Some(join) }),
+      Ok(Ok(())) => Ok(Screen { stop, frames, gone, join: Some(join) }),
       Ok(Err((code, message))) => Err(VoiceError::new(code, message)),
       Err(_) => {
         // A thread that becomes ready after this would otherwise capture for
@@ -418,12 +442,26 @@ impl Screen {
     }
   }
 
+  /// The flag the capture thread raises when the shared window closes; a
+  /// clone, so a watcher can hold it after the `Screen` is stored.
+  pub fn gone_flag(&self) -> Arc<AtomicBool> {
+    self.gone.clone()
+  }
+
   pub fn stop(mut self) {
     self.stop.store(true, Ordering::Relaxed);
     if let Some(join) = self.join.take() {
       let _ = join.join();
     }
   }
+}
+
+/// Whether the window the picker gave us still exists (`IsWindow`).
+#[cfg(target_os = "windows")]
+fn window_exists(id: u64) -> bool {
+  use windows::Win32::Foundation::HWND;
+  use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+  unsafe { IsWindow(Some(HWND(id as *mut std::ffi::c_void))).as_bool() }
 }
 
 // -- the camera (macOS) -------------------------------------------------------
