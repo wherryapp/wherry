@@ -310,5 +310,87 @@ do {
   check(token!.expired(now: 1_790_000_100), "expired after exp")
 }
 
+// MARK: - NativeAudioPlan (who holds the audio session for the shell's engine)
+
+do {
+  // A call CallKit does not hold, on the native engine: prepared once, then
+  // the plugin activates the session itself and enables the engine; the
+  // report's repeats (a label, a mute) add nothing.
+  var plan = NativeAudioPlan()
+  check(
+    plan.pageReport(active: true, native: true, callKitHoldsCall: false)
+      == [.prepareSession, .activateDirect, .engineSessionActivated, .enableEngine],
+    "a direct call prepares, activates and enables")
+  check(
+    plan.pageReport(active: true, native: true, callKitHoldsCall: false).isEmpty,
+    "a repeated report changes nothing")
+  check(plan.directActive, "the plugin holds the session")
+  check(
+    plan.pageReport(active: false, native: true, callKitHoldsCall: false)
+      == [.disableEngine, .deactivateDirect, .engineSessionDeactivated],
+    "the end stops the unit before the session goes")
+  check(!plan.directActive, "and lets go of it")
+  check(
+    plan.pageReport(active: false, native: true, callKitHoldsCall: false).isEmpty,
+    "a repeated end does nothing")
+  // The next call prepares again.
+  check(
+    plan.pageReport(active: true, native: true, callKitHoldsCall: false).first == .prepareSession,
+    "the next call is prepared afresh")
+}
+
+do {
+  // A direct call that moves to the webview engine (a camera press): the
+  // plugin lets go of the session for WebKit.
+  var plan = NativeAudioPlan()
+  _ = plan.pageReport(active: true, native: true, callKitHoldsCall: false)
+  check(
+    plan.pageReport(active: true, native: false, callKitHoldsCall: false)
+      == [.disableEngine, .deactivateDirect, .engineSessionDeactivated],
+    "a call that leaves the engine releases the session")
+  check(!plan.directActive, "and no longer holds it")
+}
+
+do {
+  // A call CallKit holds: the plugin prepares and waits; CallKit's own
+  // callbacks enable and disable the engine, and the page's end does nothing.
+  var plan = NativeAudioPlan()
+  check(
+    plan.pageReport(active: true, native: true, callKitHoldsCall: true) == [.prepareSession],
+    "a CallKit call is prepared, not activated")
+  check(!plan.directActive, "the plugin does not hold a CallKit call's session")
+  check(
+    plan.callKitActivated() == [.engineSessionActivated, .enableEngine],
+    "didActivate toggles the engine on")
+  check(
+    plan.callKitDeactivated() == [.disableEngine, .engineSessionDeactivated],
+    "didDeactivate toggles it off")
+  check(
+    plan.pageReport(active: false, native: true, callKitHoldsCall: true).isEmpty,
+    "the page's end leaves a CallKit call's session to CallKit")
+}
+
+do {
+  // The webview engine: nothing is prepared or activated by the plugin.
+  var plan = NativeAudioPlan()
+  check(
+    plan.pageReport(active: true, native: false, callKitHoldsCall: false).isEmpty,
+    "the webview engine's call is left alone")
+  check(!plan.directActive, "and not held")
+  // A lock-screen answer before any page report: the category is prepared if
+  // the last page report said native, once.
+  check(plan.callKitAnswering(native: false).isEmpty, "a webview answer prepares nothing")
+  check(plan.callKitAnswering(native: true) == [.prepareSession], "a native answer prepares")
+  check(plan.callKitAnswering(native: true).isEmpty, "only once")
+  // And the page, arriving after, does not prepare it again.
+  check(
+    plan.pageReport(active: true, native: true, callKitHoldsCall: true).isEmpty,
+    "the page's report after an answer finds it prepared")
+  // CallKit's reset or deactivation starts the next call from nothing.
+  _ = plan.callKitDeactivated()
+  check(
+    plan.callKitAnswering(native: true) == [.prepareSession], "the next answer prepares again")
+}
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

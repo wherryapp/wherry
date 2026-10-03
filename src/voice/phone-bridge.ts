@@ -100,6 +100,8 @@ import {
   type CallFrame,
   type NativeRing,
 } from "./phone-rules";
+import { nativeMediaSelected, subscribeNativeMedia } from "./native-media";
+import { subscribeVoicePrefs } from "./prefs";
 import type { Ring } from "./rules";
 import { voice } from "./session";
 
@@ -252,10 +254,18 @@ class PhoneBridge {
     // state moved.
     const onVisibility = (): void => this.#onVoice();
     document.addEventListener("visibilitychange", onVisibility);
+    // The engine choice is part of every report (`nativeAudio`), idle ones
+    // included, so the iOS plugin knows it before a lock-screen Answer: when
+    // the probe answers or the preference moves, report again. The report's
+    // own key keeps a repeat from reaching the plugin.
+    const offProbe = subscribeNativeMedia(() => this.#onVoice());
+    const offVoicePrefs = subscribeVoicePrefs(() => this.#onVoice());
     this.#uninstall = () => {
       offSync();
       offVoice();
       offPrefs();
+      offProbe();
+      offVoicePrefs();
       document.removeEventListener("visibilitychange", onVisibility);
       this.#cancelStop();
       this.#stopRun();
@@ -556,6 +566,7 @@ class PhoneBridge {
         this.#labels,
         document.visibilityState === "visible",
         this.#capabilities?.ringUi === "callkit",
+        nativeMediaSelected(),
       );
       const key = JSON.stringify(report);
       if (key !== this.#activeKey) {

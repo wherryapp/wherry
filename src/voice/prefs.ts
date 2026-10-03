@@ -3,6 +3,8 @@
 // than the store's meta table because these are per-device hardware
 // choices read synchronously at join time, never synced anywhere.
 
+import { SHELL } from "../api/shell";
+import { nativeMediaDefault, readNativeMediaPref } from "./native-media-rules";
 import {
   DEFAULT_AUDIO_QUALITY,
   isAudioQuality,
@@ -49,8 +51,18 @@ export type VoicePrefs = {
    * and the phones the value is stored and ignored and this default changes
    * nothing there. A device that unticks the box keeps its choice. Read at
    * join, so it applies to the next call.
+   *
+   * **The phones are the other way round** (phone-calls-plan.md §8.2,
+   * decision M-4, 2026-09-29): a phone build that carries the engine ships it
+   * dark, so the default there is false and a stored true counts only beside
+   * `nativeMediaChosen` (native-media-rules.ts says why).
    */
   nativeMedia: boolean;
+  /** `nativeMedia` was set by a person or a dev switch, not defaulted.
+   *  Written by `saveVoicePrefs` whenever it is handed a `nativeMedia`; it
+   *  decides only on the phones, where a stored true proves nothing without
+   *  it. */
+  nativeMediaChosen: boolean;
   /** A camera id; null = the platform default. In whichever engine's id
    *  space Settings listed it -- the shell's (`voice_video_devices`) where
    *  the native engine opens the camera, the browser's elsewhere -- and,
@@ -97,7 +109,8 @@ const DEFAULTS: VoicePrefs = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
-  nativeMedia: true,
+  nativeMedia: nativeMediaDefault(SHELL),
+  nativeMediaChosen: false,
   cameraDeviceId: null,
   videoQuality: "auto",
   videoPreview: "thumbnail",
@@ -123,7 +136,8 @@ export function loadVoicePrefs(): VoicePrefs {
       echoCancellation: parsed.echoCancellation !== false,
       noiseSuppression: parsed.noiseSuppression !== false,
       autoGainControl: parsed.autoGainControl !== false,
-      nativeMedia: parsed.nativeMedia !== false,
+      nativeMedia: readNativeMediaPref(SHELL, parsed),
+      nativeMediaChosen: parsed.nativeMediaChosen === true,
       cameraDeviceId: typeof parsed.cameraDeviceId === "string" ? parsed.cameraDeviceId : null,
       videoQuality: isVideoQualityTier(parsed.videoQuality) ? parsed.videoQuality : "auto",
       videoPreview: parsed.videoPreview === "badge" ? "badge" : "thumbnail",
@@ -137,6 +151,8 @@ const listeners = new Set<() => void>();
 
 export function saveVoicePrefs(patch: Partial<VoicePrefs>): VoicePrefs {
   const next = { ...loadVoicePrefs(), ...patch };
+  // Handing over a `nativeMedia` is choosing it, whatever the value.
+  if ("nativeMedia" in patch) next.nativeMediaChosen = true;
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
   } catch {

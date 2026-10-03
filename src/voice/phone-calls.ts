@@ -202,6 +202,13 @@ export type ActiveReport = {
    *  is active, so a mute press there sends nothing native. Absent from an
    *  older page: the plugin then leaves CallKit's mute alone. */
   micMuted: boolean | null;
+  /** The call's audio is the shell's own media engine (stage N1): the iOS
+   *  plugin prepares the audio session for it, and activates it itself for a
+   *  call CallKit does not hold. While idle, whether the preference would put
+   *  the next call there. Always false in a build without the engine, and
+   *  never sent to Android's native half (the Rust passthrough drops it when
+   *  false). */
+  nativeAudio: boolean;
 };
 
 export interface PhoneCalls {

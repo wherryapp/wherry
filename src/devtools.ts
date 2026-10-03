@@ -48,6 +48,11 @@
 //                                    Stored like the toggle stores it
 //                                    (voice/prefs.ts), so it outlives the
 //                                    URL; pass 0 to put the device back.
+//                                    VITE_DEVNATIVE is the same for
+//                                    `tauri ios dev`; on a phone shell built
+//                                    with the `phone-media` feature it is how
+//                                    the engine is turned on at all (it ships
+//                                    dark, phone-calls-plan.md §8.2).
 //   ?devprocessing=aec,ns,agc        Sets the three microphone processing
 //                                    switches for this device as 0/1 in that
 //                                    order (e.g. 0,1,1 turns echo cancellation
@@ -407,7 +412,11 @@ const DEV_CALL_DELAY_MS = 4_000;
 const DEV_CALL_SESSION_WAIT_MS = 30_000;
 
 function maybeDevNative(params: URLSearchParams): void {
-  const value = params.get("devnative");
+  // `VITE_DEVNATIVE` for `tauri ios dev`, which takes no query string (the
+  // phone's native engine ships dark, so a simulator row has to turn it on
+  // before the first call: saveVoicePrefs also marks it chosen, which on a
+  // phone is what makes a stored true count).
+  const value = params.get("devnative") ?? devEnv("VITE_DEVNATIVE");
   if (value === null) return;
   saveVoicePrefs({ nativeMedia: value === "1" });
   params.delete("devnative");

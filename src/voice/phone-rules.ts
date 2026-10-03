@@ -460,6 +460,10 @@ export type ActiveCallInput = {
   screen: { on: boolean };
   participants: readonly { camera: boolean; screen: boolean }[];
   micMuted: boolean;
+  /** This call runs on the shell's own media engine (session.ts's
+   *  `nativeEngine`, which already accounts for the per-call switch to the
+   *  webview). False while idle. */
+  nativeEngine: boolean;
 };
 
 /**
@@ -487,7 +491,16 @@ export function callServiceWanted(state: Pick<ActiveCallInput, "phase">): boolea
  *  connected and the page is in front, CallKit has carried the ring and the
  *  plugin ends its call (never the page's); a call answered on the lock
  *  screen keeps CallKit until the app is opened. The plugin ignores it
- *  where it holds no CallKit call (Android; an outgoing call).
+ *  where it holds no CallKit call (Android; an outgoing call). It is false
+ *  whenever the call's audio is the shell's own engine (N1): that engine
+ *  never touches the webview's capture, so the conflict branch B is about
+ *  does not exist, and CallKit's call is meant to span the whole call.
+ *
+ *  `nativeAudio` is that engine choice (phone-calls-plan.md §8.2): while a
+ *  call is up, whether *it* runs on the shell's engine; while idle, whether
+ *  the preference would put the next one there (`nativeSelected`), so the iOS
+ *  plugin knows before any page report that a lock-screen Answer will want
+ *  the audio session prepared for it. Sent on every report, idle ones too.
  *
  *  `micMuted` is the page's mute, sent only where a native call UI shows a
  *  mute of its own (`muteShownNatively`: CallKit), so CallKit's button reads
@@ -500,6 +513,7 @@ export function nativeActiveCall(
   labels: Readonly<Record<string, string>>,
   inFront: boolean,
   muteShownNatively = false,
+  nativeSelected = false,
 ): ActiveReport {
   const active = callServiceWanted(state);
   if (!active) {
@@ -510,6 +524,7 @@ export function nativeActiveCall(
       audioOnly: true,
       pageOwnsAudio: false,
       micMuted: null,
+      nativeAudio: nativeSelected,
     };
   }
   const video =
@@ -519,8 +534,10 @@ export function nativeActiveCall(
     callId: state.call?.id ?? null,
     label: state.conversationId ? (labels[state.conversationId] ?? null) : null,
     audioOnly: !video,
-    pageOwnsAudio: inFront && state.phase === "connected" && state.call !== null,
+    pageOwnsAudio:
+      !state.nativeEngine && inFront && state.phase === "connected" && state.call !== null,
     micMuted: muteShownNatively ? state.micMuted : null,
+    nativeAudio: state.nativeEngine,
   };
 }
 
