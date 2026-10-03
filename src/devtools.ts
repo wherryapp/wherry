@@ -163,7 +163,7 @@
 //                                    macOS shell, which no DevTools protocol
 //                                    can drive. See maybeDevSteps. A `+` in a
 //                                    key chord must be written %2B.
-//   ?devnomic=1                      The native transport answers the
+//   ?devnomic=1 (VITE_DEVNOMIC)      The native transport answers the
 //                                    join's microphone (startMicrophone,
 //                                    muted or not) and every later unmute
 //                                    with `no_microphone` without asking the
@@ -926,7 +926,7 @@ async function tileReading(): Promise<Record<string, unknown>> {
  * on the prototype because `__TAURI_INTERNALS__.invoke` is read-only.
  */
 async function maybeDevNoMic(params: URLSearchParams): Promise<void> {
-  if (params.get("devnomic") !== "1") return;
+  if ((params.get("devnomic") ?? devEnv("VITE_DEVNOMIC")) !== "1") return;
   try {
     const { NativeTransport } = await import("./voice/transport-native");
     const proto = NativeTransport.prototype as unknown as {
