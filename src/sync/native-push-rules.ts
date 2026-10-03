@@ -513,8 +513,8 @@ export function withEntry(
   const next: StoredNative = { ...base, entries: { ...base.entries, [provider]: entry } };
   // Only a registration with alerts on is evidence the notification prompt
   // was granted. PushKit (apns_voip) needs no permission, and an `fcm` row
-  // with `alerts: false` may be the phone-calls plan's ring registration on
-  // Android (R9), made whether or not POST_NOTIFICATIONS was granted.
+  // with `alerts: false` would be the phone-calls plan's ring-only registration on
+  // Android (R9; not built, mobile-3), made whether or not POST_NOTIFICATIONS was granted.
   // Either one after a refused prompt must keep the refusal: erasing it
   // turns "blocked" into a "ready" whose Turn on cannot prompt again.
   // Android's Turn off (`alerts: false` after a Turn on) keeps what the

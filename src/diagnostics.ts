@@ -20,8 +20,9 @@
 // stopped Safari throwing -- swapping the missing native WebCrypto X25519
 // for the pure-JS `@hpke/dhkem-x25519` -- traded a crash for arithmetic
 // that is far slower than the native call, on a main thread with no worker
-// behind it. Chrome has had native X25519 since 133 and is the browser that
-// never showed the problem. If that is right, the worst stall and the worst
+// behind it. No engine uses a native X25519 under that patch (there is no probe,
+// so every engine runs the pure-JS KEM); the browser that never showed the
+// problem is the one with the fastest main thread. If that is right, the worst stall and the worst
 // crypto call will line up, and this is a performance bug with a crypto
 // cause rather than the error-handling bug it has been filed as.
 //

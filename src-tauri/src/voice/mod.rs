@@ -1716,7 +1716,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     log::warn!("voice: configure_audio_processing: {error:?}");
   }
   log::info!(
-    "voice: audio processing aec={:?} ns={:?} agc={:?}",
+    "voice: audio processing modules available aec={:?} ns={:?} agc={:?} (Hardware means present, not enabled; builtin_aec_off reports the canceller)",
     audio.active_aec_type(),
     audio.active_ns_type(),
     audio.active_agc_type()
