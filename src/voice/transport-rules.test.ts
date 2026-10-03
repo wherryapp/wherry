@@ -30,6 +30,7 @@ import {
   screenOptionsFor,
   screenSourceKind,
   tileRect,
+  tileReportKey,
   transportEndFor,
   volumeKey,
   userIdFromMetadata,
@@ -762,5 +763,19 @@ describe("roomFollowUpStep", () => {
   it("stops on a refused token, which no later answer can change", () => {
     assert.equal(roomFollowUpStep("refused", 0, false), "stop");
     assert.equal(roomFollowUpStep("refused", 0, true), "stop");
+  });
+});
+
+describe("tileReportKey", () => {
+  const frame = { x: 0, y: 0, width: 100, height: 50 };
+  const measured = { frame, clip: frame };
+  it("changes with the scale when the rects do not", () => {
+    assert.notEqual(
+      tileReportKey(measured, true, 1),
+      tileReportKey(measured, true, 1.5),
+    );
+  });
+  it("is stable for an identical report", () => {
+    assert.equal(tileReportKey(measured, true, 2), tileReportKey(measured, true, 2));
   });
 });

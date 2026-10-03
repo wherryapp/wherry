@@ -737,6 +737,20 @@ export function tileRect(
   return { frame, clip: clipped, visible };
 }
 
+/**
+ * The page's dedupe key for a tile report. The scale is part of it: the shell
+ * sizes the native window in physical pixels, so a monitor move that changes
+ * `devicePixelRatio` and leaves the CSS rects identical must still re-report
+ * (row D-52; believed, the rig's four live scale changes all moved the rects).
+ */
+export function tileReportKey(
+  measured: { frame: Rect; clip: Rect },
+  visible: boolean,
+  scale: number,
+): string {
+  return JSON.stringify([measured.frame, measured.clip, visible, scale]);
+}
+
 function intersect(a: Rect, b: Rect): Rect {
   const x = Math.max(a.x, b.x);
   const y = Math.max(a.y, b.y);

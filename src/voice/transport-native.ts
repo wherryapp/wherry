@@ -84,6 +84,7 @@ import {
   screenAudioMode,
   screenOptionsFor,
   tileRect,
+  tileReportKey,
   transportEndFor,
   userIdFromMetadata,
   volumeKey,
@@ -831,7 +832,7 @@ export class NativeTransport implements VoiceTransport {
       // Off screen for a disconnected element, or one hidden by CSS
       // (display: none measures 0x0 and is caught by `visible`).
       const visible = measured.visible && element.isConnected;
-      const key = JSON.stringify([measured.frame, measured.clip, visible]);
+      const key = tileReportKey(measured, visible, window.devicePixelRatio);
       if (key === last) return;
       last = key;
       void invoke("voice_set_video_rect", {
