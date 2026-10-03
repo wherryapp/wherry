@@ -20,6 +20,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 
+[features]
+# The native media engine on iOS and Android (docs/prompts/phone-calls-plan.md
+# §8.2). Off by default, so a phone build neither downloads libwebrtc nor
+# links it; the client's own default (voice/prefs.ts's `nativeMedia`, false on
+# the phones) is the second half of shipping dark. A desktop build ignores it:
+# there the crate is not optional.
+phone-media = ["dep:livekit", "dep:tokio", "dep:futures-util"]
+
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -51,6 +59,20 @@ tauri-plugin-wherry-push = { path = "plugins/wherry-push" }
 # client/src/voice/phone-calls.ts; its capability, capabilities/calls-mobile.json,
 # names it and so cannot exist without this line.
 tauri-plugin-wherry-calls = { path = "plugins/wherry-calls" }
+# The native media engine on the phones, stage N1 of phone-calls-plan.md §8.2:
+# the same crate, the same fork pin and the same features as the desktop table
+# below (change `rev` in both places and LIVEKIT_REV together), but `optional`,
+# switched on by the `phone-media` feature and off in every build until the
+# maintainer's rows pass (decision M-4: ship dark). Cargo accepts one name that
+# is non-optional in one target table and optional in another (N0, PC0's stage
+# log), and without the feature a phone check does not compile libwebrtc at
+# all. iOS only is built (N1); Android is N2, which this does not start: the
+# crate links there too, but nothing calls it.
+livekit = { git = "https://github.com/wherryapp/rust-sdks", rev = "06f0a5d0c59e41fb94c5f84658ca5207103a1647", features = ["rustls-tls-native-roots"], optional = true }
+# The two crates voice/mod.rs names directly (the desktop table's comments say
+# why), carried the same way: optional, and in the same graph through livekit.
+tokio = { version = "1", features = ["rt", "sync", "time"], optional = true }
+futures-util = { version = "0.3", optional = true }
 
 # Desktop only -- there is no second instance to guard against on mobile.
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]

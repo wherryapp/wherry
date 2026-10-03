@@ -43,13 +43,18 @@
 use std::sync::Mutex;
 
 use livekit::prelude::*;
+// What `voice_follow_default_output` uses, and only the desktop has it (a
+// phone's output is the audio session's, not ours to steer).
+#[cfg(desktop)]
 use livekit::rtc_engine::lk_runtime::LkRuntime;
+#[cfg(desktop)]
 use livekit::webrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
+#[cfg(desktop)]
 use serde::Serialize;
 
-use super::{
-  ensure_microphone_recording, list_devices, platform_audio, session_id, VoiceError, VoiceResult,
-};
+#[cfg(desktop)]
+use super::{ensure_microphone_recording, platform_audio, session_id};
+use super::{list_devices, VoiceError, VoiceResult};
 
 /// The render endpoint the shell last selected, with its index in the
 /// module's list at the time. `None` before any selection, or after one that
@@ -253,6 +258,7 @@ fn name_of(audio: &PlatformAudio, id: &str) -> String {
     .unwrap_or_else(|| "NOT IN THE LIST".to_string())
 }
 
+#[cfg(desktop)]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FollowResult {
@@ -284,6 +290,7 @@ pub struct FollowResult {
 /// precondition), which `Session::mic_start_failed` marks because the module
 /// then still reads as initialised. Playout was just started, so a retry of
 /// the second can now pass the check that refused it.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn voice_follow_default_output() -> VoiceResult<FollowResult> {
   let Some(default) = default_output() else {
@@ -338,6 +345,7 @@ pub fn voice_follow_default_output() -> VoiceResult<FollowResult> {
 
 /// Whether the module's playout is initialised, through the same factory the
 /// microphone gate uses (`PlatformAudio` does not expose it).
+#[cfg(desktop)]
 fn audio_playout_initialised() -> bool {
   LkRuntime::instance().pc_factory().playout_is_initialized()
 }

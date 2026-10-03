@@ -29,10 +29,22 @@
 // above is now "decisions in TypeScript, mechanism in Rust, and the
 // boundary is a named interface" -- the interface being `VoiceTransport`
 // in client/src/voice/transport.ts, with `transport-native.ts` on the
-// other side of these commands. Desktop only; the phones keep the webview
-// transport and never compile this.
-#[cfg(desktop)]
+// other side of these commands. Desktop always; the phones only in a build
+// with the `phone-media` feature (phone-calls-plan.md §8.2, stage N1; off by
+// default, so a phone build without it compiles none of this and keeps the
+// webview transport). On a phone the module is audio only: `voice/mod.rs`
+// stands `video_phone.rs` in for `video.rs`, and capture, rendering and a
+// share's sound are not compiled at all.
+#[cfg(any(desktop, all(mobile, feature = "phone-media")))]
 mod voice;
+
+// iOS only until N2: libwebrtc's Android audio needs the JVM and the app
+// context handed to it before the first factory, and `libwebrtc.jar` on the
+// app's classpath (phone-calls-plan.md §8.3, hand edits 12 and 13), none of
+// which exists. A build that asks for it would link and then fail at the first
+// call, so it does not build.
+#[cfg(all(target_os = "android", feature = "phone-media"))]
+compile_error!("the `phone-media` feature is iOS only until stage N2 (phone-calls-plan.md §8.3)");
 
 #[cfg(any(target_vendor = "apple", target_os = "windows"))]
 fn vault_entry(key: &str) -> Result<keyring::Entry, String> {
@@ -185,9 +197,32 @@ pub fn run() {
 
   // One `generate_handler!` per platform shape: the macro takes a single
   // list, and the voice commands exist only where the media crate does.
-  #[cfg(not(desktop))]
+  #[cfg(all(mobile, not(feature = "phone-media")))]
   let builder =
     builder.invoke_handler(tauri::generate_handler![vault_get, vault_set, vault_delete]);
+  // A phone with the engine: the audio commands only. Video, screen capture
+  // and tile rendering are not compiled here, and `voice_probe` says so
+  // (`video`, `screenCapture` and `videoRender` all false), so the page never
+  // asks for them.
+  #[cfg(all(mobile, feature = "phone-media"))]
+  let builder = builder.invoke_handler(tauri::generate_handler![
+    vault_get,
+    vault_set,
+    vault_delete,
+    voice::voice_probe,
+    voice::voice_devices,
+    voice::voice_connect,
+    voice::voice_disconnect,
+    voice::voice_set_mic,
+    voice::voice_set_input_device,
+    voice::voice_set_output_device,
+    voice::voice_set_epoch_key,
+    voice::voice_set_playback,
+    voice::voice_set_volume,
+    voice::voice_current,
+    voice::voice_forget_page,
+    voice::voice_stats,
+  ]);
   #[cfg(desktop)]
   let builder = builder.invoke_handler(tauri::generate_handler![
     vault_get,
