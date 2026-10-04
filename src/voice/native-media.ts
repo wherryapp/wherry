@@ -3,21 +3,24 @@
 // chosen to.
 //
 // Feature detection, not platform sniffing: the shell's `voice_probe`
-// command exists exactly in the desktop Tauri shell, where the `livekit`
-// crate is compiled in (src-tauri/src/voice.rs). On the web there is no
-// shell and the probe resolves false without a round trip; on the phones
-// the shell exists but the command does not, and the invoke rejects. Asked
-// once at startup (main.tsx) and cached, because `createTransport` and the
-// Settings toggle both need a synchronous answer.
+// command exists exactly where the `livekit` crate is compiled in
+// (src-tauri/src/voice/): the desktop shell, and a phone shell built with the
+// `phone-media` feature (stage N1, iOS). On the web there is no shell and the
+// probe resolves false without a round trip; a phone build without the engine
+// has no such command, so it is not asked either (`shouldProbeNativeMedia`:
+// the bundle says it carries one with `VITE_PHONE_MEDIA`). Asked once at
+// startup (main.tsx) and cached, because `createTransport` and the Settings
+// toggle both need a synchronous answer.
 //
 // The choice itself is a device-local preference (`nativeMedia` in
 // prefs.ts). It shipped dark and has been **on by default since
 // 2026-09-07 evening**, once the cryptor-thread leak and the hidden-page
 // stall both closed; a device that unticks the box in Settings keeps that
-// choice. The web and the phones have no shell and are untouched either
-// way.
+// choice. The web has no shell and is untouched either way. The phones are
+// dark: their default is off (M-4; native-media-rules.ts).
 
-import { isTauriShell } from "../api/shell";
+import { isTauriShell, SHELL } from "../api/shell";
+import { shouldProbeNativeMedia } from "./native-media-rules";
 import { loadVoicePrefs } from "./prefs";
 
 export type NativeMediaProbe = {
@@ -77,9 +80,18 @@ export function nativeMediaProbe(): NativeMediaProbe | null {
   return probe;
 }
 
+/**
+ * Set at build time by whoever builds a phone shell with the `phone-media`
+ * cargo feature (`VITE_PHONE_MEDIA=1`, beside it): the one thing a bundle
+ * cannot learn without asking the shell, and what keeps a phone build
+ * without the engine from asking at all. `?.` as everywhere a tsx test
+ * imports this (no Vite there).
+ */
+const PHONE_MEDIA_BUILD = import.meta.env?.VITE_PHONE_MEDIA === "1";
+
 export async function probeNativeMedia(): Promise<boolean> {
   if (probe) return probe.available;
-  if (!isTauriShell()) {
+  if (!isTauriShell() || !shouldProbeNativeMedia(SHELL, PHONE_MEDIA_BUILD)) {
     probe = { available: false };
     notify();
     return false;

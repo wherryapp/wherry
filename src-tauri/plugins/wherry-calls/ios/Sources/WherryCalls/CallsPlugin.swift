@@ -28,12 +28,26 @@
 //   debug-only launch ring (`WHERRY_DEBUG_RING`), which run the same handler
 //   without APNs: the simulator's only way in (rows I-51, I-52).
 //
+// What N1 added (phone-calls-plan.md §8.2; ships dark behind the shell's
+// `phone-media` feature and the page's `nativeMedia` preference):
+// - The audio session for the shell's own media engine. `NativeAudioPlan`
+//   decides, `NativeAudio` carries out: CallKit's `didActivate` and
+//   `didDeactivate` toggle libwebrtc's `audioSessionDidActivate` and
+//   `isAudioEnabled` (so a lock-screen Answer can carry a microphone once the
+//   page joins), and a call CallKit does not hold (a hub's voice channel, an
+//   outgoing call, the simulator) is activated by the plugin itself when the
+//   page reports it active. Everything is a no-op in a build without the
+//   engine (`NativeAudio.engineLinked`).
+//
 // Not built here (and why):
-// - Media. Answering hands the call to the page, whose webview engine
-//   carries audio only in the foreground (WebKit's limit); N1 is the fix, and
-//   decisions M-3 and M-4 are open. This file configures no AVAudioSession
-//   (it reads the route, for proximity).
-// - Outgoing calls in CallKit (`startOutgoing`): N1's.
+// - Branch (ii) of the lock-screen answer (plan §8.2: native code reading the
+//   vaulted session to answer and connect with no page). It waits on row I-60,
+//   which needs the phone; until then a lock-screen Answer reaches the engine
+//   only through a page that is running (branches (i) and (iii)).
+// - Outgoing calls in CallKit (`startOutgoing`): a CXStartCallAction cannot be
+//   read without a phone (the simulator's CallKit ends every call), and it
+//   would make CallKit the owner of a call that today the plugin activates
+//   directly. Row I-65 stays owed.
 //
 // Events the page listens for, with their payloads (trigger(_:data:)):
 //   "action"      { kind: "answer"|"decline"|"hangup", callId, conversationId?, at }
@@ -83,6 +97,10 @@ struct ActiveArgs: Decodable {
   /// The page's microphone mute (client-voice-7); null or absent: leave
   /// CallKit's mute as it is.
   let micMuted: Bool?
+  /// The call's audio is the shell's own engine (N1): the plugin prepares the
+  /// audio session for it and, for a call CallKit does not hold, activates it.
+  /// Absent from an older page: false.
+  let nativeAudio: Bool?
 }
 
 struct EndedArgs: Decodable {
@@ -152,6 +170,9 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   private static let defaultsApiBase = "wherry.calls.apiBase"
   private static let defaultsDeviceId = "wherry.calls.deviceId"
   private static let defaultsLabels = "wherry.calls.labels"
+  /// The page's last engine choice (`setActive`'s `nativeAudio`), kept for a
+  /// PushKit launch that answers before any page report (N1).
+  private static let defaultsNativeAudio = "wherry.calls.nativeAudio"
 
   private var provider: CXProvider?
   private var registry: PKPushRegistry?
@@ -162,6 +183,8 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   private var pending: [JSObject] = []
   private var voipToken: String?
   private var proximityWanted = false
+  /// What the audio session is doing for the shell's own engine (N1).
+  private var audioPlan = NativeAudioPlan()
 
   // MARK: - Set-up, before any scene
 
@@ -394,6 +417,7 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
       }
       self.proximityWanted = args.active && args.audioOnly
       self.applyProximity()
+      self.reportAudio(args)
       invoke.resolve()
     }
   }
@@ -752,6 +776,7 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
 
   func providerDidReset(_ provider: CXProvider) {
     NSLog("[wherry] calls: provider reset")
+    runAudio(audioPlan.callKitDeactivated())
     for call in Array(calls.values) {
       if call.answered && !call.endRequested {
         deliver("hangup", call)
@@ -768,6 +793,11 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
     call.answered = true
     call.expiry?.cancel()
     call.expiry = nil
+    // The category is wanted before CallKit activates the session (Apple's
+    // order), and the page may not be running yet to say so.
+    runAudio(
+      audioPlan.callKitAnswering(
+        native: UserDefaults.standard.bool(forKey: Self.defaultsNativeAudio)))
     if call.answerRequested {
       // The page answered first; it knows.
       call.answerRequested = false
@@ -826,13 +856,17 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
   }
 
   func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-    // The webview engine owns its audio in I1; N1 starts native audio here.
+    // The webview engine owns its audio in I1; with the shell's own engine
+    // (N1) this is the cue it waits for under manual audio: the session is
+    // active and the audio unit may start.
     NSLog("[wherry] calls: audio session activated")
+    runAudio(audioPlan.callKitActivated(), session: audioSession)
     applyProximity()
   }
 
   func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     NSLog("[wherry] calls: audio session deactivated")
+    runAudio(audioPlan.callKitDeactivated(), session: audioSession)
   }
 
   func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
@@ -907,6 +941,24 @@ class CallsPlugin: Plugin, CXProviderDelegate, PKPushRegistryDelegate {
         }
       }
     }
+  }
+
+  // MARK: - The shell's own engine's audio session (N1)
+
+  /// The page's report, to the plan. Whether CallKit holds the call is read
+  /// here, where the calls are; what follows from it is NativeAudioPlan's.
+  private func reportAudio(_ args: ActiveArgs) {
+    let native = args.nativeAudio ?? false
+    UserDefaults.standard.set(native, forKey: Self.defaultsNativeAudio)
+    var holds = false
+    if Self.callKitShowsRings, let callId = args.callId, let uuid = UUID(uuidString: callId) {
+      holds = calls[uuid] != nil
+    }
+    runAudio(audioPlan.pageReport(active: args.active, native: native, callKitHoldsCall: holds))
+  }
+
+  private func runAudio(_ steps: [AudioStep], session: AVAudioSession = .sharedInstance()) {
+    for step in steps { NativeAudio.perform(step, session: session) }
   }
 
   // MARK: - Proximity

@@ -111,6 +111,16 @@ targets:
         LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
         EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+        # Hand edit 11 (docs/prompts/regen-hand-edits.md, phone-calls-plan.md
+        # §8.2). libwebrtc's Objective-C categories must be linked and
+        # `-ObjC` on libapp.a cannot be (duplicate Tauri Swift objects), so
+        # the Build Rust Code script below extracts the category objects into
+        # libobjc-categories.a and this force-loads that. The five frameworks
+        # are what libwebrtc's audio, camera and VideoToolbox objects need,
+        # passed as flags so the pbxproj needs no file references. All
+        # harmless without the `phone-media` feature (system frameworks the
+        # webview already loads; an empty archive).
+        OTHER_LDFLAGS: $(inherited) -Wl,-force_load,$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)/libobjc-categories.a -framework AVFoundation -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework AudioToolbox
       groups: [app]
     dependencies:
       - framework: libapp.a
@@ -129,8 +139,10 @@ targets:
       - script: |
           export PATH="$HOME/.local/share/fnm/aliases/default/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
           pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+          sh "${SRCROOT}/../../scripts/ios-objc-categories.sh" "${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a" "${SRCROOT}/Externals/arm64/${CONFIGURATION}/libobjc-categories.a"
         name: Build Rust Code
         basedOnDependencyAnalysis: false
         outputFiles:
           - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
           - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libobjc-categories.a

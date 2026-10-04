@@ -11,9 +11,13 @@
 // whether a device id is still valid -- all of that arrives already decided,
 // and this file captures, encrypts, sends, receives and plays.
 //
-// Desktop only (`#[cfg(desktop)]` at the `mod` site): the phones keep the
-// webview transport, and the `livekit` crate is not in their dependency
-// graph at all.
+// Desktop always; a phone only when built with the `phone-media` feature
+// (the `mod` site in lib.rs; phone-calls-plan.md §8.2, stage N1), audio
+// alone, and dark: without the feature the phones keep the webview transport
+// and the `livekit` crate is not in their dependency graph at all. Where this
+// file says "the platform" for a thing a phone does differently, the phone's
+// way is named beside it (the audio session is the plugin's, not ours --
+// `plugins/wherry-calls/ios/.../NativeAudio.swift`).
 //
 // What stage 0 (the plan's §3.1) settled and this file keeps:
 //
@@ -84,12 +88,18 @@ use livekit::webrtc::stats::RtcStats;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
-#[cfg(debug_assertions)]
+#[cfg(all(desktop, debug_assertions))]
 use tauri::Manager;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 // Video (docs/prompts/video-next-stages-handoff.md §3): the sources, the
 // native tiles, and the commands that publish, subscribe and place them.
+// Desktop only. A phone build with the engine (`phone-media`) carries audio
+// alone: `video_phone.rs` answers, as nothing, the handful of calls this file
+// makes into `video`, and capture, rendering and a share's sound are not
+// compiled at all (phone-calls-plan.md §8.2: video, screen capture and render
+// stay desktop-only on the phones, and `voice_probe` says so).
+#[cfg(desktop)]
 pub mod capture;
 #[cfg(target_os = "macos")]
 pub mod render;
@@ -100,7 +110,7 @@ pub mod render;
 #[cfg(target_os = "windows")]
 #[path = "render_win.rs"]
 pub mod render;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(all(desktop, not(any(target_os = "macos", target_os = "windows"))))]
 #[path = "render_stub.rs"]
 pub mod render;
 // A share's own sound (docs/prompts/screen-audio-handoff.md §4). Split the
@@ -109,9 +119,13 @@ pub mod render;
 // whose browser engine cannot do this at all.
 #[cfg(target_os = "windows")]
 pub mod screen_audio;
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(desktop, not(target_os = "windows")))]
 #[path = "screen_audio_stub.rs"]
 pub mod screen_audio;
+#[cfg(desktop)]
+pub mod video;
+#[cfg(not(desktop))]
+#[path = "video_phone.rs"]
 pub mod video;
 // Following the Windows default output (rows D-72, D-73). Not split by
 // platform at the `mod` site: the one Windows-only part is small and inside.
@@ -138,6 +152,16 @@ const KEYRING_SIZE: i32 = 16;
 const RATCHET_SALT: &[u8] = b"LKFrameEncryptionKey";
 
 // -- errors -----------------------------------------------------------------
+
+/// Whether the three processing switches mean the platform's own processor
+/// rather than WebRTC's software module. Never on a desktop (Windows' built-in
+/// canceller is the thing `builtin_aec_off` exists to keep off). On iOS it is
+/// the voice-processing I/O unit, which the SDK documents as "always used" and
+/// recommends (`AudioProcessingOptions`' iOS default is true): it is also the
+/// path the system's own call audio takes, so forcing the software module on
+/// top would run two cancellers in series. **Believed**, not read on a phone:
+/// row I-67 reads the heat and I-62 the sound.
+const PREFER_HARDWARE_PROCESSING: bool = cfg!(target_os = "ios");
 
 /// What a command reports when it fails: a code the TypeScript side maps to
 /// the browser error names `session.ts` already understands
@@ -281,6 +305,15 @@ fn builtin_aec_off(
 ) {
   let aec3 = if processing.echo_cancellation { "on" } else { "off" };
   let recording = audio.is_recording_initialized();
+  // The iOS module's "built-in canceller" is the voice-processing unit the
+  // call is meant to use (`PREFER_HARDWARE_PROCESSING`), so there is nothing
+  // to turn off and turning it off would be the defect.
+  if PREFER_HARDWARE_PROCESSING {
+    log::info!(
+      "voice: {when}, before recording -- the platform's own processor stays on (switches as the page set them; recording initialised {recording}, engine held {engine_held})"
+    );
+    return;
+  }
   if !audio.is_hardware_aec_available() {
     log::info!(
       "voice: {when}, before recording -- no built-in echo canceller on this platform; AEC3 {aec3} (recording initialised {recording}, engine held {engine_held})"
@@ -645,6 +678,7 @@ static SHARE_STOP_PENDING: Mutex<Option<u64>> = Mutex::new(None);
 
 /// The share's sound was muted with recording still reading initialised, in
 /// call `id`: its stop may still be coming (above).
+#[cfg(desktop)]
 pub(crate) fn mark_share_stop_pending(id: u64) {
   *SHARE_STOP_PENDING.lock().unwrap() = Some(id);
 }
@@ -1031,7 +1065,9 @@ enum Event {
   Encryption { identity: String, state: String },
   /// A video publication appeared, went, muted, or was (un)subscribed: the
   /// seam's `videoChanged`, kept apart from the roster event because a tile
-  /// remounting is expensive where a name changing is not.
+  /// remounting is expensive where a name changing is not. Never raised on a
+  /// phone, which draws no tile (`video_phone.rs`).
+  #[cfg_attr(not(desktop), allow(dead_code))]
   VideoChanged,
   /// The SFU refreshed this call's token, as it does every few minutes. The
   /// page asks the SFU's `rtc/validate` whether a room still exists
@@ -1312,6 +1348,7 @@ pub struct Probe {
 #[tauri::command]
 pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   let audio = platform_audio()?;
+  #[cfg(desktop)]
   render::remember_app(&app);
   start_device_poller(app);
   let probe = Probe {
@@ -1347,7 +1384,7 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   // the *same* call the picker makes rather than a probe of its own -- a
   // separate instrument would be testing a copy. Off unless asked, because
   // enumerating windows is not free and nothing else needs it at boot.
-  #[cfg(debug_assertions)]
+  #[cfg(all(desktop, debug_assertions))]
   if std::env::var("WHERRY_DEV_SCREEN_SOURCES").ok().as_deref() == Some("1") {
     let sources = capture::screen_sources();
     log::info!("voice: screen sources ({} found)", sources.len());
@@ -1361,7 +1398,7 @@ pub fn voice_probe(app: AppHandle) -> VoiceResult<Probe> {
   // seconds and close it, so D-61's log half, D-63's pitch and D-64's branch
   // can be read without a call. The same two calls the picker and a call
   // make, for the same reason as the knob above.
-  #[cfg(debug_assertions)]
+  #[cfg(all(desktop, debug_assertions))]
   if let Ok(knob) = std::env::var("WHERRY_DEV_CAMERAS") {
     let cameras = video::voice_video_devices().unwrap_or_default();
     log::info!("voice: cameras ({} found)", cameras.len());
@@ -1575,6 +1612,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   }
   let started = Instant::now();
   let audio = platform_audio()?;
+  #[cfg(desktop)]
   render::remember_app(&app);
 
   // The engine's one-time init first, so that nothing below is undone by it
@@ -1709,7 +1747,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
     echo_cancellation: processing.echo_cancellation,
     noise_suppression: processing.noise_suppression,
     auto_gain_control: processing.auto_gain_control,
-    prefer_hardware_processing: false,
+    prefer_hardware_processing: PREFER_HARDWARE_PROCESSING,
   }) {
     // Only the hardware path can fail; a call is still worth having with
     // the defaults, and `builtin_aec_off` reports the canceller's state.
@@ -1879,7 +1917,7 @@ pub async fn voice_connect(app: AppHandle, args: ConnectArgs) -> VoiceResult<Con
   // Debug builds: ask the page, from the shell's side, whether it is still
   // running -- an eval runs even when the page's own timers are throttled,
   // so a pong that stops means the page itself is suspended.
-  #[cfg(debug_assertions)]
+  #[cfg(all(desktop, debug_assertions))]
   {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -2448,8 +2486,9 @@ pub fn voice_set_volume(identity: String, source: String, volume: f64) -> VoiceR
 }
 
 /// The page's answer to the shell's ping (see `voice_connect`). The ping
-/// itself runs only in debug builds; the command is always there so the
-/// handler list is one list.
+/// itself runs only in desktop debug builds; the command is always there on
+/// the desktop so that handler list is one list.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn voice_pong(session: u64, sent_at: f64, visibility: String, focus: bool) {
   let now = std::time::SystemTime::now()
@@ -2783,7 +2822,7 @@ pub async fn voice_stats() -> VoiceResult<Value> {
 // cannot show the dead-boot signature; what it shows instead is the page
 // running only in the seconds after each pulse.
 
-#[cfg(debug_assertions)]
+#[cfg(all(desktop, debug_assertions))]
 mod probe {
   use std::collections::{BTreeMap, BTreeSet};
   use std::sync::Mutex;
@@ -2822,7 +2861,9 @@ mod probe {
 }
 
 /// The page's answer to the boot-time probe. The command exists in every
-/// build so the handler list is one list; only debug builds send pulses.
+/// desktop build so that handler list is one list; only debug builds send
+/// pulses.
+#[cfg(desktop)]
 #[tauri::command]
 #[allow(unused_variables)]
 pub fn page_pulse(
@@ -2860,7 +2901,7 @@ pub fn page_pulse(
 }
 
 /// Start the probe. Debug builds only, from `setup`; see the module note.
-#[cfg(debug_assertions)]
+#[cfg(all(desktop, debug_assertions))]
 pub fn start_page_probe(app: AppHandle) {
   tauri::async_runtime::spawn(async move {
     let mut ticks = tokio::time::interval(std::time::Duration::from_secs(probe::interval_secs()));
@@ -2909,7 +2950,7 @@ pub fn start_page_probe(app: AppHandle) {
   });
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(desktop, debug_assertions))]
 fn report_pulse(app: &AppHandle, pulse: u64) {
   let answers = probe::PENDING.lock().unwrap().remove(&pulse);
   {
@@ -2959,7 +3000,7 @@ fn report_pulse(app: &AppHandle, pulse: u64) {
 /// window server's own account (`NSWindow.occlusionState`)? WebKit's log
 /// stops reporting occlusion once detection is switched off, so this is the
 /// only reading left that says whether the switch is being exercised.
-#[cfg(debug_assertions)]
+#[cfg(all(desktop, debug_assertions))]
 fn window_occluded(window: &tauri::WebviewWindow) -> String {
   #[cfg(target_os = "macos")]
   {

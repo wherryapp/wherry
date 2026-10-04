@@ -108,6 +108,12 @@ pub struct ActiveArgs {
     /// an older page: the plugin then leaves CallKit's mute alone.
     #[serde(default)]
     pub mic_muted: Option<bool>,
+    /// The call's audio is the shell's own engine (stage N1, a build with the
+    /// shell's `phone-media` feature and the page's `nativeMedia` on): the
+    /// iOS half prepares the audio session for it. Sent only when true, so
+    /// Android's native half, which has no such field, never reads one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_audio: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

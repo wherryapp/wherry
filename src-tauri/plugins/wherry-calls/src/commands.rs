@@ -67,6 +67,7 @@ pub(crate) async fn set_active<R: Runtime>(
     audio_only: bool,
     page_owns_audio: Option<bool>,
     mic_muted: Option<bool>,
+    native_audio: Option<bool>,
 ) -> Result<()> {
     app.wherry_calls().set_active(ActiveArgs {
         active,
@@ -75,6 +76,7 @@ pub(crate) async fn set_active<R: Runtime>(
         audio_only,
         page_owns_audio: page_owns_audio.unwrap_or(false),
         mic_muted,
+        native_audio: native_audio.unwrap_or(false),
     })
 }
 

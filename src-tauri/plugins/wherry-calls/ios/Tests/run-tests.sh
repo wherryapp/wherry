@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs the iOS half's pure pieces (RingEnvelope.swift, RingMessage.swift) on
-# the Mac: compiles them with Tests/main.swift and runs the result. Needs
-# Xcode's swiftc; nothing else, and no mobile build first.
+# Runs the iOS half's pure pieces (RingEnvelope.swift, RingMessage.swift,
+# NativeAudioPlan.swift) on the Mac: compiles them with Tests/main.swift and
+# runs the result. Needs Xcode's swiftc; nothing else, and no mobile build
+# first.
 #
 #   client/src-tauri/plugins/wherry-calls/ios/Tests/run-tests.sh
 set -euo pipefail
@@ -14,5 +15,6 @@ trap 'rm -rf "$out"' EXIT
 xcrun swiftc -O -o "$out/ring-tests" \
   "$sources/RingEnvelope.swift" \
   "$sources/RingMessage.swift" \
+  "$sources/NativeAudioPlan.swift" \
   "$here/main.swift"
 "$out/ring-tests"

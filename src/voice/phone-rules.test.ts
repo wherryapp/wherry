@@ -497,6 +497,7 @@ const state = (over: Partial<ActiveCallInput> = {}): ActiveCallInput => ({
   screen: { on: false },
   participants: [],
   micMuted: false,
+  nativeEngine: false,
   ...over,
 });
 
@@ -517,6 +518,7 @@ test("setActive carries the call, its label and whether anybody's video is on", 
     audioOnly: true,
     pageOwnsAudio: false,
     micMuted: null,
+    nativeAudio: false,
   });
   // Still asking the server for a token: active, no id yet.
   assert.deepEqual(
@@ -528,6 +530,7 @@ test("setActive carries the call, its label and whether anybody's video is on", 
       audioOnly: true,
       pageOwnsAudio: false,
       micMuted: null,
+      nativeAudio: false,
     },
   );
   const connected = state({ phase: "connected", conversationId: "conv", call: { id: "c" } });
@@ -538,6 +541,7 @@ test("setActive carries the call, its label and whether anybody's video is on", 
     audioOnly: true,
     pageOwnsAudio: false,
     micMuted: null,
+    nativeAudio: false,
   });
   const at = (over: Partial<ActiveCallInput>) =>
     nativeActiveCall({ ...connected, ...over }, labels, false);
@@ -559,6 +563,38 @@ test("the page owns the call's audio only once connected and in front (I-58, bra
   }
   assert.equal(nativeActiveCall({ ...connected, call: null }, {}, true).pageOwnsAudio, false);
   assert.equal(nativeActiveCall({ ...connected, phase: "elsewhere" }, {}, true).pageOwnsAudio, false);
+});
+
+test("a call on the shell's own engine is never the page's to own (N1, nothing in the webview captures)", () => {
+  const connected = state({
+    phase: "connected",
+    conversationId: "conv",
+    call: { id: "c" },
+    nativeEngine: true,
+  });
+  // The same call, same front, on the webview: branch B applies (above).
+  assert.equal(nativeActiveCall({ ...connected, nativeEngine: false }, {}, true).pageOwnsAudio, true);
+  // On the engine CallKit's call spans the whole call, in front or not.
+  assert.equal(nativeActiveCall(connected, {}, true).pageOwnsAudio, false);
+  assert.equal(nativeActiveCall(connected, {}, false).pageOwnsAudio, false);
+  assert.equal(nativeActiveCall(connected, {}, true).nativeAudio, true);
+});
+
+test("the engine choice reaches the plugin while idle too, for a lock-screen answer", () => {
+  // The call's own report says what the call runs on, whatever the preference.
+  assert.equal(
+    nativeActiveCall(state({ phase: "connecting", nativeEngine: false }), {}, true, false, true)
+      .nativeAudio,
+    false,
+  );
+  assert.equal(
+    nativeActiveCall(state({ phase: "connecting", nativeEngine: true }), {}, true, false, false)
+      .nativeAudio,
+    true,
+  );
+  // Idle: what the preference would pick next.
+  assert.equal(nativeActiveCall(state(), {}, true, false, true).nativeAudio, true);
+  assert.equal(nativeActiveCall(state(), {}, true, false, false).nativeAudio, false);
 });
 
 test("the page's mute reaches a native call UI only where one shows a mute (client-voice-7)", () => {
