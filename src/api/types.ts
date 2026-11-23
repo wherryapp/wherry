@@ -354,20 +354,6 @@ export type ArchivePage = {
   nextCursor: string | null;
 };
 
-/** Metadata only. There is deliberately no payload field. */
-export type MessageSummary = {
-  id: string;
-  conversationId: string;
-  senderUserId: string;
-  senderDeviceId: string;
-  createdAt: string;
-};
-
-export type MessagesPage = {
-  messages: MessageSummary[];
-  nextCursor: string | null;
-};
-
 // ---------------------------------------------------------------------------
 // Hubs
 // ---------------------------------------------------------------------------

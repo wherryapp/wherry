@@ -85,10 +85,16 @@ export const DEFAULT_FILE_POLICY: FilePolicy = {
  *
  * **A leading dot is not an extension.** `".gitignore"` is a dotfile with no
  * extension, not a file of type `gitignore`.
+ *
+ * **The extension is read from the name that will be saved.** `FileChip`
+ * saves under `displayFileName`'s output, which drops bidi and control
+ * characters, so `"x.exe"` followed by an invisible mark would otherwise read
+ * as having no extension here and still be saved as `x.exe`.
  */
 export function fileExtension(name: string): string | null {
-  // Windows' own normalisation, applied before we read anything.
-  const trimmed = name.replace(/[. ]+$/u, "");
+  // The saved name first, then Windows' own normalisation, before we read
+  // anything.
+  const trimmed = displayFileName(name).replace(/[. ]+$/u, "");
   if (trimmed.length === 0) return null;
 
   // Take the basename first: a path separator would otherwise let a directory

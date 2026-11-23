@@ -62,18 +62,6 @@ export function clampScale(value: unknown): TextScale {
   return match ?? 1;
 }
 
-/** The next step in a direction, for a keyboard shortcut or a stepper later.
- *  Saturates at the ends rather than wrapping -- wrapping from Huge back to
- *  Smaller is never what somebody pressing "bigger" meant. */
-export function stepScale(current: TextScale, direction: 1 | -1): TextScale {
-  const index = TEXT_SCALES.indexOf(current);
-  const next = Math.min(
-    TEXT_SCALES.length - 1,
-    Math.max(0, (index === -1 ? 1 : index) + direction),
-  );
-  return TEXT_SCALES[next]!;
-}
-
 /** The root font size a scale means, in CSS pixels. */
 export function rootFontSize(scale: TextScale): string {
   return `${BASE_FONT_PX * scale}px`;

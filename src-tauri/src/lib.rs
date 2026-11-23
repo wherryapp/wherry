@@ -270,7 +270,7 @@ pub fn run() {
         }
         app.handle().plugin(logger.build())?;
       }
-      // The boot-time page probe (voice.rs, "the page probe"): debug builds
+      // The boot-time page probe (voice/mod.rs's `start_page_probe`): debug builds
       // only, desktop only, and the instrument gate 2 of the native media
       // plan is waiting on. It reports; it decides nothing.
       #[cfg(all(desktop, debug_assertions))]

@@ -7,7 +7,6 @@ import {
   TEXT_SCALE_LABELS,
   clampScale,
   rootFontSize,
-  stepScale,
 } from "./text-scale.js";
 
 test("every step has a label", () => {
@@ -33,13 +32,6 @@ test("clampScale defaults anything unrecognised to 1", () => {
   assert.equal(clampScale(1.2), 1);
   // A value past the ends is the same case, not a clamp.
   assert.equal(clampScale(4), 1);
-});
-
-test("stepScale saturates rather than wrapping", () => {
-  assert.equal(stepScale(1, 1), 1.15);
-  assert.equal(stepScale(1, -1), 0.85);
-  assert.equal(stepScale(1.45, 1), 1.45);
-  assert.equal(stepScale(0.85, -1), 0.85);
 });
 
 test("rootFontSize is the browser default times the scale", () => {

@@ -318,6 +318,17 @@ async function decryptForStorage(
   // "not encrypted" is not a cipher, and the E2E seam stays crypto-only
   // (rule 7). See PROTOCOL_PUBLIC's comment in crypto/provider.ts.
   if (protocolVersion === PROTOCOL_PUBLIC) {
+    // But only where plaintext can belong. The version is the server's
+    // word, so without this a server could put a v4 row, under any sender,
+    // into a direct or group conversation and it would render as a message
+    // nobody sealed -- the forgery MLS exists to rule out. A conversation
+    // this device knows to be sealed refuses it as undecryptable. One it
+    // does not know yet is let through, because a new device's hydration
+    // reads readable channels' rows before the conversation list is stored.
+    const known = await store.getConversation(conversationId);
+    if (known && !isServerReadable(known.hubVisibility)) {
+      return { payload: wireBytes, decryptFailed: true };
+    }
     return { payload: wireBytes, decryptFailed: false };
   }
 

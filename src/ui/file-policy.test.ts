@@ -152,3 +152,12 @@ test("an ordinary name is untouched, including non-Latin scripts", () => {
   assert.equal(displayFileName("報告書.pdf"), "報告書.pdf");
   assert.equal(displayFileName("report (1).pdf"), "report (1).pdf");
 });
+
+test("an invisible trailing character does not hide the extension", () => {
+  // FileChip saves under displayFileName's output, so the check must read
+  // the same name: each of these is saved as x.exe.
+  for (const name of ["x.exe\u200E", "x.exe\u0000", "x.exe\n", "x.exe.\u202E "]) {
+    assert.equal(isExecutable(name), true, JSON.stringify(name));
+    assert.equal(isFileAllowed(name, DEFAULT_FILE_POLICY), false, JSON.stringify(name));
+  }
+});

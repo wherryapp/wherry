@@ -172,6 +172,17 @@ internal object RingLaunch {
         main.post { if (overLock != null) release("the call ended") }
     }
 
+    /** Sign-out (RingHandler.reset): the rings are gone, so the page is not
+     *  kept over the lock screen for one -- unless a call is still up, which
+     *  the page ends and whose setActive(false) releases it (callEnded).
+     *  Without this the show lasted until `settle`, up to a minute. Any
+     *  thread. */
+    fun accountReset() {
+        main.post {
+            if (overLock != null && !CallLifecycle.hasCall()) release("the account signed out")
+        }
+    }
+
     /** The activity went away. Main thread. */
     fun destroyed(activity: Activity) {
         if (overLock?.activity?.get() === activity) overLock = null

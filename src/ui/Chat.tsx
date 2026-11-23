@@ -279,20 +279,6 @@ function useMarkRead(conversationId: string | null, selfUserId: string): void {
   }, [conversationId, newest, selfUserId]);
 }
 
-// JoinInvite moved to JoinInvite.tsx; PinsPanel moved to PinsPanel.tsx.
-// ReplyDraft, EditDraft and excerptOf moved to drafts.ts -- PinsPanel needs
-// excerptOf too, and it moved out of this file before the timeline did.
-
-// ConversationList (with NewConversation, NewHub and HubsSection) moved to
-// sidebar/Sidebar.tsx, sidebar/NewConversation.tsx, sidebar/NewHub.tsx and
-// sidebar/HubsSection.tsx.
-
-// QUICK_REACTIONS, myReaction, PressPointerEvent, TAP_MOVE_PX, TAP_MAX_MS,
-// Bubble, Notice, RUN_GAP_MS, runIdentity, sameRun, Timeline, Presence and
-// TypingLine all moved to Timeline.tsx.
-
-// Composer moved to Composer.tsx.
-
 // ---------------------------------------------------------------------------
 // Shell
 // ---------------------------------------------------------------------------

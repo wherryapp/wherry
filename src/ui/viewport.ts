@@ -54,8 +54,8 @@ export function trackVisualViewport(): void {
     // stays put (now visually cropped by the browser's own zoom, the normal
     // and expected result of zooming a fixed-position page) rather than
     // resizing itself into a broken layout. It is not what makes zoom
-    // *usable* -- an in-app text-size control is the real answer to that
-    // (roadmap's backlog intake, tier 4) -- only what stops it from breaking
+    // *usable* -- the in-app text-size control (ui/text-scale.ts) is the
+    // answer to that -- only what stops it from breaking
     // the shell. The resize that returns to scale 1 republishes normally,
     // since it is not skipped by this guard.
     if (viewport.scale !== 1) return;

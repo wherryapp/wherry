@@ -297,6 +297,11 @@ internal object RingHandler {
         posted.clear()
         held.clear()
         pageOwned.clear()
+        // Ended calls are the account's too, as on iOS (resetAccount): a call
+        // the next account is also rung for must not be dropped as one
+        // already ended here.
+        ended.clear()
+        RingLaunch.accountReset()
         val manager = context.getSystemService(NotificationManager::class.java)
         var count = 0
         if (manager != null) {

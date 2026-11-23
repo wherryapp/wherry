@@ -25,9 +25,9 @@
 //
 // The accessibility trade is real and is not settled by this file. Killing
 // page zoom removes a way to make text bigger on a phone, and the answer to
-// that is an in-app text-size control (docs/roadmap.md's tier 4), which is
-// owed and not yet built. What page zoom actually did here in the meantime is
-// worth being honest about: the shell is fixed-position and sized to the
+// that is the in-app text-size control (ui/text-scale.ts, Settings, since
+// 2026-09-03). What page zoom actually did before it is worth being honest
+// about: the shell is fixed-position and sized to the
 // visual viewport, so zooming cropped the app rather than reflowing it --
 // ui/viewport.ts has a guard whose entire job is stopping a zoomed
 // measurement from being written into the layout. It was never a working
