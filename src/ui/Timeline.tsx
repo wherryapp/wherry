@@ -672,6 +672,9 @@ function UnreadDivider({ count, capped }: { count: number; capped: boolean }) {
   );
 }
 
+/** How long a failed-action line stays up. */
+const ACTION_ERROR_MS = 5_000;
+
 /** A notice line: no bubble, no sender, no side -- centred and easy to skip. */
 function Notice({ text }: { text: string }) {
   return (
@@ -813,6 +816,29 @@ export function Timeline({
   const [viewing, setViewing] = useState<AttachmentRef | null>(null);
   useEffect(() => setViewing(null), [conversationId]);
 
+  // A line saying an action from the message bar did not take: a reaction
+  // or a delete that could not be queued, a pin or a moderator removal the
+  // server refused. Each used to fail into the console only, so the tap
+  // looked like it had worked and nothing happened. Cleared after a few
+  // seconds, and shown only in the thread it is about.
+  // Kept with the conversation it belongs to rather than reset by an effect,
+  // so a switch hides it in the same render.
+  const [actionFailure, setActionFailure] = useState<{
+    conversationId: string;
+    text: string;
+  } | null>(null);
+  const actionError =
+    actionFailure?.conversationId === conversationId ? actionFailure.text : null;
+  useEffect(() => {
+    if (actionFailure === null) return;
+    const timer = setTimeout(() => setActionFailure(null), ACTION_ERROR_MS);
+    return () => clearTimeout(timer);
+  }, [actionFailure]);
+  const actionFailed = (what: string) => (caught: unknown) => {
+    console.warn(`${what} failed`, caught);
+    setActionFailure({ conversationId, text: `Couldn't ${what}. Try again.` });
+  };
+
   /**
    * Delete for everyone: an ordinary send whose payload is a retract op --
    * see the ops notes on useTimeline in hooks.ts. Silent, because a phone
@@ -830,11 +856,13 @@ export function Timeline({
       return;
     }
     setActionsFor(null);
-    void sync.enqueue(
-      conversationId,
-      encodeOp({ kind: "retract", target: messageId }),
-      { silent: true },
-    );
+    void sync
+      .enqueue(
+        conversationId,
+        encodeOp({ kind: "retract", target: messageId }),
+        { silent: true },
+      )
+      .catch(actionFailed("delete the message"));
   };
 
   /**
@@ -862,7 +890,7 @@ export function Timeline({
       await store.deleteMessages([messageId]);
       sync.notifyMessagesChanged([conversationId]);
     } catch (caught) {
-      console.warn("moderator delete failed", caught);
+      actionFailed("remove the message")(caught);
     }
   };
 
@@ -873,7 +901,7 @@ export function Timeline({
       hubId: moderation.hubId,
       conversationId,
       messageId,
-    }).catch((caught) => console.warn("pin failed", caught));
+    }).catch(actionFailed("pin the message"));
   };
 
   /**
@@ -883,11 +911,13 @@ export function Timeline({
    */
   const sendReaction = (messageId: string, emoji: string | null): void => {
     setActionsFor(null);
-    void sync.enqueue(
-      conversationId,
-      encodeOp({ kind: "reaction", target: messageId, emoji }),
-      { silent: true },
-    );
+    void sync
+      .enqueue(
+        conversationId,
+        encodeOp({ kind: "reaction", target: messageId, emoji }),
+        { silent: true },
+      )
+      .catch(actionFailed(emoji === null ? "remove the reaction" : "add the reaction"));
   };
 
   // Names by user id, so attribution is a lookup rather than a scan per
@@ -1692,6 +1722,16 @@ export function Timeline({
         );
       })}
       </div>
+      {actionError !== null && (
+        // Sticky inside the scroller, so it sits at the bottom of what the
+        // reader is looking at wherever they have scrolled.
+        <div
+          role="status"
+          className="sticky bottom-0 mx-auto mt-2 w-fit max-w-full rounded-md bg-neutral-800 px-3 py-1.5 text-sm text-white shadow dark:bg-neutral-700"
+        >
+          {actionError}
+        </div>
+      )}
       {confirmDialog}
       {viewing && (
         <PhotoViewer
