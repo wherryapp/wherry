@@ -67,3 +67,26 @@ export function classSentence(visibility: HubVisibility): string {
  *  one's past cannot be un-read). Said once, at the only point where the
  *  choice is still open. */
 export const CLASS_IS_PERMANENT = "This cannot be changed later.";
+
+/**
+ * What an invite link gives, said above the moderator's invite list. The two
+ * classes differ in the one way that matters: a private hub shares no history
+ * on a link join (nobody vouched at redeem time, and the encryption enforces
+ * it), while a readable hub serves a member the channels' entire backlog, so
+ * a link there is a key to everything ever posted.
+ */
+export function inviteSentence(visibility: HubVisibility): string {
+  return isServerReadable(visibility)
+    ? "Anyone with a link can join and read every message ever posted in this hub."
+    : "Anyone with a link can join. Joining by link shares no earlier messages.";
+}
+
+/**
+ * Said under the form when the choice has no expiry or no use limit: such a
+ * link works until someone revokes it, wherever it is forwarded to.
+ */
+export function inviteUnboundedWarning(visibility: HubVisibility): string {
+  return isServerReadable(visibility)
+    ? "This link keeps working until it is revoked, wherever it ends up, and whoever has it can read this hub's whole history."
+    : "This link keeps working until it is revoked, wherever it ends up.";
+}

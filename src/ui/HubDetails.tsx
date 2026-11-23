@@ -84,7 +84,24 @@ import { prepareAvatar } from "./media";
 import { groupChannels } from "./sidebar/channels";
 import { openProfile } from "./profile";
 import { ContactCheckboxRow } from "./ContactRow";
-import { classLabel, classSentence, isServerReadable } from "./hub-class";
+import {
+  classLabel,
+  classSentence,
+  inviteSentence,
+  inviteUnboundedWarning,
+  isServerReadable,
+} from "./hub-class";
+import {
+  DEFAULT_INVITE_EXPIRY,
+  DEFAULT_INVITE_USES,
+  INVITE_EXPIRY_CHOICES,
+  INVITE_USE_CHOICES,
+  choiceIsUnbounded,
+  inviteDetail,
+  inviteIsUnbounded,
+  inviteRequest,
+  inviteState,
+} from "./invite-policy";
 
 // Mirrors hub-roles.ts on the server; see the file comment above.
 const RANK: Record<HubRole, number> = { owner: 3, moderator: 2, member: 1 };
@@ -161,9 +178,13 @@ export function HubDetails({
   const [invites, setInvites] = useState<HubInvite[] | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteExpiry, setInviteExpiry] = useState("604800");
-  const [inviteUses, setInviteUses] = useState("0");
+  const [inviteExpiry, setInviteExpiry] = useState(DEFAULT_INVITE_EXPIRY);
+  const [inviteUses, setInviteUses] = useState(DEFAULT_INVITE_USES);
   const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null);
+  // When the invite list is judged live, expired or used up. Read once at
+  // mount rather than in render (a render must be pure); a panel open across
+  // an expiry shows that link as live until it is reopened.
+  const [inviteClock] = useState(() => Date.now());
 
   const load = useCallback(() => {
     void fetchHub(hubId)
@@ -683,12 +704,9 @@ export function HubDetails({
     setInviteBusy(true);
     setInviteError(null);
     try {
-      const expiresInSeconds = Number.parseInt(inviteExpiry, 10);
-      const maxUses = Number.parseInt(inviteUses, 10);
       const created = await createHubInvite({
         hubId,
-        ...(expiresInSeconds > 0 ? { expiresInSeconds } : {}),
-        ...(maxUses > 0 ? { maxUses } : {}),
+        ...inviteRequest(inviteExpiry, inviteUses),
       });
       setInvites((current) => [created, ...(current ?? [])]);
     } catch (caught) {
@@ -1322,16 +1340,16 @@ export function HubDetails({
         {manages(myRole) && (
           <PanelSection
             title="Invite links"
-            description={
-              isPrivate
-                ? "Anyone with a link can join. Joining by link shares no earlier messages."
-                : "Anyone with a link can join."
-            }
+            description={inviteSentence(detail.visibility)}
           >
             {(invites ?? []).length > 0 && (
               <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {(invites ?? []).map((invite) => (
-                  <li key={invite.id} className="py-2">
+                {(invites ?? []).map((invite) => {
+                  const now = inviteClock;
+                  const dead = inviteState(invite, now) !== "live";
+                  const unbounded = inviteIsUnbounded(invite, now);
+                  return (
+                  <li key={invite.id} className={dead ? "py-2 opacity-60" : "py-2"}>
                     <div className="flex items-center justify-between gap-2">
                       <span className="min-w-0 select-all truncate font-mono text-[0.6875rem] text-neutral-700 dark:text-neutral-300">
                         {inviteUrl(invite)}
@@ -1353,17 +1371,18 @@ export function HubDetails({
                         </Button>
                       </span>
                     </div>
-                    <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                      {invite.maxUses === null
-                        ? `${invite.useCount} joins`
-                        : `${invite.useCount}/${invite.maxUses} uses`}
-                      {" · "}
-                      {invite.expiresAt === null
-                        ? "never expires"
-                        : `expires ${new Date(invite.expiresAt).toLocaleDateString()}`}
+                    <p
+                      className={
+                        unbounded
+                          ? "text-xs text-amber-700 dark:text-amber-300"
+                          : "text-xs text-neutral-500 dark:text-neutral-400"
+                      }
+                    >
+                      {inviteDetail(invite, now)}
                     </p>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
             <form onSubmit={makeInvite} className="mt-2 flex items-center gap-2">
@@ -1373,9 +1392,11 @@ export function HubDetails({
                 aria-label="Invite expiry"
                 className="py-1"
               >
-                <option value="86400">1 day</option>
-                <option value="604800">7 days</option>
-                <option value="0">Never expires</option>
+                {INVITE_EXPIRY_CHOICES.map((choice) => (
+                  <option key={choice.value} value={choice.value}>
+                    {choice.label}
+                  </option>
+                ))}
               </Select>
               <Select
                 value={inviteUses}
@@ -1383,9 +1404,11 @@ export function HubDetails({
                 aria-label="Invite use limit"
                 className="py-1"
               >
-                <option value="0">Unlimited uses</option>
-                <option value="1">1 use</option>
-                <option value="10">10 uses</option>
+                {INVITE_USE_CHOICES.map((choice) => (
+                  <option key={choice.value} value={choice.value}>
+                    {choice.label}
+                  </option>
+                ))}
               </Select>
               <Button
                 type="submit"
@@ -1396,6 +1419,11 @@ export function HubDetails({
                 New link
               </Button>
             </form>
+            {choiceIsUnbounded(inviteExpiry, inviteUses) && (
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                {inviteUnboundedWarning(detail.visibility)}
+              </p>
+            )}
             {inviteError && <ErrorText className="mt-1">{inviteError}</ErrorText>}
           </PanelSection>
         )}

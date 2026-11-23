@@ -3,7 +3,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { HubVisibility } from "../api/types.js";
-import { classLabel, classSentence, isServerReadable } from "./hub-class.js";
+import {
+  classLabel,
+  classSentence,
+  inviteSentence,
+  inviteUnboundedWarning,
+  isServerReadable,
+} from "./hub-class.js";
 
 const ALL: HubVisibility[] = ["private", "public", "invite_only"];
 
@@ -19,6 +25,16 @@ test("an absent class is sealed, never readable", () => {
   // the other way would route a plaintext send into an E2EE conversation.
   assert.equal(isServerReadable(null), false);
   assert.equal(isServerReadable(undefined), false);
+});
+
+test("a readable hub's invite copy says the link reads the history", () => {
+  for (const visibility of ["public", "invite_only"] as const) {
+    assert.match(inviteSentence(visibility), /read every message/);
+    assert.match(inviteUnboundedWarning(visibility), /whole history/);
+  }
+  assert.doesNotMatch(inviteSentence("private"), /read/);
+  assert.match(inviteSentence("private"), /shares no earlier messages/);
+  assert.doesNotMatch(inviteUnboundedWarning("private"), /history/);
 });
 
 test("every class has a label and a sentence", () => {
