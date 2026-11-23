@@ -433,7 +433,7 @@ function maybeDevNative(params: URLSearchParams): void {
  * platform default alone and call nothing. An unattended soak that never
  * chooses one therefore exercises the *other* branch however many times it
  * cycles, which is exactly why every pass before 2026-09-10 walked past the
- * defect. The ids are the shell's own (`voice_audio_devices`), which on
+ * defect. The ids are the shell's own (`voice_devices`), which on
  * macOS are Core Audio device ids as strings and on Windows the 55-character
  * endpoint guids.
  */

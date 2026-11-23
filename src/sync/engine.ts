@@ -358,14 +358,25 @@ async function toStored(
   source: InboxEnvelope | ArchiveEntry,
   from: "envelope" | "archive",
 ): Promise<StoredMessage> {
-  const wireBytes = decodeBase64(source.payload);
-  const { payload, decryptFailed } = await decryptForStorage(
-    source.conversationId,
-    source.protocolVersion,
-    wireBytes,
-    from,
-    "keyGeneration" in source ? source.keyGeneration : null,
-  );
+  // The server validates base64 on the way in, but a row that still fails
+  // to decode must mark one message failed, not reject the page's
+  // Promise.all and stall the inbox at that row on every pass.
+  let wireBytes: Uint8Array | null = null;
+  try {
+    wireBytes = decodeBase64(source.payload);
+  } catch {
+    // Left null: stored as a failed decrypt below.
+  }
+  const { payload, decryptFailed } =
+    wireBytes === null
+      ? { payload: new Uint8Array(0), decryptFailed: true }
+      : await decryptForStorage(
+          source.conversationId,
+          source.protocolVersion,
+          wireBytes,
+          from,
+          "keyGeneration" in source ? source.keyGeneration : null,
+        );
 
   return {
     messageId: source.messageId,

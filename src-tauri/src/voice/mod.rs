@@ -3138,7 +3138,7 @@ mod route_tests {
   }
 }
 
-/// The `voice` event's wire names, as `transport-native.ts`'s `ShellEvent`
+/// The `voice` event's wire names, as `transport-native.ts`'s `NativeEvent`
 /// reads them: the `kind` tag in snake_case, every field in camelCase. One
 /// case per variant, so a field added in snake_case fails here rather than
 /// reading `undefined` on the page.

@@ -1,6 +1,6 @@
 // Pure decisions the transports share or that the native transport makes
 // on the shell's behalf -- kept here, tested, and out of Rust on purpose
-// (docs/prompts/native-media-plan.md §0.4: policy in TypeScript, mechanism
+// (docs/prompts/native-media-plan.md §0, item 4: policy in TypeScript, mechanism
 // in Rust). Nothing here imports a media SDK or the Tauri API.
 
 import type {

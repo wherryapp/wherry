@@ -134,8 +134,12 @@ export function useConversations(): {
 } {
   const [conversations, setConversations] = useState<StoredConversation[]>([]);
 
+  // Latest wins, as in useTimeline: IndexedDB reads may resolve out of order.
+  const readSeq = useRef(0);
   const reload = useCallback(() => {
+    const seq = ++readSeq.current;
     void store.listConversations().then((list) => {
+      if (seq !== readSeq.current) return;
       // Newest first. Conversation ids are UUIDv7, so this is creation order
       // without needing a stored timestamp -- the same property the server
       // relies on for cursors.
@@ -460,7 +464,10 @@ export function useUnread(
     )
     .join(",");
 
+  // Latest wins, as in useTimeline: IndexedDB reads may resolve out of order.
+  const readSeq = useRef(0);
   const reload = useCallback(() => {
+    const seq = ++readSeq.current;
     const entries = signature ? signature.split(",") : [];
 
     void Promise.all(
@@ -474,6 +481,7 @@ export function useUnread(
         return [id as string, count] as const;
       }),
     ).then((pairs) => {
+      if (seq !== readSeq.current) return;
       const next = new Map<string, number>();
       for (const [id, count] of pairs) if (count > 0) next.set(id, count);
       setUnread(next);
@@ -663,8 +671,12 @@ export function useMentions(
     )
     .join(",");
 
+  // Latest wins, as in useTimeline: IndexedDB reads may resolve out of order.
+  const readSeq = useRef(0);
   const reload = useCallback(() => {
+    const seq = ++readSeq.current;
     void store.getMeta<MentionState>(META_MENTIONS).then((state) => {
+      if (seq !== readSeq.current) return;
       const next = new Set<string>();
       if (state) {
         for (const entry of signature ? signature.split(",") : []) {
@@ -899,8 +911,12 @@ export function useDeliveredMarks(
 export function useHubs(): { hubs: HubSummary[]; reload: () => void } {
   const [hubs, setHubs] = useState<HubSummary[]>([]);
 
+  // Latest wins, as in useTimeline: IndexedDB reads may resolve out of order.
+  const readSeq = useRef(0);
   const reload = useCallback(() => {
+    const seq = ++readSeq.current;
     void store.getMeta<HubSummary[]>(META_HUBS).then((list) => {
+      if (seq !== readSeq.current) return;
       setHubs(list ?? []);
     });
   }, []);

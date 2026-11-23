@@ -2,8 +2,8 @@
 // voice session needs from "the thing that captures, encrypts, sends,
 // receives and plays audio", written down as an interface so that there
 // can be two of them -- the webview's (livekit-client, `transport-
-// webview.ts`, every platform today) and, on desktop, one that lives in
-// the Tauri shell. The same shape as `E2EProvider`, `Storage`, `Mailer`
+// webview.ts`: browsers, the phone shells, and the desktop fallback) and,
+// on desktop by default, one that lives in the Tauri shell. The same shape as `E2EProvider`, `Storage`, `Mailer`
 // and `VoiceProvider`: one interface, implementations chosen in
 // `index.ts`, and nothing else in the client imports the SDK.
 //

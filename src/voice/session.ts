@@ -3,7 +3,7 @@
 // the VoiceTransport seam (docs/prompts/native-media-plan.md §4) this file
 // imports no media SDK at all: the Room, the microphone, the remote audio
 // and the frame-encryption worker are the transport's (transport-
-// webview.ts today), chosen in index.ts; what is left here is every
+// webview.ts or transport-native.ts), chosen in index.ts; what is left here is every
 // decision -- when to join, which key, what to tell the server, what the
 // bar shows.
 //
