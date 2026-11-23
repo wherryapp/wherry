@@ -30,8 +30,8 @@ export type AudioDevices = { inputs: AudioDevice[]; outputs: AudioDevice[] };
 /** A camera, in the same shape a microphone takes. */
 export type VideoDevice = AudioDevice;
 
-/** The shell's event when the device list changed (voice.rs polls the
- *  device module itself, since it raises no hot-plug event of its own). */
+/** The shell's event when the device list changed (src-tauri/src/voice/mod.rs
+ *  polls the device module itself, since it raises no hot-plug event of its own). */
 const NATIVE_DEVICES_EVENT = "voice-devices";
 
 export function mediaSupported(): boolean {
@@ -147,11 +147,16 @@ export function onDeviceChange(
     // throttled too.
     let unlisten: (() => void) | null = null;
     let cancelled = false;
-    void import("@tauri-apps/api/event").then(async (event) => {
-      const off = await event.listen(NATIVE_DEVICES_EVENT, () => listener());
-      if (cancelled) off();
-      else unlisten = off;
-    });
+    void import("@tauri-apps/api/event")
+      .then(async (event) => {
+        const off = await event.listen(NATIVE_DEVICES_EVENT, () => listener());
+        if (cancelled) off();
+        else unlisten = off;
+      })
+      .catch((error: unknown) => {
+        // No hot-plug updates then; the list is still read on open.
+        console.warn("device change listener unavailable", error);
+      });
     return () => {
       cancelled = true;
       unlisten?.();

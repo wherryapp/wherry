@@ -1132,6 +1132,8 @@ fn on_microphone_muted_remotely(session: u64, room: &Room) {
     if let Err(error) = audio.stop_recording() {
       log::debug!("voice: stop_recording after a remote mute: {error:?}");
     }
+    // So the unmute's `settle_before_start` measures from this stop.
+    note_recording_stopped();
   }
   set_mic_start_failed(session, false);
   set_microphone_gate(false, "after the SFU muted the microphone");
@@ -2037,6 +2039,8 @@ pub async fn voice_disconnect() -> VoiceResult<DisconnectResult> {
     if let Err(error) = audio.stop_recording() {
       log::debug!("voice: stop_recording on disconnect: {error:?}");
     }
+    // So a call started straight after this one waits out the settle too.
+    note_recording_stopped();
     // After the stop, so the stop reaches the device (a closed gate turns
     // the proxy's `StopRecording` into bookkeeping only).
     set_microphone_gate(false, "at hang-up");
@@ -2217,6 +2221,9 @@ pub async fn voice_set_mic(
   // On the rig's pre-fix reading the publish had initialised recording by
   // this point (status §3.3), so this should ask nothing; it is here so that no `start_recording` in this file can
   // initialise recording without the repair in front of it.
+  // Normally a no-op: only a call started within the settle of the last
+  // one's hang-up has anything to wait for.
+  settle_before_start();
   before_init_recording(&audio, processing, engine_held, "after publish");
   let start_failed = match audio.start_recording() {
     Ok(()) => false,

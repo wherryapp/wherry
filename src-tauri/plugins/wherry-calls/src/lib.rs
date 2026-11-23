@@ -7,9 +7,9 @@
 //! interface. This crate is only the registration and the passthrough; the
 //! mechanism is the Kotlin (`android/`) and Swift (`ios/`) plugin.
 //!
-//! Registered in the app by one `.plugin(tauri_plugin_wherry_calls::init())`
-//! line inside the push plugin's `#[cfg(mobile)]` block of
-//! `client/src-tauri/src/lib.rs` (coordination §2).
+//! Registered in the app by its own `#[cfg(mobile)]`
+//! `.plugin(tauri_plugin_wherry_calls::init())` line, beside the push
+//! plugin's in `client/src-tauri/src/lib.rs` (coordination §2).
 
 use tauri::{
     plugin::{Builder, TauriPlugin},

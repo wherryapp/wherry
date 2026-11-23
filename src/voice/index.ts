@@ -2,7 +2,7 @@
 // the way `crypto/index.ts` picks the E2E provider and `db/client.ts`
 // owns the pool. Two implementations since 2026-09-07: the webview's
 // (livekit-client, every platform) and the desktop shell's own media
-// engine (`transport-native.ts` over src-tauri/src/voice.rs), chosen when
+// engine (`transport-native.ts` over src-tauri/src/voice/), chosen when
 // the shell has it *and* this device turned it on in Settings → Voice.
 // Both compile into every build; the native one is unreachable on the web
 // (no shell) and on the phones (no command), by feature detection rather
