@@ -1,38 +1,31 @@
 # Vendored crates
 
-Two published crates carried as copies, each with one fix, wired in by
-`[patch.crates-io]` in `../Cargo.toml`. Both were found on 2026-09-28, on
-the first **release build for a device** under Xcode 27: every earlier iOS
-row ran a simulator debug build, which hides both faults. Everything else in
-each directory is the published crate byte for byte (the `.crate` Cargo
-fetched, minus `.cargo-ok`, and minus `.github/` in swift-rs; swift-rs's own
-`.gitignore` also keeps its `Cargo.lock` out of git, which Cargo never reads
-for a dependency), so
+One published crate carried as a copy with one fix, wired in by
+`[patch.crates-io]` in `../Cargo.toml`. It was found on 2026-09-28, on the
+first **release build for a device** under Xcode 27: every earlier iOS row
+ran a simulator debug build, which hides the fault. Everything else in the
+directory is the published crate byte for byte (the `.crate` Cargo fetched,
+minus `.cargo-ok` and `.github/`; swift-rs's own `.gitignore` also keeps its
+`Cargo.lock` out of git, which Cargo never reads for a dependency), so
 `diff -r` against `~/.cargo/registry/src/*/<name>-<version>` shows only the
-hunks below.
+hunk below.
 
 **Drop a copy** when the published crate carries the fix and the version
 Tauri pins has moved to it: delete the directory and its `[patch]` line, run
-a device release build, and read I-75 on a phone. File both upstream
+a device release build, and read I-75 on a phone. File it upstream
 (`docs/upstream/`).
 
-Upstream drafts and status: `docs/upstream/tao-ios-scene-configuration-use-after-free.md`, `docs/upstream/swift-rs-xcode27-cdecl-globalize.md`.
+Upstream draft and status: `docs/upstream/swift-rs-xcode27-cdecl-globalize.md`
+(the tao draft, `docs/upstream/tao-ios-scene-configuration-use-after-free.md`,
+is history: tao fixed it upstream).
 
-## `tao/` — 0.35.3 (the version `tauri` 2.11.5 pins)
-
-`src/platform_impl/ios/view.rs`, `configuration_for_connecting_scene_session`.
-Upstream returns `Retained::as_ptr(&config)` and then drops `config`, so
-UIKit receives a freed `UISceneConfiguration`. On a device release build that
-is `EXC_BAD_ACCESS` in `objc_retain` under
-`-[UIApplication _connectUISceneFromFBSScene:transitionContext:]`, at every
-launch, on iOS 26.6.2 (the maintainer's iPhone 16 Pro Max). A simulator debug
-build survived it (I-75, 2026-09-27), believed because the object was still
-held by the autorelease pool. The path exists only because of hand edit 14
-(`UIApplicationSupportsMultipleScenes`), which iOS 27 requires, so there is
-no build that launches on both without this fix.
-
-The fix: `Retained::autorelease_return(config)`: the selector returns +0,
-and the pool keeps the object alive until UIKit has retained it.
+A second copy, `tao/` 0.35.3, went with the move to tauri 2.12. Its
+`configuration_for_connecting_scene_session` returned a freed
+`UISceneConfiguration`, so every device release build crashed at launch.
+tao 0.36.0 fixed that upstream (tauri-apps/tao#1245), and tauri-runtime-wry
+2.12 requires tao 0.37, which returns `Retained::autorelease_ptr(config)`
+(`platform_impl/ios/view.rs`). The copy and its note are in this
+directory's git history.
 
 ## `swift-rs/` — 1.0.8
 

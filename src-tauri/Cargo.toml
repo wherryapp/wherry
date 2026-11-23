@@ -6,10 +6,11 @@ authors = ["Wherry"]
 license = ""
 repository = ""
 edition = "2021"
-# The locked graph's own floor, not ours: notify-rust (Linux notifications)
-# declares 1.89, and time and plist 1.88. The shell's own newest need is
-# `Option::is_none_or`, 1.82. Raise this with the lockfile.
-rust-version = "1.89"
+# The locked graph's own floor, not ours: tauri 2.12, tauri-runtime-wry 2.12
+# and tauri-build 2.7 declare 1.90 (notify-rust 1.89, time and plist 1.88).
+# The shell's own newest need is `Option::is_none_or`, 1.82. Raise this with
+# the lockfile.
+rust-version = "1.90"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,7 +19,7 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+tauri-build = { version = "2.7.0", features = [] }
 
 [features]
 # The native media engine on iOS and Android (docs/prompts/phone-calls-plan.md
@@ -32,7 +33,7 @@ phone-media = ["dep:livekit", "dep:tokio", "dep:futures-util"]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.3", features = [] }
+tauri = { version = "2.12.0", features = [] }
 tauri-plugin-log = "2"
 # Registration only, keeping the shell's "no IPC, no Rust logic" rule: the
 # client's sync engine decides when to notify; this just gives the webview
@@ -155,26 +156,37 @@ block2 = "0.6"
 # under WebView2 it cannot open a picker at all (S-00), so this is the
 # shell's job rather than the page's.
 #
-# `windows` 0.61 rather than the 0.62 the probe in scripts/regress used:
-# 0.61 is already in this graph through tao and wry, so this adds features
-# to a crate that is compiled anyway instead of a second major version of
-# it. The API shape is identical at both (checked: the completion handler
-# takes the same `Ref<'_, _>`).
+# `windows` 0.61 rather than the 0.62 the probe in scripts/regress used.
+# Chosen when 0.61 was the graph's only version (through tao and wry). Since
+# tauri 2.12 (tao 0.37, wry 0.57) the graph has both: tauri, tao and wry are
+# on 0.62, and tauri-plugin-opener and tauri-winrt-notification still pull
+# 0.61. This stays on 0.61 so no Windows source line changes before the rig
+# has compiled it. The shell passes no `windows` type across Tauri's API:
+# `hwnd()` is turned into a raw pointer straight away. Moving to 0.62 is
+# the follow-up that stops the features below compiling twice. The API shape
+# is identical at both (checked: the completion handler takes the same
+# `Ref<'_, _>`).
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Media_Audio",
   "Win32_Security",
   "Win32_System_Com",
+  # ActivateAudioInterfaceAsync (screen_audio.rs) is gated on these two in
+  # 0.61; they arrived through tao and wry while those were on 0.61 too, and
+  # stopped arriving when tauri 2.12 moved them to 0.62 (rig, 2026-09-28).
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
   # Native video render (voice/render_win.rs; stage W3). Gdi is not only
   # the blit: 57 items in WindowsAndMessaging are themselves gated on it,
   # `WNDCLASSEXW` and `RegisterClassExW` among them, so a window class
-  # cannot be registered without it. All three are already on in the
-  # unified graph through tao and wry -- declared here anyway, because a
-  # feature we depend on and do not ask for is one their next release can
-  # take away without noticing us.
+  # cannot be registered without it. All three were on in the unified
+  # graph through tao and wry while those were on 0.61 (they are on 0.62
+  # since tauri 2.12). They were declared here anyway, because a feature we
+  # depend on and do not ask for is one their next release can take away
+  # without noticing us, and tauri 2.12 is that release.
   "Win32_Graphics_Gdi",
   "Win32_System_LibraryLoader",
   "Win32_UI_HiDpi",
@@ -199,10 +211,10 @@ windows-core = "0.61"
 # futures; this makes it a direct dependency for that one call.
 futures-executor = "0.3"
 
-# Two crates carried as vendored copies with one fix each, because the iOS
-# release build does not launch without both; `vendor/README.md` has the
-# faults, the diffs against the published crates, and when to drop them.
-# Only the iOS paths change: every other target compiles the published code.
+# One crate carried as a vendored copy with one fix, because the iOS device
+# release build does not link without it; `vendor/README.md` has the fault,
+# the diff against the published crate, and when to drop it. Only the iOS
+# path changes: every other target compiles the published code. (A second
+# copy, tao's, went with tauri 2.12: tao 0.37 carries that fix upstream.)
 [patch.crates-io]
-tao = { path = "vendor/tao" }
 swift-rs = { path = "vendor/swift-rs" }
